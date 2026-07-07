@@ -26,6 +26,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/notify"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
+	"github.com/ArowuTest/nirvet/internal/sso"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -99,6 +100,10 @@ func main() {
 	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens, cipher)
 	iamH := iam.NewHandler(iamSvc)
 
+	// SSO (OIDC): per-tenant IdP connections + JIT provisioning (§6.2 IAM-001).
+	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, cfg.JWTSecret)
+	ssoH := sso.NewHandler(ssoSvc)
+
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	alertH := alert.NewHandler(alertSvc)
 
@@ -147,6 +152,10 @@ func main() {
 	detEng := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng))
 	}
+	// SSO connections are managed by the tenant's own admin or a platform admin.
+	ssoAdmin := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleCustomerAdmin))
+	}
 
 	mux := http.NewServeMux()
 	// health
@@ -167,6 +176,13 @@ func main() {
 	mux.Handle("GET /docs", api.DocsHandler())
 	// auth + self
 	mux.Handle("POST /auth/login", httpx.Chain(http.HandlerFunc(iamH.Login), loginLimit))
+	// SSO (OIDC) — public login start/callback (rate-limited like login).
+	mux.Handle("GET /auth/sso/start", httpx.Chain(http.HandlerFunc(ssoH.Start), loginLimit))
+	mux.Handle("GET /auth/sso/callback", httpx.Chain(http.HandlerFunc(ssoH.Callback), loginLimit))
+	// SSO connection management (tenant admin / platform admin).
+	mux.Handle("POST /admin/sso", ssoAdmin(ssoH.CreateConnection))
+	mux.Handle("GET /admin/sso", ssoAdmin(ssoH.ListConnections))
+	mux.Handle("DELETE /admin/sso/{id}", ssoAdmin(ssoH.DeleteConnection))
 	mux.Handle("GET /me", authed(iamH.Me))
 	mux.Handle("POST /mfa/enroll", authed(iamH.EnrollMFA))
 	mux.Handle("POST /mfa/activate", authed(iamH.ActivateMFA))

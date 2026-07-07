@@ -24,6 +24,7 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | Module | 1 Unit | 2 Integ | 3 Audit | 4 Tenant | 5 RBAC | 6 Errors | 7 Docs | 8 OpenAPI | 9 Observe | 10 Scale |
 |---|---|---|---|---|---|---|---|---|---|---|
 | auth/iam (+MFA) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| sso (OIDC) | — | ✅⁸ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | tenant | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ingestion + normalize | ✅ | ✅ | ✅¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | detection | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -50,6 +51,8 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
   mapping, promotion linkage — is covered by AlertDedupe, IncidentPromotion, Heartbeat and Reporting integration.
 ⁷ reporting aggregates covered by ReportingSummaryAggregates (severity/stage/open counts under RLS).
   tenant now has a unit test (name validation) + integration coverage (harness creates tenants w/ defaults).
+⁸ sso covered by TestSSO_OIDCFlow against a mock IdP: happy path (JIT provision + session + re-login links),
+  plus fail-closed cases — nonce mismatch, wrong audience, disallowed email domain, forged state.
 
 ## Cross-cutting notes
 

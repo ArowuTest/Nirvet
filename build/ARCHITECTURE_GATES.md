@@ -62,7 +62,29 @@ after. A gate is a few paragraphs, not a document; it lives here.
   Deferred: DB/pgx spans (otelpgx), span links carried across ingest→worker via the queue row, worker
   per-job spans — logged, not silently skipped.
 
+## Gate: SSO — OIDC (§6.2 IAM-001) — reviewed Jul 2026
+- **SRS:** IAM-001 (local users + SSO SAML/OIDC), IAM-008 (user lifecycle incl. invitation/activation — JIT
+  provisioning is the SSO onboarding path), IAM-010 (log SSO logins/failures). Fits the flow at *Customer →
+  Auth*: SSO is an alternate front door to the same Nirvet session JWT the password path issues.
+- **Scope now = OIDC authorization-code + PKCE + nonce.** Per-tenant IdP connection; JIT user provisioning
+  (find-or-create by verified email, default role, email-domain allowlist); id_token verified via the IdP's
+  JWKS (RS256; iss/aud/exp/nonce checked). **Deferred (logged):** SAML 2.0 (XML dsig — its own gate), PAM /
+  break-glass (IAM-004/006), device-trust/geo-anomaly (IAM-007), IdP-driven role mapping/SCIM.
+- **Contracts / portability:** the OIDC client's discovery/token/JWKS URLs derive from the issuer but the HTTP
+  client + a discovery override are injectable, so the whole flow is integration-tested against an httptest
+  mock IdP (RS256-signed id_token) and is unchanged for GCP. No provider SDK — stdlib crypto + golang-jwt.
+- **Data:** `sso_connections` (tenant-scoped, RLS+FORCE): protocol/issuer/client_id, `client_secret` sealed in
+  the vault (ADR-0004, tenant AAD), redirect_uri, default_role, email_domain, enabled. The public callback is
+  unauthenticated, so a SECURITY DEFINER `sso_get_connection(id)` resolves the connection cross-tenant (like
+  `connector_list_pullers`); JIT user creation then runs inside that connection's tenant context. State is a
+  short-lived signed JWT (auth secret) carrying connection_id + nonce + PKCE verifier — stateless, no server
+  session store.
+- **Invariants:** tenant isolation (connection + JIT user both tenant-bound); secret vault-encrypted, never
+  logged; fail-closed (bad iss/aud/nonce/exp or email outside the allowlist → reject); audit every SSO login
+  and every connection change. Note: MFA (IAM-003) for SSO users is expected to be enforced at the IdP;
+  layering Nirvet MFA on top of SSO is deferred and documented.
+
 ## Next gates (before starting)
-- **SSO** (§6.2): OIDC/SAML; review session model + per-tenant IdP mapping (needs a test IdP).
+- **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
 - **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).

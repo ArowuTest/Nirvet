@@ -27,6 +27,9 @@ func ErrTooManyRequests(msg string) *APIError {
 	return &APIError{http.StatusTooManyRequests, "rate_limited", msg}
 }
 
+// ErrBadGateway signals an upstream dependency failure (e.g. an external IdP).
+func ErrBadGateway(msg string) *APIError { return &APIError{http.StatusBadGateway, "bad_gateway", msg} }
+
 // JSON writes v as a JSON response with the given status.
 func JSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

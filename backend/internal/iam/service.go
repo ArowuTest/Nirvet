@@ -2,6 +2,9 @@ package iam
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
@@ -61,6 +64,39 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 		return nil, httpx.ErrConflict("could not create user (email may already exist)")
 	}
 	return u, nil
+}
+
+// LookupForSSO finds a user by email across tenants for the SSO flow. It returns
+// ok=false (nil error) when no user exists, so the caller can JIT-provision.
+// Satisfies sso.Directory.
+func (s *Service) LookupForSSO(ctx context.Context, email string) (id, tenantID uuid.UUID, role string, ok bool, err error) {
+	u, ferr := s.repo.FindForAuth(ctx, email)
+	if ferr != nil {
+		if errors.Is(ferr, pgx.ErrNoRows) {
+			return uuid.Nil, uuid.Nil, "", false, nil
+		}
+		return uuid.Nil, uuid.Nil, "", false, ferr
+	}
+	return u.ID, u.TenantID, string(u.Role), true, nil
+}
+
+// ProvisionForSSO just-in-time creates an SSO user in the tenant with the given
+// role and a random (non-loginable) password — SSO users authenticate at the IdP,
+// not with a local password. Satisfies sso.Directory (IAM-008 provisioning).
+func (s *Service) ProvisionForSSO(ctx context.Context, tenantID uuid.UUID, email, role string) (uuid.UUID, error) {
+	rnd := make([]byte, 24)
+	if _, err := rand.Read(rnd); err != nil {
+		return uuid.Nil, err
+	}
+	u, err := s.Create(ctx, tenantID, CreateInput{
+		Email:    email,
+		Password: base64.RawURLEncoding.EncodeToString(rnd),
+		Role:     auth.Role(role),
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return u.ID, nil
 }
 
 // LoginResult carries the issued token and principal.
