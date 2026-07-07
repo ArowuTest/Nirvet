@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,15 @@ type harness struct {
 	soarSvc  *soar.Service
 	billSvc  *billing.Service
 	repSvc   *reporting.Service
+}
+
+// stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
+// seam can be asserted deterministically. The real ServiceNow/Jira providers are
+// covered by the ticketing package's mock-endpoint tests.
+type stubTicketer struct{}
+
+func (stubTicketer) MirrorIncident(_ context.Context, _ uuid.UUID, _, _, _ string) (string, string, error) {
+	return "INC-TEST-1", "https://itsm.example/INC-TEST-1", nil
 }
 
 func newHarness(t *testing.T) *harness {
@@ -102,7 +112,7 @@ func newHarness(t *testing.T) *harness {
 		ingest:   ingestSvc,
 		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log),
 		alertSvc: alertSvc,
-		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc),
+		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}),
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
 		billSvc:  billing.NewService(billing.NewRepository(db)),
@@ -371,6 +381,30 @@ func TestIntegration(t *testing.T) {
 		})
 		if audits < 1 {
 			t.Fatal("15. audit trail missing the login event")
+		}
+	})
+
+	t.Run("TicketingMirrorsIncidentOnOpen", func(t *testing.T) {
+		// Promote a fresh alert; the incident open must mirror to the ITSM (stub) and
+		// record the external ticket ref on the case timeline (outbound integration).
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "tkt"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "tkt-alert", Severity: "high", DedupeKey: ev.ID.String() + ":tkt"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: ins=%v err=%v", ins, err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
+		var hasTicket bool
+		for _, e := range tl {
+			if e.Kind == "action" && strings.Contains(e.Note, "Ticket created: INC-TEST-1") {
+				hasTicket = true
+			}
+		}
+		if !hasTicket {
+			t.Fatalf("incident timeline should record the mirrored ticket ref; entries=%d", len(tl))
 		}
 	})
 

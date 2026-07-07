@@ -24,6 +24,14 @@ type Assignees interface {
 	LookupInTenant(ctx context.Context, tenantID, userID uuid.UUID) (email string, err error)
 }
 
+// Ticketer mirrors an incident into the tenant's ITSM (ServiceNow/Jira) and
+// returns the external ticket ref. Implemented by ticketing.Service; kept narrow
+// so incident does not depend on the ticketing package. Returns empty ref when the
+// tenant has no ITSM configured.
+type Ticketer interface {
+	MirrorIncident(ctx context.Context, tenantID uuid.UUID, title, severity, body string) (ref, url string, err error)
+}
+
 // Service holds incident business logic. It depends on the alert service to
 // promote alerts (one-way dependency: incident -> alert) and an optional notifier.
 type Service struct {
@@ -31,6 +39,7 @@ type Service struct {
 	alertSvc  *alert.Service
 	notifier  Notifier
 	assignees Assignees
+	ticketer  Ticketer
 }
 
 // NewService builds the service. notifier and assignees may be nil.
@@ -40,6 +49,9 @@ func NewService(repo *Repository, alertSvc *alert.Service, notifier Notifier) *S
 
 // WithAssignees wires the analyst resolver (used to validate incident assignment).
 func (s *Service) WithAssignees(a Assignees) *Service { s.assignees = a; return s }
+
+// WithTicketer wires outbound ITSM mirroring (best-effort on incident open).
+func (s *Service) WithTicketer(t Ticketer) *Service { s.ticketer = t; return s }
 
 // CreateFromAlert promotes an alert into a new incident (atomic write).
 func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID uuid.UUID) (*Incident, error) {
@@ -70,6 +82,17 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 		_ = s.notifier.NotifyIncident(ctx, p.TenantID,
 			"Incident opened: "+inc.Title,
 			"A "+inc.Severity+" incident was opened from alert "+alertID.String()+".")
+	}
+	// Mirror to the tenant's ITSM (ServiceNow/Jira), best-effort: a ticketing
+	// outage must never fail incident creation. Record the external ref on the
+	// timeline so analysts can cross-reference the customer's system of record.
+	if s.ticketer != nil {
+		if ref, url, terr := s.ticketer.MirrorIncident(ctx, p.TenantID, inc.Title, inc.Severity,
+			"Nirvet incident opened from alert "+alertID.String()+"."); terr == nil && ref != "" {
+			entry := &TimelineEntry{ID: uuid.New(), IncidentID: inc.ID, Author: "system", Kind: "action",
+				Note: "Ticket created: " + ref + " " + url}
+			_ = s.repo.AddNote(ctx, p.TenantID, entry)
+		}
 	}
 	return inc, nil
 }

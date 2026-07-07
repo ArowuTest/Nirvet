@@ -28,6 +28,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/sso"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
+	"github.com/ArowuTest/nirvet/internal/ticketing"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
@@ -114,7 +115,12 @@ func main() {
 	notifySvc := notify.NewService(log)
 	notifyH := notify.NewHandler(notifySvc)
 
-	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).WithAssignees(iamSvc)
+	// Outbound ticketing (ServiceNow/Jira) — mirrors incidents to the tenant's ITSM.
+	ticketingSvc := ticketing.NewService(ticketing.NewRepository(db), cipher)
+	ticketingH := ticketing.NewHandler(ticketingSvc)
+
+	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
+		WithAssignees(iamSvc).WithTicketer(ticketingSvc)
 	incidentH := incident.NewHandler(incidentSvc)
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
@@ -183,6 +189,10 @@ func main() {
 	mux.Handle("POST /admin/sso", ssoAdmin(ssoH.CreateConnection))
 	mux.Handle("GET /admin/sso", ssoAdmin(ssoH.ListConnections))
 	mux.Handle("DELETE /admin/sso/{id}", ssoAdmin(ssoH.DeleteConnection))
+	// Outbound ticketing (ServiceNow/Jira) connection management.
+	mux.Handle("POST /admin/ticketing", ssoAdmin(ticketingH.Create))
+	mux.Handle("GET /admin/ticketing", ssoAdmin(ticketingH.List))
+	mux.Handle("DELETE /admin/ticketing/{id}", ssoAdmin(ticketingH.Delete))
 	mux.Handle("GET /me", authed(iamH.Me))
 	mux.Handle("POST /mfa/enroll", authed(iamH.EnrollMFA))
 	mux.Handle("POST /mfa/activate", authed(iamH.ActivateMFA))

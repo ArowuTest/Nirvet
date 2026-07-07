@@ -104,8 +104,29 @@ after. A gate is a few paragraphs, not a document; it lives here.
   functions (no I/O), defensively typed (never panic on a missing/oddly-typed field); severity always lands in
   the canonical set. Fits the flow exactly at the Normalize stage — the heartbeat proves it.
 
+## Gate: Outbound ticketing — ServiceNow + Jira (§6.16, §8) — reviewed Jul 2026
+- **SRS:** §6.16 notification/collaboration + §8 integrations. Fits the flow at *Incident → Timeline → Customer
+  Notification*: when an incident opens, mirror it to the tenant's ITSM so the customer works it in their own
+  system of record, and record the external ticket ref on the case timeline.
+- **Design:** a dedicated `internal/ticketing` package (not a notify Channel — ticketing returns an external
+  ref and is idempotent per incident, which the fire-and-forget Channel interface doesn't model). `Provider`
+  interface `Create(ctx, cfg, ticket) (ref, url, err)`; **ServiceNow** (Table API `/api/now/table/incident`,
+  basic auth) and **Jira** (REST v3 `/rest/api/3/issue`, email+API-token basic auth) impls. HTTP client + base
+  URL injectable → mock-tested, unchanged for prod (ADR-0005). No vendor SDK.
+- **Data:** per-tenant `ticketing_connections` (migration 0011, RLS+FORCE): provider, base_url, config jsonb
+  (project key / assignment group), credential **vault-sealed** (ADR-0004). Runs in the tenant context (incident
+  open is authenticated), so normal RLS — no SECURITY DEFINER needed.
+- **Seam:** `incident.Service.WithTicketer`; `CreateFromAlert` calls it **best-effort** (a ticketing outage must
+  never block incident creation), records `Ticket created: <ref> <url>` as a timeline `action` entry, and audits.
+  This is product-configured outbound (the tenant set up their ITSM), not an ungated response action — so it is
+  NOT SOAR authority-gated (unlike isolate-device); it's a notification/record, like notify.
+- **Invariants:** tenant isolation (connection + call both tenant-bound); creds vault-sealed, never logged;
+  best-effort + fail-open on the incident path; audit `ticket.created`. **Deferred (logged):** ticket
+  update/close sync (two-way), async delivery (inline now), attachment/evidence push.
+
 ## Next gates (before starting)
+- **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 - **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
-- **Outbound ticketing** (§6.16): ServiceNow/Jira incident sync as notify/SOAR action connectors.
+- **ClickHouse event store** (ADR-0002 V1): when a ClickHouse instance is available to verify against.
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
 - **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).

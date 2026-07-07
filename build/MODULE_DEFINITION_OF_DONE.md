@@ -38,6 +38,7 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | compliance | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | billing | ⬜ | ✅⁵ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | notify | ⬜ | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ticketing (SN/Jira) | ✅⁹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | crypto / ratelimit / blobstore | ✅ | — | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅² |
 
 ¹ ingestion audit = raw_events evidence trail (excluded from the mutation-audit middleware by design).
@@ -53,6 +54,9 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
   tenant now has a unit test (name validation) + integration coverage (harness creates tenants w/ defaults).
 ⁸ sso covered by TestSSO_OIDCFlow against a mock IdP: happy path (JIT provision + session + re-login links),
   plus fail-closed cases — nonce mismatch, wrong audience, disallowed email domain, forged state.
+⁹ ticketing covered by mock-endpoint tests (ServiceNow + Jira create, basic auth, project-key guard) + the
+  MirrorIncident DB path (no-op when unconfigured) + an integration test asserting the incident timeline records
+  the external ticket ref on open.
 
 ## Cross-cutting notes
 

@@ -123,6 +123,7 @@ tags:
   - { name: reporting }
   - { name: compliance }
   - { name: billing }
+  - { name: ticketing }
 paths:
   /healthz: { get: { tags: [health], security: [], summary: Liveness, responses: { '200': { description: ok } } } }
   /readyz: { get: { tags: [health], security: [], summary: Readiness (checks DB), responses: { '200': { description: ready }, '503': { description: db unavailable } } } }
@@ -220,3 +221,7 @@ paths:
   /billing/entitlements:
     get: { tags: [billing], summary: Get entitlements, responses: { '200': { description: entitlements } } }
     put: { tags: [billing], summary: Set entitlements (platform_admin), responses: { '200': { description: updated } } }
+  /admin/ticketing:
+    get: { tags: [ticketing], summary: List ITSM connections (tenant/platform admin), responses: { '200': { description: connections } } }
+    post: { tags: [ticketing], summary: Create a ServiceNow/Jira connection (credential vault-sealed); incidents mirror to it on open, responses: { '201': { description: created } } }
+  /admin/ticketing/{id}: { delete: { tags: [ticketing], summary: Delete an ITSM connection, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
