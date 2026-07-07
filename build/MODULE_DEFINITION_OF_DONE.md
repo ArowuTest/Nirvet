@@ -24,16 +24,16 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | Module | 1 Unit | 2 Integ | 3 Audit | 4 Tenant | 5 RBAC | 6 Errors | 7 Docs | 8 OpenAPI | 9 Observe | 10 Scale |
 |---|---|---|---|---|---|---|---|---|---|---|
 | auth/iam (+MFA) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| tenant | ⬜ | ◑ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| tenant | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ingestion + normalize | ✅ | ✅ | ✅¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | detection | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| alert | ⬜ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| alert | ◑⁶ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | incident | ✅³ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | connector (+poller) | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | soar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ai | ✅⁴ | ⬜ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | threatintel | ✅ | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| reporting | ⬜ | ⬜ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| reporting | — | ✅⁷ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | compliance | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | billing | ⬜ | ✅⁵ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | notify | ⬜ | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -46,6 +46,10 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 ⁴ ai unit tests cover the assistive-only guardrails: offline fallback restates OBSERVED evidence, never implies
   self-execution, routes response through the approval workflow; gateway availability; system-prompt guardrails.
 ⁵ billing integration test asserts ingest-quota enforcement (meter vs cap) and the non-positive-cap clamp.
+⁶ alert has no standalone unit test (CreateFromEvent is DB-bound); its behaviour — idempotent dedupe, field
+  mapping, promotion linkage — is covered by AlertDedupe, IncidentPromotion, Heartbeat and Reporting integration.
+⁷ reporting aggregates covered by ReportingSummaryAggregates (severity/stage/open counts under RLS).
+  tenant now has a unit test (name validation) + integration coverage (harness creates tenants w/ defaults).
 
 ## Cross-cutting notes
 
@@ -63,5 +67,6 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 
 - **#8 OpenAPI** — DONE: `backend/api/openapi.yaml` embedded + served at `/openapi.yaml` + `/docs`.
 - **#9 Tracing** — DONE: OpenTelemetry in `internal/platform/tracing` (+ unit tests), wired into api & worker.
-- **#1/#2 tests** — DONE this pass: ai (guardrails), threatintel (enricher), billing (quota, integration).
-  Incident covered by the heartbeat. REMAINING: reporting aggregates, tenant, alert-mapping unit tests.
+- **#1/#2 tests** — DONE: ai (guardrails), threatintel (enricher), billing (quota), reporting (aggregates),
+  tenant (validation), incident (heartbeat). alert is integration-covered (no standalone unit — DB-bound).
+  Every module now has meaningful unit and/or integration coverage; no silent gaps remain in the matrix.

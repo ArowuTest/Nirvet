@@ -28,6 +28,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/totp"
+	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
@@ -50,6 +51,7 @@ type harness struct {
 	connSvc  *connector.Service
 	soarSvc  *soar.Service
 	billSvc  *billing.Service
+	repSvc   *reporting.Service
 }
 
 func newHarness(t *testing.T) *harness {
@@ -104,6 +106,7 @@ func newHarness(t *testing.T) *harness {
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
 		billSvc:  billing.NewService(billing.NewRepository(db)),
+		repSvc:   reporting.NewService(db),
 	}
 }
 
@@ -368,6 +371,34 @@ func TestIntegration(t *testing.T) {
 		})
 		if audits < 1 {
 			t.Fatal("15. audit trail missing the login event")
+		}
+	})
+
+	t.Run("ReportingSummaryAggregates", func(t *testing.T) {
+		// Self-contained: raise a fresh high-severity alert and promote it, then the
+		// tenant summary must reflect it (aggregates are tenant-scoped via RLS).
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "rep"}
+		spec := alert.Spec{Title: "rep-alert", Severity: "high", DedupeKey: ev.ID.String() + ":rep"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, spec)
+		if err != nil || !ins {
+			t.Fatalf("seed alert: ins=%v err=%v", ins, err)
+		}
+		if _, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID); err != nil {
+			t.Fatalf("seed incident: %v", err)
+		}
+
+		sum, err := h.repSvc.Summary(h.ctx, h.tenantID)
+		if err != nil {
+			t.Fatalf("summary: %v", err)
+		}
+		if sum.GeneratedAt.IsZero() {
+			t.Fatal("summary GeneratedAt must be set")
+		}
+		if sum.AlertsBySeverity["high"] < 1 {
+			t.Fatalf("expected >=1 high-severity alert in summary, got %v", sum.AlertsBySeverity)
+		}
+		if sum.OpenIncidents < 1 || len(sum.IncidentsByStage) == 0 {
+			t.Fatalf("expected >=1 open incident in summary: open=%d byStage=%v", sum.OpenIncidents, sum.IncidentsByStage)
 		}
 	})
 
