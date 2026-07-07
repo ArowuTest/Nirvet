@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+:root {
+  --nirvet-bg: #0b1020;
+  --nirvet-panel: #121a30;
+  --nirvet-accent: #3b82f6;
+}
+
+html, body {
+  background: var(--nirvet-bg);
+  color: #e5e9f0;
+}
