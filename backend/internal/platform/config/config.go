@@ -38,6 +38,12 @@ type Config struct {
 	AnthropicAPIKey string
 	AIModel         string
 
+	// Observability / tracing (NFR-007, ADR-0005). Empty endpoint => no-op tracer
+	// (zero overhead, no network). Set to an OTLP/HTTP collector to export spans;
+	// the endpoint is swappable local -> GCP Cloud Trace without code change.
+	OTLPEndpoint string
+	ServiceVer   string
+
 	// Ingestion (ADR-0003)
 	IngestWorkers int
 	InlineWorker  bool // run the ingest worker inside the api process (dev)
@@ -64,6 +70,8 @@ func Load() (*Config, error) {
 		AIModel:         env("NIRVET_AI_MODEL", "claude-sonnet-5"),
 		GCSBucket:       env("NIRVET_GCS_BUCKET", ""),
 		BlobDir:         env("NIRVET_BLOB_DIR", ""),
+		OTLPEndpoint:    env("NIRVET_OTLP_ENDPOINT", env("OTEL_EXPORTER_OTLP_ENDPOINT", "")),
+		ServiceVer:      env("NIRVET_SERVICE_VERSION", "dev"),
 		IngestWorkers:   envInt("NIRVET_INGEST_WORKERS", 4),
 		InlineWorker:    env("NIRVET_INLINE_WORKER", "true") == "true",
 		BootstrapEmail:    env("NIRVET_BOOTSTRAP_EMAIL", "admin@nirvet.local"),

@@ -21,6 +21,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
+	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 )
 
 func main() {
@@ -33,6 +34,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	traceShutdown, err := tracing.Init(ctx, tracing.Config{
+		ServiceName: "nirvet-worker", ServiceVer: cfg.ServiceVer,
+		Environment: cfg.Env, OTLPEndpoint: cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		log.Error("tracing init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
 
 	db, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {

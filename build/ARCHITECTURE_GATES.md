@@ -48,6 +48,19 @@ after. A gate is a few paragraphs, not a document; it lives here.
 ## Completed since
 - **MFA / TOTP** (§6.2) — DONE & tested: stdlib RFC 6238, vault-encrypted secret, enroll/activate/disable +
   login enforcement. Deferred: WebAuthn, backup codes.
+- **Heartbeat + Assign-analyst** (§6.8/§6.9) — DONE & tested: single continuous E2E thread guarded by
+  `Heartbeat_EndToEnd`; added `incident.Assign` (same-tenant check, timeline entry) + FK hardening
+  (migration 0009). See `build/HEARTBEAT.md`.
+- **Distributed tracing** (NFR-007 observability / DoD #9) — DONE & unit-tested. Gate: built on OpenTelemetry
+  (vendor-neutral → portable, ADR-0005; OTLP endpoint swaps local→GCP Cloud Trace with no code change).
+  Contract: `tracing.Init` installs W3C TraceContext propagators always; a batched OTLP/HTTP exporter only
+  when `NIRVET_OTLP_ENDPOINT` is set — otherwise a true no-op (zero overhead, no network, offline-safe).
+  Server-span middleware names spans by the route template (`r.Pattern`, low cardinality), records
+  method/route/status, marks 5xx as error, and is fail-open (never breaks a request). Access logs carry
+  `trace_id` for log↔trace correlation. Wired into cmd/api (middleware chain) and cmd/worker (init).
+  Invariants: no PII in span attributes (route template + status only, never full URLs/bodies), fail-open.
+  Deferred: DB/pgx spans (otelpgx), span links carried across ingest→worker via the queue row, worker
+  per-job spans — logged, not silently skipped.
 
 ## Next gates (before starting)
 - **SSO** (§6.2): OIDC/SAML; review session model + per-tenant IdP mapping (needs a test IdP).

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ctxKey string
@@ -93,13 +94,18 @@ func AccessLog(log *slog.Logger) Middleware {
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, status: 200}
 			next.ServeHTTP(rec, r)
-			log.Info("http",
+			attrs := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
 				"dur_ms", time.Since(start).Milliseconds(),
 				"request_id", RequestIDFrom(r.Context()),
-			)
+			}
+			// Correlate the log line with the trace when tracing is enabled.
+			if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+				attrs = append(attrs, "trace_id", sc.TraceID().String())
+			}
+			log.Info("http", attrs...)
 		})
 	}
 }

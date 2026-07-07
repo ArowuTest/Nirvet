@@ -49,12 +49,16 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 - **#3 Audit** — an audit middleware records **every** successful authenticated mutation, so audit is YES for all
   mutating modules automatically. Read-only modules (reporting/compliance) are n/a.
 - **#9 Observability** — metrics (Prometheus) + structured logging + request IDs are platform-wide; **tracing**
-  (OpenTelemetry) is now added (OTLP exporter gated on env, no-op default).
+  (OpenTelemetry) is implemented in `internal/platform/tracing` (W3C TraceContext propagation, route-templated
+  server spans, OTLP/HTTP exporter gated on `NIRVET_OTLP_ENDPOINT`, no-op + zero overhead by default; access
+  logs carry `trace_id`). Unit-tested (no-op default, span naming, error status). Portable per ADR-0005 —
+  endpoint swaps local → GCP Cloud Trace with no code change.
 - **#10 Scale** — API and worker are stateless containers; the ingest worker is safe to run N-wide
   (`FOR UPDATE SKIP LOCKED`). Only rate-limit counters are per-instance (Redis for global limits — ADR-0005).
 
 ## Gaps being closed (this pass)
 
-- **#8 OpenAPI** — was a platform-wide gap → `backend/api/openapi.yaml` + `/openapi.yaml` + `/docs`.
-- **#9 Tracing** — added OpenTelemetry.
-- **#1/#2 tests** — adding unit/integration tests for billing (quota), reporting, threatintel, alert/incident.
+- **#8 OpenAPI** — DONE: `backend/api/openapi.yaml` embedded + served at `/openapi.yaml` + `/docs`.
+- **#9 Tracing** — DONE: OpenTelemetry in `internal/platform/tracing` (+ unit tests), wired into api & worker.
+- **#1/#2 tests** — IN PROGRESS: unit/integration tests for billing (quota), reporting, threatintel,
+  tenant/alert (incident now covered by the heartbeat). Next pass.

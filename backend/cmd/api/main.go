@@ -38,6 +38,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
+	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 	"github.com/ArowuTest/nirvet/internal/platform/ratelimit"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 )
@@ -51,6 +52,21 @@ func main() {
 	log.Info("nirvet api starting", "env", cfg.Env, "addr", cfg.HTTPAddr)
 
 	ctx := context.Background()
+
+	// Distributed tracing (NFR-007). No-op unless NIRVET_OTLP_ENDPOINT is set.
+	traceShutdown, err := tracing.Init(ctx, tracing.Config{
+		ServiceName: "nirvet-api", ServiceVer: cfg.ServiceVer,
+		Environment: cfg.Env, OTLPEndpoint: cfg.OTLPEndpoint,
+	})
+	if err != nil {
+		log.Error("tracing init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = traceShutdown(context.Background()) }()
+	if cfg.OTLPEndpoint != "" {
+		log.Info("tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint)
+	}
+
 	db, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Error("database connect failed", "err", err)
@@ -208,7 +224,7 @@ func main() {
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))
 
-	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), metrics.Middleware(), httpx.AccessLog(log))
+	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))
 
 	// --- inline ingest worker (dev convenience; prod runs cmd/worker) ---
 	workerCtx, stopWorker := context.WithCancel(ctx)
