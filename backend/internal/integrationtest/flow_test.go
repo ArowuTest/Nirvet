@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/billing"
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/iam"
@@ -48,6 +49,7 @@ type harness struct {
 	incSvc   *incident.Service
 	connSvc  *connector.Service
 	soarSvc  *soar.Service
+	billSvc  *billing.Service
 }
 
 func newHarness(t *testing.T) *harness {
@@ -101,6 +103,7 @@ func newHarness(t *testing.T) *harness {
 		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc),
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
+		billSvc:  billing.NewService(billing.NewRepository(db)),
 	}
 }
 
@@ -365,6 +368,38 @@ func TestIntegration(t *testing.T) {
 		})
 		if audits < 1 {
 			t.Fatal("15. audit trail missing the login event")
+		}
+	})
+
+	t.Run("BillingIngestQuota", func(t *testing.T) {
+		// Self-contained: ingest two distinct raw events so today's meter is >= 2,
+		// independent of other subtests' ordering.
+		for _, nid := range []string{"bill-" + uuid.NewString(), "bill-" + uuid.NewString()} {
+			if _, err := h.ingest.Ingest(h.ctx, h.tenantID, ingestion.IngestInput{Source: "bill", NativeID: nid, Severity: "low"}); err != nil {
+				t.Fatalf("seed ingest: %v", err)
+			}
+		}
+		// Default entitlement is generous → within quota.
+		if ok, err := h.billSvc.WithinIngestQuota(h.ctx, h.tenantID, 0); err != nil || !ok {
+			t.Fatalf("default quota should allow ingest: ok=%v err=%v", ok, err)
+		}
+		// Tighten the cap to 1 → the tenant is already over it → blocked.
+		if _, err := h.billSvc.Set(h.ctx, h.tenantID, billing.Entitlements{Tier: "trial", EventsPerDay: 1}); err != nil {
+			t.Fatalf("set entitlements: %v", err)
+		}
+		if ok, err := h.billSvc.WithinIngestQuota(h.ctx, h.tenantID, 0); err != nil || ok {
+			t.Fatalf("with cap=1 and prior events, ingest must be blocked: ok=%v err=%v", ok, err)
+		}
+		// A non-positive cap is clamped to the platform default (not 0 = lockout).
+		ent, err := h.billSvc.Set(h.ctx, h.tenantID, billing.Entitlements{Tier: "standard", EventsPerDay: 0})
+		if err != nil {
+			t.Fatalf("set (clamp): %v", err)
+		}
+		if ent.EventsPerDay != 100000 {
+			t.Fatalf("non-positive EventsPerDay must clamp to 100000, got %d", ent.EventsPerDay)
+		}
+		if ok, _ := h.billSvc.WithinIngestQuota(h.ctx, h.tenantID, 0); !ok {
+			t.Fatal("after restoring a generous cap, ingest should be allowed again")
 		}
 	})
 

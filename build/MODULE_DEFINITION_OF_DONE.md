@@ -31,11 +31,11 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | incident | ✅³ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | connector (+poller) | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | soar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| ai | ⬜ | ⬜ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| threatintel | ⬜ | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ai | ✅⁴ | ⬜ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| threatintel | ✅ | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | reporting | ⬜ | ⬜ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | compliance | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| billing | ⬜ | ⬜ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| billing | ⬜ | ✅⁵ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | notify | ⬜ | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | crypto / ratelimit / blobstore | ✅ | — | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅² |
 
@@ -43,6 +43,9 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 ² rate-limit state is in-memory (per-instance) — horizontal scale needs Redis (documented in ADR-0005/ratelimit).
 ³ incident is covered by the `Heartbeat_EndToEnd` integration test (promote → assign → note → playbook → close)
   and the `IncidentPromotion` test; assign/close/timeline links are all asserted. See `build/HEARTBEAT.md`.
+⁴ ai unit tests cover the assistive-only guardrails: offline fallback restates OBSERVED evidence, never implies
+  self-execution, routes response through the approval workflow; gateway availability; system-prompt guardrails.
+⁵ billing integration test asserts ingest-quota enforcement (meter vs cap) and the non-positive-cap clamp.
 
 ## Cross-cutting notes
 
@@ -60,5 +63,5 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 
 - **#8 OpenAPI** — DONE: `backend/api/openapi.yaml` embedded + served at `/openapi.yaml` + `/docs`.
 - **#9 Tracing** — DONE: OpenTelemetry in `internal/platform/tracing` (+ unit tests), wired into api & worker.
-- **#1/#2 tests** — IN PROGRESS: unit/integration tests for billing (quota), reporting, threatintel,
-  tenant/alert (incident now covered by the heartbeat). Next pass.
+- **#1/#2 tests** — DONE this pass: ai (guardrails), threatintel (enricher), billing (quota, integration).
+  Incident covered by the heartbeat. REMAINING: reporting aggregates, tenant, alert-mapping unit tests.
