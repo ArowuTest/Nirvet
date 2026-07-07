@@ -45,7 +45,11 @@ after. A gate is a few paragraphs, not a document; it lives here.
   action (read-only pull). **Deferred:** delta queries, subscription/webhook push, Defender incident API,
   per-connector schedules — MVP polls on a fixed interval.
 
+## Completed since
+- **MFA / TOTP** (§6.2) — DONE & tested: stdlib RFC 6238, vault-encrypted secret, enroll/activate/disable +
+  login enforcement. Deferred: WebAuthn, backup codes.
+
 ## Next gates (before starting)
-- **MFA/SSO** (§6.2): OIDC/SAML; review session model + tenant IdP mapping.
+- **SSO** (§6.2): OIDC/SAML; review session model + per-tenant IdP mapping (needs a test IdP).
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
-- **Dashboards** (UI): only after the above; the API contracts already exist.
+- **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).
