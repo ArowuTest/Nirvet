@@ -84,7 +84,28 @@ after. A gate is a few paragraphs, not a document; it lives here.
   and every connection change. Note: MFA (IAM-003) for SSO users is expected to be enforced at the IdP;
   layering Nirvet MFA on top of SSO is deferred and documented.
 
+## Gate: Connector expansion — source-normalizer registry (§6.4/§6.5, §8) — reviewed Jul 2026
+- **SRS:** §6.4 connector framework, §6.5 normalization/entity resolution. The whole point: every source plugs
+  into ONE pipeline (*Source → Normalize → EventStore → Detect → Alert → Incident*), so a new vendor is just a
+  **source mapper + a connector config**, never new downstream code. This is "integration-first, not
+  integration-dependent" made concrete.
+- **Design:** replace the growing `switch` in `ingestion.Normalize` with a **registry** (`map[source]Mapper`).
+  Each vendor registers a small mapper (raw vendor fields → canonical OCSF-inspired: class/actor/target/action/
+  outcome/severity/mitre). `Normalize` runs the mapper (identity fallback) then canonicalises severity — so
+  vendor numeric scales (GuardDuty 0–8.9, CrowdStrike 1–100) are banded inside the mapper. Adding a source =
+  one file + unit test; zero pipeline change.
+- **Scope now:** CrowdStrike Falcon (EDR), Okta (identity/system log), Palo Alto (firewall threat log), AWS
+  GuardDuty (cloud findings) — the highest-value telemetry sources from the owner's list, each unit-tested and
+  one proven end-to-end through the webhook connector + heartbeat. **Deferred (logged):** Azure Sentinel/Defender-
+  for-Cloud, GCP SCC (source mappers, same pattern), and the OUTBOUND ticketing integrations ServiceNow/Jira
+  (these are notify/SOAR action targets, not sources — a separate outbound gate). Real vendor *pull/OAuth loops*
+  beyond Microsoft also deferred (webhook ingestion covers them now; pull is per-vendor auth work).
+- **Invariants:** unchanged tenant isolation/idempotency/audit (all downstream of Normalize); mappers are pure
+  functions (no I/O), defensively typed (never panic on a missing/oddly-typed field); severity always lands in
+  the canonical set. Fits the flow exactly at the Normalize stage — the heartbeat proves it.
+
 ## Next gates (before starting)
 - **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
+- **Outbound ticketing** (§6.16): ServiceNow/Jira incident sync as notify/SOAR action connectors.
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
 - **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).

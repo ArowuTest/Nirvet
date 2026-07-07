@@ -374,6 +374,50 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("ConnectorExpansion_CrowdStrikeThroughPipeline", func(t *testing.T) {
+		// A NEW vendor (CrowdStrike) plugs into the SAME pipeline: webhook connector →
+		// ingest → source normalizer → event store → detection → alert. No downstream
+		// code is vendor-specific — this proves "integration-first, not -dependent".
+		res, err := h.connSvc.Create(h.ctx, h.tenantID, connector.CreateInput{Kind: connector.KindWebhook, Name: "falcon"})
+		if err != nil {
+			t.Fatalf("create connector: %v", err)
+		}
+		nid := "cs-" + uuid.NewString()
+		evts := []ingestion.IngestInput{{
+			Source: "crowdstrike-falcon", NativeID: nid,
+			Data: map[string]any{
+				"detection_name": "WindowsMalware.CobaltStrike", // matches the 'malware' rule
+				"severity":       float64(90),                   // 1-100 → critical
+				"device":         map[string]any{"hostname": "EC2-WEB-3"},
+				"user_name":      "svc-web",
+				"technique_id":   "T1055",
+			},
+		}}
+		if n, err := h.connSvc.IngestWebhook(h.ctx, res.Connector.ID, res.SourceKey, evts); err != nil || n != 1 {
+			t.Fatalf("crowdstrike webhook ingest: n=%d err=%v", n, err)
+		}
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("worker: %v", err)
+		}
+		alerts, _ := h.alertSvc.List(h.ctx, h.tenantID, "")
+		var found *alert.Alert
+		for i := range alerts {
+			if alerts[i].Source == "crowdstrike-falcon" {
+				found = &alerts[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("CrowdStrike detection did not flow through the shared pipeline to an alert")
+		}
+		// The alert's TargetRef proves the CrowdStrike normalizer ran inside the real
+		// webhook→worker→detect path (alert severity itself is the RULE's severity, not
+		// the event's — the 1-100→critical banding is covered by the unit test).
+		if found.TargetRef != "host:EC2-WEB-3" {
+			t.Errorf("normalizer did not map the Falcon device through the pipeline: target=%q", found.TargetRef)
+		}
+	})
+
 	t.Run("ReportingSummaryAggregates", func(t *testing.T) {
 		// Self-contained: raise a fresh high-severity alert and promote it, then the
 		// tenant summary must reflect it (aggregates are tenant-scoped via RLS).

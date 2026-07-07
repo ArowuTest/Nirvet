@@ -55,6 +55,12 @@ func Registry() []Descriptor {
 		{Key: "defender", Name: "Microsoft Defender", Category: "EDR", Direction: DirectionAction, Phase: "MVP"},
 		{Key: "syslog", Name: "Syslog", Category: "Generic", Direction: DirectionRead, Phase: "MVP"},
 		{Key: "webhook", Name: "Webhook/API", Category: "Generic", Direction: DirectionRead, Phase: "MVP"},
+		// Telemetry sources with a source normalizer (ingestion.Normalize registry).
+		// They ingest via the generic webhook now; native pull loops are per-vendor V1.
+		{Key: "crowdstrike-falcon", Name: "CrowdStrike Falcon", Category: "EDR", Direction: DirectionRead, Phase: "V1"},
+		{Key: "okta", Name: "Okta", Category: "Identity", Direction: DirectionRead, Phase: "V1"},
+		{Key: "palo-alto", Name: "Palo Alto Networks", Category: "Firewall", Direction: DirectionRead, Phase: "V1"},
+		{Key: "aws-guardduty", Name: "AWS GuardDuty", Category: "Cloud", Direction: DirectionRead, Phase: "V1"},
 	}
 }
 
