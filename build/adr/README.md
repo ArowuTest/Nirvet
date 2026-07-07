@@ -18,6 +18,10 @@ Assumed sign-off covers the **build phase only** — it is not go-live approval.
 | [0002](0002-event-store.md) | Event & telemetry storage | Postgres = system of record; `EventStore` interface with Postgres (MVP) → ClickHouse (V1) hot store; GCS raw evidence; BigQuery cold. |
 | [0003](0003-ingestion-pipeline.md) | Ingestion pipeline | Durable at-least-once + idempotent dedup + dead-letter + per-tenant quota; River/Postgres (MVP) → GCP Pub/Sub (prod). |
 | [0004](0004-connector-credential-vault.md) | Connector credential vault | GCP KMS envelope encryption from day one; per-tenant DEK with tenant_id as AAD; decrypt-in-memory-only; full access audit. |
+| [0005](0005-cloud-portability.md) | Cloud portability | Every cloud service behind a platform interface (db, event store, blob store, queue, KMS, LLM); config-selected backend; local → Render/Vercel → GCP with no core changes. |
+
+See also [`../ARCHITECTURE_GATES.md`](../ARCHITECTURE_GATES.md) (per-module SRS design-review gate) and
+[`../BACKEND_AUDIT.md`](../BACKEND_AUDIT.md) (audit findings + resolutions).
 
 ## Conventions
 
