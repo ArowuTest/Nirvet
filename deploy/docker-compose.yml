@@ -1,6 +1,9 @@
 # Local development infrastructure for Nirvet.
-# Postgres 17 (ADR-0001/0002 system of record). Bring up with:
+# Postgres 17 (ADR-0001/0002 system of record) + ClickHouse (ADR-0002 V1 telemetry
+# hot store, optional). Bring up with:
 #   docker compose -f deploy/docker-compose.yml up -d
+# Enable the ClickHouse event store by setting:
+#   NIRVET_CLICKHOUSE_DSN=clickhouse://nirvet:nirvet@localhost:9000/nirvet
 services:
   postgres:
     image: postgres:17
@@ -20,5 +23,29 @@ services:
       timeout: 3s
       retries: 10
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: nirvet-clickhouse
+    environment:
+      CLICKHOUSE_DB: nirvet
+      CLICKHOUSE_USER: nirvet
+      CLICKHOUSE_PASSWORD: nirvet
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - nirvet_ch:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   nirvet_pg:
+  nirvet_ch:

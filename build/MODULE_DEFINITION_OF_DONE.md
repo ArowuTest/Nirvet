@@ -39,6 +39,7 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | billing | ⬜ | ✅⁵ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | notify | ⬜ | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ticketing (SN/Jira) | ✅⁹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| eventstore (PG + ClickHouse) | — | ✅¹⁰ | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅ |
 | crypto / ratelimit / blobstore | ✅ | — | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅² |
 
 ¹ ingestion audit = raw_events evidence trail (excluded from the mutation-audit middleware by design).
@@ -57,6 +58,9 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 ⁹ ticketing covered by mock-endpoint tests (ServiceNow + Jira create, basic auth, project-key guard) + the
   MirrorIncident DB path (no-op when unconfigured) + an integration test asserting the incident timeline records
   the external ticket ref on open.
+¹⁰ eventstore has two backends behind one interface (ADR-0002): Postgres (default) + ClickHouse. Verified against
+  a real ClickHouse: append idempotency, tenant isolation on query, severity filter — AND the full heartbeat runs
+  end-to-end on ClickHouse (interface swap proven). Gated on NIRVET_CLICKHOUSE_DSN.
 
 ## Cross-cutting notes
 

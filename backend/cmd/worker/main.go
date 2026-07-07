@@ -52,7 +52,13 @@ func main() {
 	}
 	defer db.Close()
 
-	events := eventstore.NewPostgres(db)
+	events, closeEvents, esBackend, err := eventstore.New(ctx, cfg.ClickHouseDSN, db)
+	if err != nil {
+		log.Error("event store init failed", "err", err)
+		os.Exit(1)
+	}
+	defer func() { _ = closeEvents() }()
+	log.Info("event store ready", "backend", esBackend)
 	jobs := queue.NewPostgres(db.Pool)
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	detEngine := detection.NewEngine(detection.NewRepository(db))

@@ -124,9 +124,27 @@ after. A gate is a few paragraphs, not a document; it lives here.
   best-effort + fail-open on the incident path; audit `ticket.created`. **Deferred (logged):** ticket
   update/close sync (two-way), async delivery (inline now), attachment/evidence push.
 
+## Gate: ClickHouse event store (ADR-0002 V1) — reviewed + BUILT + verified Jul 2026
+- **ADR-0002:** separate the SOC system-of-record (Postgres) from high-volume telemetry (ClickHouse) behind the
+  `EventStore` interface — a contained backend swap, never a rewrite. Fits the flow at *Normalize → Store*.
+- **Built:** `eventstore.ClickHouseStore` (clickhouse-go v2, no raw SQL strings beyond parameterised queries).
+  ReplacingMergeTree(collected_at) `ORDER BY (tenant_id, dedupe_key)`. **Idempotency:** Append pre-filters
+  dedupe keys already present for the tenant and inserts only new ones (returns the new count, matching Postgres
+  semantics the pipeline relies on); ReplacingMergeTree is the race-window backstop. **Isolation:** ClickHouse has
+  no RLS, so EVERY query carries a mandatory `tenant_id` predicate (also the PK prefix) — verified by a
+  tenant-leak test. Config-selected via `NIRVET_CLICKHOUSE_DSN` (`eventstore.New`), Postgres default; wired into
+  api + worker.
+- **Verified against a REAL instance** (Docker `clickhouse-server:24.8`): dedicated store test (append
+  idempotency, tenant isolation on query, severity filter) AND the **full heartbeat run end-to-end on ClickHouse**
+  (interface swap proven — same pipeline, both backends green). Postgres default unchanged.
+- **Known limitation (logged):** `reporting.Summary`'s `events_last_24h` still counts the Postgres `events` table;
+  with ClickHouse enabled that count should read from the EventStore (small follow-up). Alerts/incidents (the
+  system of record) are unaffected. **Deferred:** BigQuery cold tier + retention tiering (ADR-0002 §4), OpenSearch.
+
 ## Next gates (before starting)
+- **Reporting event-count via EventStore** (small): make reporting read the 24h event count from the EventStore
+  so it is correct under both backends.
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 - **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
-- **ClickHouse event store** (ADR-0002 V1): when a ClickHouse instance is available to verify against.
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
 - **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).

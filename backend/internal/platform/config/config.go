@@ -34,6 +34,10 @@ type Config struct {
 	GCSBucket string
 	BlobDir   string
 
+	// Telemetry event store (ADR-0002). Empty => Postgres (MVP). Set a ClickHouse
+	// DSN (clickhouse://user:pass@host:9000/db) to use the V1 columnar hot store.
+	ClickHouseDSN string
+
 	// AI copilot (SRS §6.12). Empty API key => offline deterministic fallback.
 	AnthropicAPIKey string
 	AIModel         string
@@ -70,6 +74,7 @@ func Load() (*Config, error) {
 		AIModel:         env("NIRVET_AI_MODEL", "claude-sonnet-5"),
 		GCSBucket:       env("NIRVET_GCS_BUCKET", ""),
 		BlobDir:         env("NIRVET_BLOB_DIR", ""),
+		ClickHouseDSN:   env("NIRVET_CLICKHOUSE_DSN", ""),
 		OTLPEndpoint:    env("NIRVET_OTLP_ENDPOINT", env("OTEL_EXPORTER_OTLP_ENDPOINT", "")),
 		ServiceVer:      env("NIRVET_SERVICE_VERSION", "dev"),
 		IngestWorkers:   envInt("NIRVET_INGEST_WORKERS", 4),

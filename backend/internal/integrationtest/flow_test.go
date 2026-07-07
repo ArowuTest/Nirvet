@@ -100,7 +100,14 @@ func newHarness(t *testing.T) *harness {
 	cipher, _ := crypto.NewLocal(base64.StdEncoding.EncodeToString(key), nil)
 	blobs, _ := blobstore.NewLocal(t.TempDir())
 	q := queue.NewPostgres(db.Pool)
-	events := eventstore.NewPostgres(db)
+	// The telemetry store is interface-selected: with NIRVET_CLICKHOUSE_DSN set, the
+	// WHOLE heartbeat runs on ClickHouse (proving the ADR-0002 backend swap); else
+	// Postgres. The system-of-record (tenants/users/alerts/incidents) stays Postgres.
+	events, closeEvents, _, esErr := eventstore.New(ctx, os.Getenv("NIRVET_CLICKHOUSE_DSN"), db)
+	if esErr != nil {
+		t.Fatalf("event store: %v", esErr)
+	}
+	t.Cleanup(func() { _ = closeEvents() })
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	detEng := detection.NewEngine(detection.NewRepository(db))
 	enr := threatintel.NewEnricher(threatintel.NewRepository(db))
