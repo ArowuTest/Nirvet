@@ -7,8 +7,10 @@ MDR, Managed XDR, Sovereign SOC, Enterprise Private SOC, and MSSP white-label. T
 **planning & knowledge base** for the venture: the full requirements/design document suite, organised so any
 teammate — human or AI agent — can get oriented fast and build from a single source of truth.
 
-> **Status:** Planning / knowledge-base stage. No application code yet. `build/` is a labelled placeholder for
-> the implementation phase.
+> **Status:** Working scaffold — the backend runs. Go API + ingest worker + Next.js console + Postgres, with
+> the full SOC value loop, all engines, cloud-portable infra, tests and Docker/CI. Not production (pre-go-live
+> security-architect review pending). The `docs/` here are the requirements/design source of truth; the code lives
+> in `backend/`, `frontend/`, `deploy/`. See [RUNNING.md](RUNNING.md) for how to run and what's verified.
 
 ## Start here
 

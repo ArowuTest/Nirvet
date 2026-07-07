@@ -36,7 +36,15 @@ Every artifact in this project: its markdown (agent-readable), its immutable sou
 |---|---|
 | [README.md](README.md) | Human entry point: overview, layout, status. |
 | [CLAUDE.md](CLAUDE.md) | Agent operating guide: read order, conventions, product invariants, environment gaps. |
-| [build/README.md](build/README.md) | Placeholder for the future implementation. |
+| [RUNNING.md](RUNNING.md) | How to run the app locally + what's verified. |
+| [build/README.md](build/README.md) | Implementation entry → `../backend`, `../frontend`, `../deploy`. |
+| [build/adr/](build/adr/) | Architecture Decision Records (0001–0005). |
+| [build/ARCHITECTURE_GATES.md](build/ARCHITECTURE_GATES.md) · [build/BACKEND_AUDIT.md](build/BACKEND_AUDIT.md) | Design gates + audit findings. |
+
+## Code (runs today)
+
+`backend/` — Go API + ingest worker + migrations (29 packages, tests, Dockerfile).
+`frontend/` — Next.js + TypeScript SOC console. `deploy/` — docker-compose, render.yaml.
 
 ## Source inventory (`docs/source/`, immutable)
 

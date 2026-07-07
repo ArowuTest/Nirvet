@@ -70,4 +70,5 @@ Zero Trust. See [standards-references](standards-references.md).
   (6.1–6.18), data, integration, AI, IR, compliance, NFR, security, roadmap, testing, traceability.
 - **Concise suite:** docs 01–05 (requirements, architecture, operating model, AI/SOAR, commercial).
 - **Immutable originals:** `../docs/source/` (`.docx`/`.pdf`/`.xlsx`) — never edit these.
-- **Status:** planning / knowledge-base stage. No code yet — `../build/` is a placeholder.
+- **Status:** working scaffold — the backend runs (`../backend`, `../frontend`, `../deploy`). All engines
+  implemented + verified live; cloud-portable, tested, containerized. Not production (pre-go-live review). See `../RUNNING.md`.

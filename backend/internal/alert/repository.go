@@ -27,6 +27,9 @@ func scanAlert(row pgx.Row, a *Alert) error {
 // Create inserts an alert idempotently on (tenant_id, dedupe_key). Returns true
 // if a new alert was created (false = an alert for this (event, rule) exists).
 func (r *Repository) Create(ctx context.Context, a *Alert) (bool, error) {
+	if a.MITRE == nil {
+		a.MITRE = []string{} // column is NOT NULL DEFAULT '{}'; never send SQL NULL
+	}
 	inserted := false
 	err := r.db.WithTenant(ctx, a.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		e := tx.QueryRow(ctx,

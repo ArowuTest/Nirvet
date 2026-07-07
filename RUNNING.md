@@ -101,7 +101,10 @@ current deep folder.
 
 ## Status
 
-Scaffold / planning stage. Foundations (multi-tenancy, ingestion, event store, audit, credential vault) are
-implemented and running; breadth modules (detection, SOAR, AI, threat-intel, connectors, reporting, compliance,
-billing, notify) are typed interfaces + stubs. **Not production** — a security architect reviews the final
-solution before go-live (see [`build/adr/`](build/adr/)).
+Working scaffold — the backend runs. Foundations (multi-tenancy/RLS, ingestion, event store, audit, credential
+vault, blob evidence, rate limiting) **and** all engines (detection, SOAR, AI, threat-intel, connectors,
+reporting, compliance, billing, notify) are **implemented and verified live** — not stubs. Cloud-portable
+(local → Render/Vercel → GCP, ADR-0005), with unit + integration tests, Dockerfiles and CI. **Not production** —
+a security architect reviews the final solution before go-live (see [`build/adr/`](build/adr/)). Remaining
+foundational work: MFA/SSO, real Microsoft OAuth pull connectors, syslog listener, ClickHouse at V1; UI dashboards
+(designer-provided HTML) come after.

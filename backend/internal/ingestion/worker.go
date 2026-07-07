@@ -9,6 +9,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
+	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/google/uuid"
@@ -154,8 +155,12 @@ func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) err
 			DetectionID: &ruleID,
 			MITRE:       m.MITRE,
 		}
-		if _, _, err := wk.alerts.CreateFromEvent(ctx, ev, spec); err != nil {
+		_, inserted, err := wk.alerts.CreateFromEvent(ctx, ev, spec)
+		if err != nil {
 			return err
+		}
+		if inserted {
+			metrics.AlertsRaised.Inc()
 		}
 	}
 	return nil

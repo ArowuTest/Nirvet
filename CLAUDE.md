@@ -4,8 +4,10 @@
 
 The planning & knowledge base for **Nirvet** (*Network Intelligence, Risk Visibility & Event Triage*) — a
 **SOC-as-a-Service platform**: a modular Cyber Security Operations Platform delivered as SOCaaS / MDR / Managed
-XDR / Sovereign SOC / Enterprise Private SOC / MSSP white-label. Right now this folder holds **requirements &
-design docs only** — there is no application code yet. **"Nirvet" is the product name; use it in code, docs, and UI.**
+XDR / Sovereign SOC / Enterprise Private SOC / MSSP white-label. **The application now exists and runs:**
+`backend/` (Go API + ingest worker + migrations), `frontend/` (Next.js console), `deploy/` (docker-compose,
+Dockerfiles, render.yaml). `docs/` remains the requirements source of truth. **"Nirvet" is the product name; use
+it in code, docs, and UI.** See [RUNNING.md](RUNNING.md), [build/adr/](build/adr/), [build/ARCHITECTURE_GATES.md](build/ARCHITECTURE_GATES.md).
 
 **Absolute path of this project:** `…\local_5a50be95-4a7b-45ca-9925-11a0fdb20500\nirvet`
 (sibling of the session `outputs` directory). If you reached this via the project memory file

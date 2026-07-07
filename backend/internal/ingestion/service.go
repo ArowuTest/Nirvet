@@ -9,6 +9,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/google/uuid"
 )
@@ -101,5 +102,6 @@ func (s *Service) Ingest(ctx context.Context, tenantID uuid.UUID, in IngestInput
 	if err := s.q.Enqueue(ctx, tenantID, "normalize", jb); err != nil {
 		return "", httpx.ErrInternal("could not enqueue normalization")
 	}
+	metrics.EventsIngested.Inc()
 	return dedupeKey, nil
 }

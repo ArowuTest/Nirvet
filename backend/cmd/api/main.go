@@ -35,6 +35,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
+	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/ratelimit"
 	"github.com/ArowuTest/nirvet/internal/tenant"
@@ -142,6 +143,8 @@ func main() {
 		}
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
+	// Prometheus scrape endpoint (unauthenticated, for the metrics collector).
+	mux.Handle("GET /metrics", metrics.Handler())
 	// auth + self
 	mux.Handle("POST /auth/login", httpx.Chain(http.HandlerFunc(iamH.Login), loginLimit))
 	mux.Handle("GET /me", authed(iamH.Me))
@@ -197,7 +200,7 @@ func main() {
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))
 
-	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), httpx.AccessLog(log))
+	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), metrics.Middleware(), httpx.AccessLog(log))
 
 	// --- inline ingest worker (dev convenience; prod runs cmd/worker) ---
 	workerCtx, stopWorker := context.WithCancel(ctx)

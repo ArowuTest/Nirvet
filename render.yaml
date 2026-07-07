@@ -1,0 +1,56 @@
+# Render blueprint for Nirvet (MVP hosting; portable to GCP later — ADR-0005).
+# The frontend deploys on Vercel natively (not here). Both API and worker run the
+# SAME Docker image with different commands.
+#
+# SECURITY NOTE (RLS): the app must connect as the non-owner role `nirvet_app`
+# (created by the migration) so FORCE ROW LEVEL SECURITY applies. Render's managed
+# database exposes the OWNER connection string — use it for the migrate step
+# (NIRVET_MIGRATE_DATABASE_URL) and set NIRVET_DATABASE_URL manually to the
+# nirvet_app URL after the first migration creates that role.
+
+databases:
+  - name: nirvet-db
+    databaseName: nirvet
+    plan: basic-256mb
+
+services:
+  - type: web
+    name: nirvet-api
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    healthCheckPath: /healthz
+    preDeployCommand: /app/migrate     # applies migrations as the DB owner
+    envVars:
+      - key: NIRVET_ENV
+        value: production
+      - key: NIRVET_HTTP_ADDR
+        value: ":10000"                # Render sets $PORT; align or read PORT
+      - key: NIRVET_MIGRATE_DATABASE_URL
+        fromDatabase: { name: nirvet-db, property: connectionString }
+      - key: NIRVET_DATABASE_URL       # set to the nirvet_app URL (non-owner, RLS)
+        sync: false
+      - key: NIRVET_JWT_SECRET
+        generateValue: true
+      - key: NIRVET_CORS_ORIGIN
+        sync: false                     # your Vercel frontend origin
+      - key: NIRVET_ANTHROPIC_API_KEY
+        sync: false
+      - key: NIRVET_GCS_BUCKET          # optional; empty => local disk
+        sync: false
+      - key: NIRVET_INLINE_WORKER
+        value: "false"                  # dedicated worker service runs it
+
+  - type: worker
+    name: nirvet-worker
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    dockerCommand: /app/worker
+    envVars:
+      - key: NIRVET_ENV
+        value: production
+      - key: NIRVET_DATABASE_URL
+        sync: false                     # same nirvet_app URL as the API
+      - key: NIRVET_ANTHROPIC_API_KEY
+        sync: false
