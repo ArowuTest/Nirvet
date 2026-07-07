@@ -58,6 +58,33 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"incident": inc, "timeline": tl})
 }
 
+// Assign handles POST /incidents/{id}/assign — hand the case to an analyst.
+func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	var in struct {
+		AssigneeID string `json:"assignee_id"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	assignee, err := uuid.Parse(in.AssigneeID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid assignee_id"))
+		return
+	}
+	if err := h.svc.Assign(r.Context(), p, id, assignee); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "assigned"})
+}
+
 // AddNote handles POST /incidents/{id}/notes.
 func (h *Handler) AddNote(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

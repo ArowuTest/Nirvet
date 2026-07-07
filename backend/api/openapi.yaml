@@ -1,0 +1,196 @@
+openapi: 3.1.0
+info:
+  title: Nirvet SOC Platform API
+  version: "0.1.0"
+  description: >
+    Cyber Security Operations Platform API (SOCaaS/MDR/XDR/Sovereign/MSSP).
+    All endpoints except health, metrics, login and webhook ingestion require a
+    Bearer JWT. Every request is tenant-scoped (RLS) and role-gated (RBAC).
+servers:
+  - url: http://localhost:8080
+    description: Local
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    sourceKey:
+      type: apiKey
+      in: header
+      name: X-Nirvet-Key
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+        mfa_code: { type: string, description: "required when the user has MFA enabled" }
+    LoginResult:
+      type: object
+      properties:
+        token: { type: string }
+        user: { $ref: '#/components/schemas/User' }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        email: { type: string }
+        role: { type: string }
+        status: { type: string }
+        mfa_enabled: { type: boolean }
+    IngestInput:
+      type: object
+      required: [source]
+      properties:
+        source: { type: string }
+        native_id: { type: string }
+        class_name: { type: string }
+        activity_name: { type: string }
+        severity: { type: string, enum: [informational, low, medium, high, critical] }
+        confidence: { type: integer }
+        actor_ref: { type: string }
+        target_ref: { type: string }
+        action: { type: string }
+        outcome: { type: string }
+        data: { type: object, additionalProperties: true }
+    Alert:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        severity: { type: string }
+        status: { type: string, enum: [new, assigned, closed, promoted] }
+        source: { type: string }
+        detection_id: { type: string, format: uuid }
+        mitre: { type: array, items: { type: string } }
+    Incident:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        severity: { type: string }
+        stage: { type: string, enum: [new, triage, investigating, contained, closed] }
+    DetectionRule:
+      type: object
+      properties:
+        name: { type: string }
+        severity: { type: string }
+        mitre: { type: array, items: { type: string } }
+        condition:
+          type: object
+          properties:
+            all: { type: array, items: { $ref: '#/components/schemas/Predicate' } }
+            any: { type: array, items: { $ref: '#/components/schemas/Predicate' } }
+    Predicate:
+      type: object
+      properties:
+        field: { type: string }
+        op: { type: string, enum: [eq, neq, contains, gte, lte, exists, regex] }
+        value: { type: string }
+    PlaybookRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending_approval, running, completed, failed, rejected] }
+        steps: { type: array, items: { type: object } }
+security:
+  - bearerAuth: []
+tags:
+  - { name: health }
+  - { name: auth }
+  - { name: mfa }
+  - { name: admin }
+  - { name: ingestion }
+  - { name: detection }
+  - { name: alerts }
+  - { name: incidents }
+  - { name: connectors }
+  - { name: soar }
+  - { name: ai }
+  - { name: threat-intel }
+  - { name: reporting }
+  - { name: compliance }
+  - { name: billing }
+paths:
+  /healthz: { get: { tags: [health], security: [], summary: Liveness, responses: { '200': { description: ok } } } }
+  /readyz: { get: { tags: [health], security: [], summary: Readiness (checks DB), responses: { '200': { description: ready }, '503': { description: db unavailable } } } }
+  /metrics: { get: { tags: [health], security: [], summary: Prometheus metrics, responses: { '200': { description: metrics } } } }
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Authenticate (password + optional MFA). Rate-limited per IP.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/LoginRequest' } } } }
+      responses:
+        '200': { description: token issued, content: { application/json: { schema: { $ref: '#/components/schemas/LoginResult' } } } }
+        '401': { description: invalid credentials/MFA, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: rate limited }
+  /me: { get: { tags: [auth], summary: Current user, responses: { '200': { description: user, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } } } } }
+  /mfa/enroll: { post: { tags: [mfa], summary: Begin TOTP enrollment (returns otpauth URI + secret once), responses: { '200': { description: enrolled } } } }
+  /mfa/activate: { post: { tags: [mfa], summary: Activate MFA with a code, responses: { '200': { description: enabled }, '400': { description: invalid code } } } }
+  /mfa/disable: { post: { tags: [mfa], summary: Disable MFA (verifies a code), responses: { '200': { description: disabled } } } }
+  /admin/tenants:
+    get: { tags: [admin], summary: List tenants (platform_admin), responses: { '200': { description: tenants } } }
+    post: { tags: [admin], summary: Create tenant (platform_admin), responses: { '201': { description: created } } }
+  /admin/tenants/{id}: { get: { tags: [admin], summary: Get tenant, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: tenant }, '404': { description: not found } } } }
+  /admin/users: { post: { tags: [admin], summary: Create user (platform_admin), responses: { '201': { description: created } } } }
+  /ingest:
+    post:
+      tags: [ingestion]
+      summary: Ingest a security event (async normalize + detect)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/IngestInput' } } } }
+      responses: { '202': { description: accepted }, '400': { description: invalid }, '429': { description: quota exceeded } }
+  /ingest/webhook/{id}:
+    post:
+      tags: [ingestion]
+      security: [{ sourceKey: [] }]
+      summary: Source-key authenticated webhook ingestion
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { events: { type: array, items: { $ref: '#/components/schemas/IngestInput' } } } } } } }
+      responses: { '202': { description: accepted }, '401': { description: bad key } }
+  /events: { get: { tags: [ingestion], summary: Query normalized events, parameters: [{ name: severity, in: query, schema: { type: string } }, { name: search, in: query, schema: { type: string } }, { name: limit, in: query, schema: { type: integer } }], responses: { '200': { description: events } } } }
+  /detections:
+    get: { tags: [detection], summary: List detection rules, responses: { '200': { description: rules } } }
+    post: { tags: [detection], summary: Create rule (detection_engineer), requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/DetectionRule' } } } }, responses: { '201': { description: created } } }
+  /detections/{id}/enabled: { post: { tags: [detection], summary: Enable/disable a rule, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok } } } }
+  /alerts: { get: { tags: [alerts], summary: List alerts, parameters: [{ name: status, in: query, schema: { type: string } }], responses: { '200': { description: alerts } } } }
+  /alerts/{id}: { get: { tags: [alerts], summary: Get alert, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: alert, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } } } } }
+  /alerts/{id}/assign: { post: { tags: [alerts], summary: Assign alert, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: assigned } } } }
+  /alerts/{id}/promote: { post: { tags: [alerts], summary: Promote alert to incident, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: incident } } } }
+  /alerts/{id}/summarise: { post: { tags: [ai], summary: AI summary of an alert (assistive), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: summary } } } }
+  /incidents: { get: { tags: [incidents], summary: List incidents, responses: { '200': { description: incidents } } } }
+  /incidents/{id}: { get: { tags: [incidents], summary: Get incident + timeline, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: incident } } } }
+  /incidents/{id}/assign: { post: { tags: [incidents], summary: Assign incident to an analyst (same-tenant), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], requestBody: { required: true, content: { application/json: { schema: { type: object, required: [assignee_id], properties: { assignee_id: { type: string, format: uuid } } } } } }, responses: { '200': { description: assigned }, '400': { description: invalid assignee } } } }
+  /incidents/{id}/notes: { post: { tags: [incidents], summary: Add a note, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: added } } } }
+  /incidents/{id}/close: { post: { tags: [incidents], summary: Close incident, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: closed } } } }
+  /connectors:
+    get: { tags: [connectors], summary: List connectors, responses: { '200': { description: connectors } } }
+    post: { tags: [connectors], summary: Create connector (webhook returns a one-time source key), responses: { '201': { description: created } } }
+  /connectors/catalogue: { get: { tags: [connectors], summary: Available connector types, responses: { '200': { description: catalogue } } } }
+  /connectors/{id}: { delete: { tags: [connectors], summary: Delete connector, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
+  /playbooks: { get: { tags: [soar], summary: List playbooks, responses: { '200': { description: playbooks } } } }
+  /playbooks/{id}/run: { post: { tags: [soar], summary: Run a playbook (authority-to-act gated), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: run, content: { application/json: { schema: { $ref: '#/components/schemas/PlaybookRun' } } } } } } }
+  /soar/runs: { get: { tags: [soar], summary: List runs, responses: { '200': { description: runs } } } }
+  /soar/runs/{id}: { get: { tags: [soar], summary: Get run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: run } } } }
+  /soar/runs/{id}/approve: { post: { tags: [soar], summary: Approve a pending run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: completed } } } }
+  /soar/runs/{id}/reject: { post: { tags: [soar], summary: Reject a pending run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: rejected } } } }
+  /soar/authority: { post: { tags: [soar], summary: Set tenant authority-to-act mode (platform_admin), responses: { '200': { description: set } } } }
+  /threat-intel:
+    get: { tags: [threat-intel], summary: List watchlist indicators, responses: { '200': { description: indicators } } }
+    post: { tags: [threat-intel], summary: Add an indicator, responses: { '201': { description: added } } }
+  /reports/summary: { get: { tags: [reporting], summary: Tenant operational summary, responses: { '200': { description: summary } } } }
+  /compliance/coverage: { get: { tags: [compliance], summary: Framework control coverage (NIST CSF), parameters: [{ name: framework, in: query, schema: { type: string } }], responses: { '200': { description: coverage } } } }
+  /billing/entitlements:
+    get: { tags: [billing], summary: Get entitlements, responses: { '200': { description: entitlements } } }
+    put: { tags: [billing], summary: Set entitlements (platform_admin), responses: { '200': { description: updated } } }

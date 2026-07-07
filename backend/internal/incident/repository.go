@@ -101,6 +101,26 @@ func (r *Repository) AddNote(ctx context.Context, tenantID uuid.UUID, e *Timelin
 	})
 }
 
+// Assign sets an incident's owner (analyst) and records a timeline entry. If the
+// incident is still in an early stage it advances to 'investigating' so the case
+// visibly moves once someone owns it. Runs atomically under the tenant context.
+func (r *Repository) Assign(ctx context.Context, tenantID, id, ownerID uuid.UUID, e *TimelineEntry) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx,
+			`UPDATE incidents
+			    SET owner_id = $2,
+			        stage = CASE WHEN stage IN ('new','triage') THEN 'investigating' ELSE stage END
+			  WHERE id = $1 AND stage <> 'closed'`, id, ownerID)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		return r.AddTimelineTx(ctx, tx, e)
+	})
+}
+
 // Close marks an incident closed and records a timeline entry.
 func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID, e *TimelineEntry) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {

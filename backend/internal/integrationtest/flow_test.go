@@ -98,7 +98,7 @@ func newHarness(t *testing.T) *harness {
 		ingest:   ingestSvc,
 		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log),
 		alertSvc: alertSvc,
-		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil),
+		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc),
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
 	}
@@ -231,6 +231,140 @@ func TestIntegration(t *testing.T) {
 		}
 		if approved.Status != soar.RunCompleted {
 			t.Fatalf("after approval the run must be completed, got %s", approved.Status)
+		}
+	})
+
+	// Heartbeat is the platform's "walking skeleton": a single thread pulled through
+	// EVERY layer of the SOC value loop, in order, in one test — the owner's chain:
+	//   Login → Tenant → Connector → Receive event → Normalize → Store → Detection →
+	//   Alert → Incident → Assign analyst → Timeline → Playbook → Close → Audit trail.
+	// If this stays green, the architecture has a real heartbeat and everything else
+	// (more connectors, AI, dashboards) is incremental. A break here is a P0.
+	t.Run("Heartbeat_EndToEnd", func(t *testing.T) {
+		// 1. Login (real auth, produces an audit record).
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", "", "req-heartbeat"); err != nil {
+			t.Fatalf("1. login: %v", err)
+		}
+
+		// 2. Tenant + 3. Connector: a webhook connector owned by this tenant.
+		conn, err := h.connSvc.Create(h.ctx, h.tenantID, connector.CreateInput{Kind: connector.KindWebhook, Name: "heartbeat-edr"})
+		if err != nil {
+			t.Fatalf("3. create connector: %v", err)
+		}
+
+		// 4. Receive event: push a critical malware event THROUGH the connector
+		//    (source-key authenticated), exactly as a real EDR webhook would.
+		nativeID := "hb-" + uuid.NewString()
+		evts := []ingestion.IngestInput{{
+			Source: "heartbeat-edr", NativeID: nativeID, ClassName: "Malware Trojan:Win32/Heartbeat",
+			Severity: "critical", ActorRef: "user:cfo", TargetRef: "host:FIN-LAPTOP-01",
+		}}
+		n, err := h.connSvc.IngestWebhook(h.ctx, conn.Connector.ID, conn.SourceKey, evts)
+		if err != nil || n != 1 {
+			t.Fatalf("4. connector receive: n=%d err=%v", n, err)
+		}
+
+		// 5. Normalize + 6. Store + 7. Detection + 8. Alert: the worker drains the
+		//    queue (normalize → event store → detection engine → raise alert).
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("5-8. worker (normalize/store/detect/alert): %v", err)
+		}
+		alerts, _ := h.alertSvc.List(h.ctx, h.tenantID, "new")
+		var hbAlert *alert.Alert
+		for i := range alerts {
+			if alerts[i].Source == "heartbeat-edr" {
+				hbAlert = &alerts[i]
+				break
+			}
+		}
+		if hbAlert == nil {
+			t.Fatal("8. detection did not raise an alert for a critical malware event from the connector")
+		}
+
+		// 9. Incident: promote the alert (atomic; links alert→incident; seeds timeline).
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, hbAlert.ID)
+		if err != nil {
+			t.Fatalf("9. promote to incident: %v", err)
+		}
+		promoted, _ := h.alertSvc.Get(h.ctx, h.tenantID, hbAlert.ID)
+		if promoted.Status != alert.StatusPromoted || promoted.IncidentID == nil {
+			t.Fatalf("9. alert not linked to incident: status=%s incident=%v", promoted.Status, promoted.IncidentID)
+		}
+
+		// 10. Assign analyst: hand the case to a (same-tenant) analyst; case advances.
+		if err := h.incSvc.Assign(h.ctx, h.principal, inc.ID, h.principal.UserID); err != nil {
+			t.Fatalf("10. assign analyst: %v", err)
+		}
+		reloaded, _ := h.incSvc.Get(h.ctx, h.tenantID, inc.ID)
+		if reloaded.OwnerID == nil || *reloaded.OwnerID != h.principal.UserID {
+			t.Fatalf("10. incident owner not set to analyst: %v", reloaded.OwnerID)
+		}
+		if reloaded.Stage != incident.StageInvestigating {
+			t.Fatalf("10. incident should move to investigating on assignment, got %s", reloaded.Stage)
+		}
+
+		// 11. Timeline: an analyst note is recorded on the investigation timeline.
+		if err := h.incSvc.AddNote(h.ctx, h.principal, inc.ID, "Confirmed malware on finance laptop; isolating."); err != nil {
+			t.Fatalf("11. add timeline note: %v", err)
+		}
+
+		// 12. Playbook: run a containment playbook tied to THIS incident. Default
+		//     authority is 'observe' → containment needs approval → then approve.
+		pbs, err := h.soarSvc.ListPlaybooks(h.ctx, h.tenantID)
+		if err != nil || len(pbs) == 0 {
+			t.Fatalf("12. expected a seeded playbook: %v", err)
+		}
+		run, err := h.soarSvc.Run(h.ctx, h.principal, pbs[0].ID, &inc.ID)
+		if err != nil {
+			t.Fatalf("12. run playbook: %v", err)
+		}
+		if run.IncidentID == nil || *run.IncidentID != inc.ID {
+			t.Fatalf("12. playbook run not tied to incident: %v", run.IncidentID)
+		}
+		if run.Status == soar.RunPendingApproval {
+			if _, err := h.soarSvc.Approve(h.ctx, h.principal, run.ID); err != nil {
+				t.Fatalf("12. approve containment: %v", err)
+			}
+		}
+
+		// 13. Close incident: with a closure note (records a status timeline entry).
+		if err := h.incSvc.Close(h.ctx, h.principal, inc.ID, "Contained and remediated."); err != nil {
+			t.Fatalf("13. close incident: %v", err)
+		}
+		closed, _ := h.incSvc.Get(h.ctx, h.tenantID, inc.ID)
+		if closed.Stage != incident.StageClosed || closed.ClosedAt == nil {
+			t.Fatalf("13. incident not closed: stage=%s closedAt=%v", closed.Stage, closed.ClosedAt)
+		}
+
+		// 14. Timeline is the accumulated audit trail of the case: promote (seed) +
+		//     assign + note + close = at least 4 ordered entries.
+		tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
+		if len(tl) < 4 {
+			t.Fatalf("14. expected >=4 timeline entries (promote/assign/note/close), got %d", len(tl))
+		}
+		var haveAssign, haveClose bool
+		for _, e := range tl {
+			if e.Kind == "status" && len(e.Note) >= 8 && e.Note[:8] == "Assigned" {
+				haveAssign = true
+			}
+			if e.Kind == "status" && len(e.Note) >= 6 && e.Note[:6] == "Closed" {
+				haveClose = true
+			}
+		}
+		if !haveAssign || !haveClose {
+			t.Fatalf("14. timeline missing assign/close markers (assign=%v close=%v)", haveAssign, haveClose)
+		}
+
+		// 15. Audit trail: the platform's immutable audit_log captured the login.
+		//     (HTTP mutations are audited by middleware; here we assert the auth
+		//     event that the service layer writes directly.)
+		var audits int
+		_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx,
+				`SELECT count(*) FROM audit_log WHERE action='auth.login' AND actor_email=$1`, h.email).Scan(&audits)
+		})
+		if audits < 1 {
+			t.Fatal("15. audit trail missing the login event")
 		}
 	})
 

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ArowuTest/nirvet/api"
 	"github.com/ArowuTest/nirvet/internal/ai"
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/billing"
@@ -92,7 +93,7 @@ func main() {
 	notifySvc := notify.NewService(log)
 	notifyH := notify.NewHandler(notifySvc)
 
-	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc)
+	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).WithAssignees(iamSvc)
 	incidentH := incident.NewHandler(incidentSvc)
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
@@ -145,6 +146,9 @@ func main() {
 	})
 	// Prometheus scrape endpoint (unauthenticated, for the metrics collector).
 	mux.Handle("GET /metrics", metrics.Handler())
+	// API reference (unauthenticated): raw spec + Swagger UI.
+	mux.Handle("GET /openapi.yaml", api.SpecHandler())
+	mux.Handle("GET /docs", api.DocsHandler())
 	// auth + self
 	mux.Handle("POST /auth/login", httpx.Chain(http.HandlerFunc(iamH.Login), loginLimit))
 	mux.Handle("GET /me", authed(iamH.Me))
@@ -200,6 +204,7 @@ func main() {
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
+	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))
 

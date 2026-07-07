@@ -109,6 +109,17 @@ func (s *Service) Me(ctx context.Context, p auth.Principal) (*User, error) {
 	return u, nil
 }
 
+// LookupInTenant returns a user's email if they belong to the given tenant, else
+// an error. It satisfies incident.Assignees so an incident can only be assigned to
+// an analyst in the same tenant (the GetByID query runs under tenant RLS).
+func (s *Service) LookupInTenant(ctx context.Context, tenantID, userID uuid.UUID) (string, error) {
+	u, err := s.repo.GetByID(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	return u.Email, nil
+}
+
 // EnrollMFA generates a TOTP secret for the user, stores it encrypted (pending),
 // and returns the otpauth URI + secret to show once. MFA is not active until the
 // user confirms a code via Activate.
