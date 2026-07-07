@@ -27,10 +27,25 @@ after. A gate is a few paragraphs, not a document; it lives here.
 - **Reporting (§6.13):** tenant aggregates. Deferred: templated PDF/evidence-pack export.
 - **Cloud portability (ADR-0005):** evidence moved behind `blobstore.Store`. Deferred: GCS/Pub/Sub/KMS adapters.
 
-## Next gates (before starting)
+## Gate: Microsoft Graph/Defender pull connector (§8 MVP) — reviewed Jul 2026
 
-- **Real Microsoft connectors** (§8 MVP): OAuth app registration, Graph/Defender pull with checkpointing +
-  rate-limit backoff; review against ADR-0003 (idempotent, DLQ) and ADR-0004 (creds).
+- **SRS §8 API-polling pattern:** scheduled workers, OAuth/token handling, pagination, rate-limit backoff,
+  checkpointing. **§6.4** connector framework. Fits the flow at *Source → Normalize*.
+- **Contracts:** the poller does NOT bypass the pipeline — it fetches raw vendor alerts and pushes each through
+  `ingestion.Service.Ingest` with `source="microsoft-defender"` and the raw alert in `Data`, so the existing
+  Defender normalizer, blob evidence, dedupe, detection and metrics all apply unchanged. Idempotent (ADR-0003:
+  dedupe on source+native_id). Credentials via the vault (ADR-0004: client secret sealed; decrypted in memory at
+  poll time only). Portability: Graph base URL and token URL are injectable, so the client is testable against a
+  mock and unchanged for GCP.
+- **Data:** connector `config` jsonb holds non-secret `client_id`/`azure_tenant`/`checkpoint`; `secret_ciphertext`
+  holds the sealed client secret. A SECURITY DEFINER `connector_list_pullers()` lets the system worker enumerate
+  enabled pull connectors across tenants (like the webhook lookup); per-connector checkpoint/health updates use
+  the tenant context (no bypass).
+- **Invariants:** tenant isolation (each ingest uses the connector's tenant), audit via ingestion, no destructive
+  action (read-only pull). **Deferred:** delta queries, subscription/webhook push, Defender incident API,
+  per-connector schedules — MVP polls on a fixed interval.
+
+## Next gates (before starting)
 - **MFA/SSO** (§6.2): OIDC/SAML; review session model + tenant IdP mapping.
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
 - **Dashboards** (UI): only after the above; the API contracts already exist.

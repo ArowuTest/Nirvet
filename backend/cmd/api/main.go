@@ -208,7 +208,9 @@ func main() {
 	if cfg.InlineWorker {
 		wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log)
 		go wk.Start(workerCtx, time.Second)
-		log.Info("inline ingest worker started")
+		poller := connector.NewPoller(connector.NewRepository(db), vault, ingestSvc, log)
+		go poller.Start(workerCtx, time.Minute)
+		log.Info("inline ingest worker + connector poller started")
 	}
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}

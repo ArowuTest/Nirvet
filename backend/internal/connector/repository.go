@@ -103,3 +103,48 @@ func nullStr(s string) any {
 	}
 	return s
 }
+
+// PullerConfig is an enabled pull connector for the poller (system-level view).
+type PullerConfig struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+	Kind     string
+	Secret   []byte // sealed client secret (decrypt via the vault)
+	Config   map[string]any
+}
+
+// ListPullers enumerates enabled pull connectors across tenants (SECURITY DEFINER).
+func (r *Repository) ListPullers(ctx context.Context) ([]PullerConfig, error) {
+	var out []PullerConfig
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT id, tenant_id, kind, secret_ciphertext, config FROM connector_list_pullers()`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var pc PullerConfig
+			var cfg []byte
+			if err := rows.Scan(&pc.ID, &pc.TenantID, &pc.Kind, &pc.Secret, &cfg); err != nil {
+				return err
+			}
+			_ = json.Unmarshal(cfg, &pc.Config)
+			out = append(out, pc)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// UpdateCheckpoint stores the poll checkpoint + health for a connector (tenant-scoped).
+func (r *Repository) UpdateCheckpoint(ctx context.Context, tenantID, id uuid.UUID, checkpoint, health string) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE connector_configs
+			    SET config = jsonb_set(config, '{checkpoint}', to_jsonb($2::text), true),
+			        health = $3, last_success = now()
+			  WHERE id = $1`,
+			id, checkpoint, health)
+		return err
+	})
+}

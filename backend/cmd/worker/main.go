@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
+	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/ArowuTest/nirvet/internal/platform/config"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
@@ -45,7 +48,22 @@ func main() {
 	enricher := threatintel.NewEnricher(threatintel.NewRepository(db))
 	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log)
 
-	log.Info("nirvet worker running")
+	// Connector poller: pulls Microsoft Graph/Defender alerts through ingestion.
+	cipher, err := crypto.New(cfg.KMSKeyName, cfg.SecretMasterKey, log)
+	if err != nil {
+		log.Error("crypto init failed", "err", err)
+		os.Exit(1)
+	}
+	blobs, err := blobstore.New(cfg.GCSBucket, cfg.BlobDir)
+	if err != nil {
+		log.Error("blobstore init failed", "err", err)
+		os.Exit(1)
+	}
+	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), jobs, nil, blobs)
+	poller := connector.NewPoller(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc, log)
+	go poller.Start(ctx, time.Minute)
+
+	log.Info("nirvet worker running (ingest + connector poller)")
 	wk.Start(ctx, time.Second)
 	log.Info("nirvet worker stopped")
 }
