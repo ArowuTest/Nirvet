@@ -79,7 +79,7 @@ func main() {
 	tenantSvc := tenant.NewService(tenant.NewRepository(db))
 	tenantH := tenant.NewHandler(tenantSvc)
 
-	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens)
+	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens, cipher)
 	iamH := iam.NewHandler(iamSvc)
 
 	alertSvc := alert.NewService(alert.NewRepository(db))
@@ -148,6 +148,9 @@ func main() {
 	// auth + self
 	mux.Handle("POST /auth/login", httpx.Chain(http.HandlerFunc(iamH.Login), loginLimit))
 	mux.Handle("GET /me", authed(iamH.Me))
+	mux.Handle("POST /mfa/enroll", authed(iamH.EnrollMFA))
+	mux.Handle("POST /mfa/activate", authed(iamH.ActivateMFA))
+	mux.Handle("POST /mfa/disable", authed(iamH.DisableMFA))
 	// platform admin
 	mux.Handle("POST /admin/tenants", padmin(tenantH.Create))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))

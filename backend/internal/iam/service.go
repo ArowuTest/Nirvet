@@ -2,11 +2,14 @@ package iam
 
 import (
 	"context"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/totp"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -16,11 +19,12 @@ type Service struct {
 	repo   *Repository
 	db     *database.DB
 	tokens *auth.Manager
+	cipher crypto.SecretCipher
 }
 
-// NewService builds the service.
-func NewService(repo *Repository, db *database.DB, tokens *auth.Manager) *Service {
-	return &Service{repo: repo, db: db, tokens: tokens}
+// NewService builds the service. cipher encrypts TOTP secrets (per-tenant).
+func NewService(repo *Repository, db *database.DB, tokens *auth.Manager, cipher crypto.SecretCipher) *Service {
+	return &Service{repo: repo, db: db, tokens: tokens, cipher: cipher}
 }
 
 // CreateInput creates a user.
@@ -66,11 +70,18 @@ type LoginResult struct {
 	User      *User         `json:"user"`
 }
 
-// Login authenticates by email+password and issues an access token.
-func (s *Service) Login(ctx context.Context, email, password, requestID string) (*LoginResult, error) {
+// Login authenticates by email+password (and TOTP MFA when enabled) and issues
+// an access token.
+func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID string) (*LoginResult, error) {
 	u, err := s.repo.FindForAuth(ctx, email)
 	if err != nil || u.Status != UserActive || !auth.ComparePassword(u.PasswordHash, password) {
 		return nil, httpx.ErrUnauthorized("invalid credentials")
+	}
+	if u.MFAEnabled {
+		secret, derr := s.cipher.Decrypt(u.TenantID, u.MFASecret)
+		if derr != nil || !totp.Validate(string(secret), mfaCode, time.Now()) {
+			return nil, httpx.ErrUnauthorized("invalid or missing MFA code")
+		}
 	}
 	p := auth.Principal{UserID: u.ID, TenantID: u.TenantID, Role: u.Role, Email: u.Email}
 	token, err := s.tokens.Issue(p)
@@ -96,4 +107,56 @@ func (s *Service) Me(ctx context.Context, p auth.Principal) (*User, error) {
 	}
 	u.PasswordHash = ""
 	return u, nil
+}
+
+// EnrollMFA generates a TOTP secret for the user, stores it encrypted (pending),
+// and returns the otpauth URI + secret to show once. MFA is not active until the
+// user confirms a code via Activate.
+func (s *Service) EnrollMFA(ctx context.Context, p auth.Principal) (uri, secret string, err error) {
+	secret, err = totp.GenerateSecret()
+	if err != nil {
+		return "", "", httpx.ErrInternal("could not generate secret")
+	}
+	sealed, err := s.cipher.Encrypt(p.TenantID, []byte(secret))
+	if err != nil {
+		return "", "", httpx.ErrInternal("could not seal secret")
+	}
+	if err := s.repo.SetMFASecret(ctx, p.TenantID, p.UserID, sealed); err != nil {
+		return "", "", httpx.ErrInternal("could not store secret")
+	}
+	return totp.URI(secret, p.Email, "Nirvet"), secret, nil
+}
+
+// ActivateMFA verifies a code against the pending secret and enables MFA.
+func (s *Service) ActivateMFA(ctx context.Context, p auth.Principal, code string) error {
+	u, err := s.repo.GetByID(ctx, p.TenantID, p.UserID)
+	if err != nil || len(u.MFASecret) == 0 {
+		return httpx.ErrBadRequest("enroll MFA first")
+	}
+	secret, err := s.cipher.Decrypt(p.TenantID, u.MFASecret)
+	if err != nil || !totp.Validate(string(secret), code, time.Now()) {
+		return httpx.ErrBadRequest("invalid code")
+	}
+	if err := s.repo.SetMFAEnabled(ctx, p.TenantID, p.UserID, true); err != nil {
+		return httpx.ErrInternal("could not enable MFA")
+	}
+	return nil
+}
+
+// DisableMFA turns MFA off after verifying a current code.
+func (s *Service) DisableMFA(ctx context.Context, p auth.Principal, code string) error {
+	u, err := s.repo.GetByID(ctx, p.TenantID, p.UserID)
+	if err != nil {
+		return httpx.ErrNotFound("user not found")
+	}
+	if u.MFAEnabled {
+		secret, derr := s.cipher.Decrypt(p.TenantID, u.MFASecret)
+		if derr != nil || !totp.Validate(string(secret), code, time.Now()) {
+			return httpx.ErrBadRequest("invalid code")
+		}
+	}
+	if err := s.repo.SetMFAEnabled(ctx, p.TenantID, p.UserID, false); err != nil {
+		return httpx.ErrInternal("could not disable MFA")
+	}
+	return nil
 }

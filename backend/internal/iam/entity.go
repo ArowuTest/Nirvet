@@ -26,5 +26,7 @@ type User struct {
 	PasswordHash string     `json:"-"` // never serialised
 	Role         auth.Role  `json:"role"`
 	Status       UserStatus `json:"status"`
+	MFAEnabled   bool       `json:"mfa_enabled"`
+	MFASecret    []byte     `json:"-"` // vault-encrypted TOTP secret; never serialised
 	CreatedAt    time.Time  `json:"created_at"`
 }

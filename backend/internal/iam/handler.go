@@ -19,12 +19,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		MFACode  string `json:"mfa_code"`
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	res, err := h.svc.Login(r.Context(), in.Email, in.Password, httpx.RequestIDFrom(r.Context()))
+	res, err := h.svc.Login(r.Context(), in.Email, in.Password, in.MFACode, httpx.RequestIDFrom(r.Context()))
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -59,6 +60,45 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, u)
+}
+
+// EnrollMFA handles POST /mfa/enroll — returns the otpauth URI + secret (once).
+func (h *Handler) EnrollMFA(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	uri, secret, err := h.svc.EnrollMFA(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"otpauth_uri": uri, "secret": secret})
+}
+
+// ActivateMFA handles POST /mfa/activate with {"code":"123456"}.
+func (h *Handler) ActivateMFA(w http.ResponseWriter, r *http.Request) { h.mfaAction(w, r, true) }
+
+// DisableMFA handles POST /mfa/disable with {"code":"123456"}.
+func (h *Handler) DisableMFA(w http.ResponseWriter, r *http.Request) { h.mfaAction(w, r, false) }
+
+func (h *Handler) mfaAction(w http.ResponseWriter, r *http.Request, activate bool) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in struct {
+		Code string `json:"code"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	var err error
+	if activate {
+		err = h.svc.ActivateMFA(r.Context(), p, in.Code)
+	} else {
+		err = h.svc.DisableMFA(r.Context(), p, in.Code)
+	}
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]bool{"mfa_enabled": activate})
 }
 
 // Me handles GET /me.

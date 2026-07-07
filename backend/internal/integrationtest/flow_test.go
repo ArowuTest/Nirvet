@@ -26,6 +26,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
+	"github.com/ArowuTest/nirvet/internal/platform/totp"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
@@ -69,7 +70,10 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("create tenant: %v", err)
 	}
 	tokens := auth.NewManager("test-secret", "nirvet", 15*time.Minute)
-	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens)
+	hkey := make([]byte, 32)
+	_, _ = rand.Read(hkey)
+	hcipher, _ := crypto.NewLocal(base64.StdEncoding.EncodeToString(hkey), nil)
+	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens, hcipher)
 	email := "itest-" + uuid.NewString() + "@t"
 	u, err := iamSvc.Create(ctx, tn.ID, iam.CreateInput{Email: email, Password: "password123", Role: auth.RoleAnalystT2})
 	if err != nil {
@@ -114,10 +118,10 @@ func TestIntegration(t *testing.T) {
 	h := newHarness(t)
 
 	t.Run("LoginAudit", func(t *testing.T) {
-		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", "req-itest"); err != nil {
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", "", "req-itest"); err != nil {
 			t.Fatalf("login: %v", err)
 		}
-		if _, err := h.iamSvc.Login(h.ctx, h.email, "wrong", "req-itest"); err == nil {
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "wrong", "", "req-itest"); err == nil {
 			t.Fatal("login with wrong password must fail")
 		}
 		var n int
@@ -227,6 +231,35 @@ func TestIntegration(t *testing.T) {
 		}
 		if approved.Status != soar.RunCompleted {
 			t.Fatalf("after approval the run must be completed, got %s", approved.Status)
+		}
+	})
+
+	t.Run("MFAEnrollActivateEnforce", func(t *testing.T) {
+		uri, secret, err := h.iamSvc.EnrollMFA(h.ctx, h.principal)
+		if err != nil || secret == "" || len(uri) < 10 {
+			t.Fatalf("enroll: uri=%q err=%v", uri, err)
+		}
+		// Before activation, login still works without a code.
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", "", "r"); err != nil {
+			t.Fatalf("login pre-activation should work: %v", err)
+		}
+		code, _ := totp.Code(secret, time.Now())
+		if err := h.iamSvc.ActivateMFA(h.ctx, h.principal, code); err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		// After activation, login WITHOUT a code must fail.
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", "", "r"); err == nil {
+			t.Fatal("SECURITY: login without MFA code must fail once MFA is enabled")
+		}
+		// Login WITH a valid code succeeds.
+		code2, _ := totp.Code(secret, time.Now())
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", code2, "r"); err != nil {
+			t.Fatalf("login with MFA code should succeed: %v", err)
+		}
+		// Cleanup: disable MFA.
+		code3, _ := totp.Code(secret, time.Now())
+		if err := h.iamSvc.DisableMFA(h.ctx, h.principal, code3); err != nil {
+			t.Fatalf("disable: %v", err)
 		}
 	})
 }
