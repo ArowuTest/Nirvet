@@ -457,6 +457,13 @@ func (s *Service) ResolveAuthorityMode(ctx context.Context, tenantID uuid.UUID, 
 	return ap.Mode, err
 }
 
+// ResolveAuthorityDecision returns the effective mode + approver-role floor + business-hours-only
+// flag for an action (implements soar.Authorizer) so SOAR can enforce the stored controls.
+func (s *Service) ResolveAuthorityDecision(ctx context.Context, tenantID uuid.UUID, actionType string) (mode, approverRole string, businessHoursOnly bool, err error) {
+	ap, e := s.ResolveAuthority(ctx, tenantID, actionType)
+	return ap.Mode, ap.ApproverRole, ap.BusinessHoursOnly, e
+}
+
 // SetCatchAllAuthority upserts the tenant-wide '*' authority-to-act policy (implements
 // soar.Authorizer; backs the legacy POST /soar/authority convenience endpoint).
 func (s *Service) SetCatchAllAuthority(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, mode string) error {

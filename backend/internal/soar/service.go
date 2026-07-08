@@ -9,13 +9,17 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
-// Authorizer resolves the tenant's per-action authority-to-act mode and sets the tenant-wide
+// Authorizer resolves the tenant's per-action authority-to-act policy and sets the tenant-wide
 // catch-all. Implemented by tenant.Service (single source of truth: authority_policies). SOAR
 // consumes this instead of the legacy tenants.authority_mode column (Phase 0 reconciliation).
+// ResolveAuthorityDecision returns the FULL policy (mode + approver_role floor + business_hours_only)
+// so SOAR can actually enforce the stored controls (Round-4 H2 — they were written but unconsumed).
 type Authorizer interface {
 	ResolveAuthorityMode(ctx context.Context, tenantID uuid.UUID, actionType string) (string, error)
+	ResolveAuthorityDecision(ctx context.Context, tenantID uuid.UUID, actionType string) (mode, approverRole string, businessHoursOnly bool, err error)
 	SetCatchAllAuthority(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, mode string) error
 }
 
@@ -58,14 +62,44 @@ var validModes = map[AuthorityMode]bool{
 	AuthorityObserve: true, AuthorityApproval: true, AuthorityPreAuth: true, AuthorityEmergency: true,
 }
 
-// resolveMode returns the authority mode for an action type, preferring the per-action policy
-// store and falling back to the legacy tenant-wide column.
-func (s *Service) resolveMode(ctx context.Context, tenantID uuid.UUID, actionType string) (AuthorityMode, error) {
+// resolveDecision returns the effective authority mode + approver-role floor + business-hours-only
+// flag for an action (per-action SOAR-003 granularity). Falls back to the legacy tenant-wide mode
+// (no floor) when no authorizer is wired (unit tests).
+func (s *Service) resolveDecision(ctx context.Context, tenantID uuid.UUID, actionType string) (mode AuthorityMode, approverRole string, businessHours bool, err error) {
 	if s.authz != nil {
-		m, err := s.authz.ResolveAuthorityMode(ctx, tenantID, actionType)
-		return AuthorityMode(m), err
+		m, ar, bh, e := s.authz.ResolveAuthorityDecision(ctx, tenantID, actionType)
+		return AuthorityMode(m), ar, bh, e
 	}
-	return s.repo.TenantAuthority(ctx, tenantID)
+	m, e := s.repo.TenantAuthority(ctx, tenantID)
+	return m, "", false, e
+}
+
+// approverRank ranks the roles relevant to SOAR approval (higher = more senior). Customer roles sit
+// below provider seniors; only provider seniors can clear higher-risk steps (Round-4 H2 floor).
+var approverRank = map[auth.Role]int{
+	auth.RoleCustomerViewer: 0, auth.RoleCustomerAdmin: 1,
+	auth.RoleAnalystT1: 1, auth.RoleAnalystT2: 2, auth.RoleDetectionEng: 2,
+	auth.RoleAnalystT3: 3, auth.RoleSOCManager: 4, auth.RolePlatformAdmin: 5,
+}
+
+// requiredApproverRank is the minimum approver seniority to clear a step of the given §9.5 risk
+// class: the HIGHER of a risk-scaled default (medium→analyst_t3, high→soc_manager) and the tenant-
+// configured approver_role floor (H2 — the stored control is now enforced). business_critical is
+// handled separately (never cleared by standard approval in this slice).
+func requiredApproverRank(risk RiskClass, configuredApproverRole string) int {
+	base := 0
+	switch risk {
+	case RiskMedium:
+		base = approverRank[auth.RoleAnalystT3]
+	case RiskHigh:
+		base = approverRank[auth.RoleSOCManager]
+	}
+	if configuredApproverRole != "" {
+		if r, ok := approverRank[auth.Role(configuredApproverRole)]; ok && r > base {
+			base = r
+		}
+	}
+	return base
 }
 
 // SetAuthority sets the tenant-wide catch-all authority-to-act mode (POST /soar/authority is a
@@ -105,62 +139,100 @@ func (s *Service) GetRun(ctx context.Context, tenantID, id uuid.UUID) (*Playbook
 	return run, nil
 }
 
-// Run starts a playbook against an incident. Low-risk steps permitted by the
-// tenant authority mode auto-execute (simulated); anything requiring approval
-// leaves the run pending_approval.
+// stepPlan is a resolved step decided in Run's read phase (no side effects yet).
+type stepPlan struct {
+	act  ActionCatalog
+	auto bool // may auto-execute now (permitted by authority, no approval, in-hours)
+	sr   StepResult
+}
+
+// Run starts a playbook against an incident. It resolves each step's §9.5 risk class + authority in
+// a read phase, then dispatches permitted steps and persists the run + audit in ONE transaction
+// (Round-4 M2: effect + audit atomic), deduped per (playbook, incident) (M3). Steps needing approval
+// leave the run pending_approval.
 func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUID, incidentID *uuid.UUID) (*PlaybookRun, error) {
 	pb, err := s.repo.GetPlaybook(ctx, p.TenantID, playbookID)
 	if err != nil {
 		return nil, httpx.ErrNotFound("playbook not found")
 	}
-	run := &PlaybookRun{
-		ID: uuid.New(), TenantID: p.TenantID, PlaybookID: pb.ID,
-		IncidentID: incidentID, RequestedBy: &p.UserID,
-	}
-	needsApproval, anyFailed := false, false
+
+	// Phase 1 — reads only, no side effects: resolve catalog + authority per step and decide auto-run.
+	plans := make([]stepPlan, 0, len(pb.Steps))
 	for _, st := range pb.Steps {
-		// Risk class comes from the admin-configurable action catalog (§9.5), NOT the step JSON —
-		// an action absent from the catalog fails closed to business_critical (max approval).
+		// Risk class comes from the admin-configurable action catalog (§9.5), NOT the step JSON — an
+		// action absent from the catalog fails closed to business_critical (max approval).
 		act, _ := s.repo.resolveAction(ctx, p.TenantID, st.Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = st.ConnectorKey
 		}
-		// Authority is resolved PER ACTION (SOAR-003): a tenant may pre-authorise isolate_endpoint
-		// while still requiring approval for disable_user, etc.
-		mode, err := s.resolveMode(ctx, p.TenantID, st.Action)
-		if err != nil {
+		mode, _, businessHours, derr := s.resolveDecision(ctx, p.TenantID, st.Action)
+		if derr != nil {
 			return nil, httpx.ErrInternal("could not read authority-to-act")
 		}
+		// business_hours_only fails closed to approval: we cannot yet verify the tenant's business-hours
+		// calendar, so an hours-restricted action never auto-runs (Round-4 H2 — consume the stored flag).
+		autoEligible := !st.RequiresApproval && Allowed(mode, act.RiskClass)
 		sr := StepResult{Name: st.Name, ConnectorKey: act.ConnectorKey, Action: st.Action, Risk: act.RiskClass}
-		if !st.RequiresApproval && Allowed(mode, act.RiskClass) {
-			// Permitted → dispatch for real (or truthful simulation when no live executor).
-			sr.Status, sr.Note = s.execs.dispatch(ctx, p.TenantID, act, stepParams(incidentID, pb.Name, st.Name))
-			if sr.Status == StatusFailed {
-				anyFailed = true
-			}
-		} else {
+		if !autoEligible {
 			sr.Status = StatusAwaitingApproval
 			sr.Note = fmt.Sprintf("requires approval (class %s, authority '%s')", act.RiskClass, mode)
-			needsApproval = true
+		} else if businessHours {
+			sr.Status = StatusAwaitingApproval
+			sr.Note = fmt.Sprintf("business-hours-only: deferred to approval (class %s, authority '%s')", act.RiskClass, mode)
 		}
-		run.Steps = append(run.Steps, sr)
+		plans = append(plans, stepPlan{act: act, auto: autoEligible && !businessHours, sr: sr})
 	}
-	switch {
-	case needsApproval:
-		run.Status = RunPendingApproval
-	case anyFailed:
-		run.Status = RunFailed
-		now := time.Now()
-		run.CompletedAt = &now
-	default:
-		run.Status = RunCompleted
-		now := time.Now()
-		run.CompletedAt = &now
-	}
-	entry := audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_start",
-		Target: "playbook:" + pb.ID.String(), Metadata: map[string]any{"status": run.Status, "steps": len(run.Steps)}}
-	if err := s.repo.CreateRun(ctx, run, entry); err != nil {
+
+	// Phase 2 — one tx: idempotency check, dispatch permitted steps, persist run + audit atomically.
+	run := &PlaybookRun{ID: uuid.New(), TenantID: p.TenantID, PlaybookID: pb.ID, IncidentID: incidentID, RequestedBy: &p.UserID}
+	var existing *PlaybookRun
+	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if ex, e := s.repo.activeRunForTx(ctx, tx, p.TenantID, pb.ID, incidentID); e != nil {
+			return e
+		} else if ex != nil {
+			existing = ex // M3: a retried run returns the existing active run, no re-dispatch
+			return nil
+		}
+		needsApproval, anyFailed := false, false
+		for i := range plans {
+			pl := &plans[i]
+			if pl.auto {
+				pl.sr.Status, pl.sr.Note = s.execs.dispatch(ctx, tx, p.TenantID, pl.act, stepParams(incidentID, pb.Name, pl.sr.Name))
+				if pl.sr.Status == StatusFailed {
+					anyFailed = true
+				}
+				if e := audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
+					Target: "action:" + pl.sr.Action, Metadata: map[string]any{"status": pl.sr.Status, "risk": pl.sr.Risk}}); e != nil {
+					return e
+				}
+			} else {
+				needsApproval = true
+			}
+			run.Steps = append(run.Steps, pl.sr)
+		}
+		switch {
+		case needsApproval:
+			run.Status = RunPendingApproval
+		case anyFailed:
+			run.Status = RunFailed
+			now := time.Now()
+			run.CompletedAt = &now
+		default:
+			run.Status = RunCompleted
+			now := time.Now()
+			run.CompletedAt = &now
+		}
+		if e := s.repo.insertRunTx(ctx, tx, run); e != nil {
+			return e
+		}
+		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_start",
+			Target: "playbook:" + pb.ID.String(), Metadata: map[string]any{"status": run.Status, "steps": len(run.Steps)}})
+	})
+	if err != nil {
 		return nil, httpx.ErrInternal("could not start run")
+	}
+	if existing != nil {
+		return existing, nil
 	}
 	return run, nil
 }
@@ -176,7 +248,18 @@ func canApprove(run *PlaybookRun, approver uuid.UUID) error {
 	return nil
 }
 
-// Approve executes the awaiting steps of a pending run (simulated) and completes it.
+// approvedStep is a pending step cleared for dispatch in Approve's authorization phase.
+type approvedStep struct {
+	idx   int
+	act   ActionCatalog
+	block bool // business_critical — never executed by standard approval (§9.5)
+}
+
+// Approve executes the awaiting steps of a pending run. It RE-RESOLVES risk + authority per step and
+// enforces the approver-role floor scaled to §9.5 risk class + the tenant-configured approver_role
+// (Round-4 H2 — previously ignored, one approval green-lit every pending step). business_critical
+// steps are never cleared here (they need incident-commander + customer authorization not modelled in
+// this slice) — they are recorded skipped, fail-closed. Dispatch + audit run in one tx (M2).
 func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID) (*PlaybookRun, error) {
 	run, err := s.repo.GetRun(ctx, p.TenantID, runID)
 	if err != nil {
@@ -189,34 +272,67 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 	if err := canApprove(run, p.UserID); err != nil {
 		return nil, err
 	}
-	anyFailed := false
+
+	// Authorization phase (no side effects): re-resolve each pending step and check the approver floor
+	// BEFORE executing any step, so a too-junior approver is rejected without partial execution.
+	var steps []approvedStep
 	for i := range run.Steps {
 		if run.Steps[i].Status != StatusAwaitingApproval {
 			continue
 		}
-		// Dispatch the now-approved step for real (or truthful simulation).
 		act, _ := s.repo.resolveAction(ctx, p.TenantID, run.Steps[i].Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = run.Steps[i].ConnectorKey
 		}
-		status, note := s.execs.dispatch(ctx, p.TenantID, act, stepParams(run.IncidentID, "", run.Steps[i].Name))
-		run.Steps[i].Status = status
-		run.Steps[i].Note = note + " (approved by " + p.Email + ")"
-		if status == StatusFailed {
-			anyFailed = true
+		if act.RiskClass == RiskBusinessCritical {
+			steps = append(steps, approvedStep{idx: i, act: act, block: true})
+			continue
 		}
+		_, approverRole, _, derr := s.resolveDecision(ctx, p.TenantID, run.Steps[i].Action)
+		if derr != nil {
+			return nil, httpx.ErrInternal("could not read authority-to-act")
+		}
+		if approverRank[p.Role] < requiredApproverRank(act.RiskClass, approverRole) {
+			return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", p.Role, act.RiskClass))
+		}
+		steps = append(steps, approvedStep{idx: i, act: act})
 	}
-	run.ApprovedBy = &p.UserID
-	if anyFailed {
-		run.Status = RunFailed
-	} else {
-		run.Status = RunCompleted
-	}
-	now := time.Now()
-	run.CompletedAt = &now
-	entry := audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_approve",
-		Target: "run:" + run.ID.String(), Metadata: map[string]any{"status": run.Status}}
-	if err := s.repo.UpdateRun(ctx, run, entry); err != nil {
+
+	// Execution phase (one tx): dispatch each cleared step, skip business_critical, persist + audit.
+	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		anyFailed := false
+		for _, st := range steps {
+			if st.block {
+				run.Steps[st.idx].Status = StatusSkipped
+				run.Steps[st.idx].Note = "business_critical requires incident-commander + customer authorization (not available in this flow)"
+				continue
+			}
+			status, note := s.execs.dispatch(ctx, tx, p.TenantID, st.act, stepParams(run.IncidentID, "", run.Steps[st.idx].Name))
+			run.Steps[st.idx].Status = status
+			run.Steps[st.idx].Note = note + " (approved by " + p.Email + ")"
+			if status == StatusFailed {
+				anyFailed = true
+			}
+			if e := audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
+				Target: "action:" + run.Steps[st.idx].Action, Metadata: map[string]any{"status": status, "risk": st.act.RiskClass, "approved": true}}); e != nil {
+				return e
+			}
+		}
+		run.ApprovedBy = &p.UserID
+		if anyFailed {
+			run.Status = RunFailed
+		} else {
+			run.Status = RunCompleted
+		}
+		now := time.Now()
+		run.CompletedAt = &now
+		if e := s.repo.updateRunTx(ctx, tx, run); e != nil {
+			return e
+		}
+		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_approve",
+			Target: "run:" + run.ID.String(), Metadata: map[string]any{"status": run.Status}})
+	})
+	if err != nil {
 		return nil, httpx.ErrInternal("could not approve run")
 	}
 	return run, nil

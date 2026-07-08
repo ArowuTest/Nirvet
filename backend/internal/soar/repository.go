@@ -73,19 +73,60 @@ func (r *Repository) GetPlaybook(ctx context.Context, tenantID, id uuid.UUID) (*
 	return &p, nil
 }
 
-// CreateRun inserts a playbook run and its audit entry atomically (SOAR-006).
-func (r *Repository) CreateRun(ctx context.Context, run *PlaybookRun, entry audit.Entry) error {
+// RunTx executes fn inside the tenant's transaction — the seam that lets Run/Approve dispatch
+// executors, persist the run, and write audit all in ONE tx (Round-4 M2: effect + audit + state
+// commit together, or none do).
+func (r *Repository) RunTx(ctx context.Context, tenantID uuid.UUID, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	return r.db.WithTenant(ctx, tenantID, fn)
+}
+
+// insertRunTx inserts a playbook run within an existing tx.
+func (r *Repository) insertRunTx(ctx context.Context, tx pgx.Tx, run *PlaybookRun) error {
 	steps, _ := json.Marshal(run.Steps)
-	return r.db.WithTenant(ctx, run.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx,
-			`INSERT INTO playbook_runs (id, tenant_id, playbook_id, incident_id, status, steps_result, requested_by)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
-			run.ID, run.TenantID, run.PlaybookID, run.IncidentID, run.Status, steps, run.RequestedBy,
-		).Scan(&run.CreatedAt); err != nil {
-			return err
-		}
-		return audit.Record(ctx, tx, entry)
-	})
+	return tx.QueryRow(ctx,
+		`INSERT INTO playbook_runs (id, tenant_id, playbook_id, incident_id, status, steps_result, requested_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
+		run.ID, run.TenantID, run.PlaybookID, run.IncidentID, run.Status, steps, run.RequestedBy,
+	).Scan(&run.CreatedAt)
+}
+
+// updateRunTx persists status/steps/approval/completion within an existing tx.
+func (r *Repository) updateRunTx(ctx context.Context, tx pgx.Tx, run *PlaybookRun) error {
+	steps, _ := json.Marshal(run.Steps)
+	var completed any
+	if run.CompletedAt != nil {
+		completed = *run.CompletedAt
+	}
+	_, err := tx.Exec(ctx,
+		`UPDATE playbook_runs SET status=$2, steps_result=$3, approved_by=$4, completed_at=$5 WHERE id=$1`,
+		run.ID, run.Status, steps, run.ApprovedBy, completed)
+	return err
+}
+
+// activeRunForTx returns an existing non-terminal run for (playbook, incident) within tx, for
+// idempotency (Round-4 M3): a retried/double-submitted Run must not re-dispatch. Only meaningful for
+// incident-linked runs; ad-hoc (nil incident) runs are not deduped.
+func (r *Repository) activeRunForTx(ctx context.Context, tx pgx.Tx, tenantID, playbookID uuid.UUID, incidentID *uuid.UUID) (*PlaybookRun, error) {
+	if incidentID == nil {
+		return nil, nil
+	}
+	var run PlaybookRun
+	var steps []byte
+	err := tx.QueryRow(ctx,
+		`SELECT id, tenant_id, playbook_id, incident_id, status, steps_result, requested_by, approved_by, created_at, completed_at
+		   FROM playbook_runs
+		  WHERE playbook_id=$1 AND incident_id=$2 AND status IN ('pending_approval','running')
+		  ORDER BY created_at DESC LIMIT 1`, playbookID, *incidentID).
+		Scan(&run.ID, &run.TenantID, &run.PlaybookID, &run.IncidentID, &run.Status, &steps,
+			&run.RequestedBy, &run.ApprovedBy, &run.CreatedAt, &run.CompletedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(steps, &run.Steps)
+	return &run, nil
 }
 
 // GetRun returns a run.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Step result statuses recorded in a run's steps_result (widened from the original set).
@@ -30,17 +31,18 @@ type Outcome struct {
 	Detail   string // human-readable note recorded on the step
 }
 
-// ActionExecutor performs one SOAR action for real. Implementations must be safe to call only after
-// the engine has cleared authority-to-act + approval for the step. Kept as an interface so soar does
-// not depend on notify/connector packages (consumer-defined, like incident's Notifier).
+// ActionExecutor performs one SOAR action for real. It runs INSIDE the run's transaction (tx) so its
+// effect + audit + the run-state change commit together (Round-4 M2: effect and audit can never
+// diverge). Implementations must be safe to call only after the engine has cleared authority-to-act +
+// approval for the step. Kept as an interface so soar does not depend on notify/connector packages.
 type ActionExecutor interface {
-	Execute(ctx context.Context, tenantID uuid.UUID, action string, params map[string]any) (Outcome, error)
+	Execute(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, action string, params map[string]any) (Outcome, error)
 }
 
-// Notifier enqueues a notification (implemented by notify.OutboxRepository). Narrow so soar does not
-// import notify.
+// Notifier enqueues a notification within the caller's transaction (implemented by
+// notify.OutboxRepository.EnqueueTx). Narrow so soar does not import notify.
 type Notifier interface {
-	Enqueue(ctx context.Context, tenantID uuid.UUID, channel, recipient, subject, body string) error
+	EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, channel, recipient, subject, body string) error
 }
 
 // Executors is the registry mapping action_key -> executor. Unregistered actions fall back to a
@@ -56,14 +58,16 @@ func (e *Executors) Register(actionKey string, ex ActionExecutor) *Executors {
 	return e
 }
 
-// dispatch runs the catalog action and returns the step-result status + note. It never panics: an
-// executor error is caught and recorded as failed (SOAR-009), so one bad step cannot abort the run.
-func (e *Executors) dispatch(ctx context.Context, tenantID uuid.UUID, act ActionCatalog, params map[string]any) (status, note string) {
+// dispatch runs the catalog action within tx and returns the step-result status + note. It never
+// aborts the run: a returned error is recorded as failed, and a PANIC in a (future connector)
+// executor is recovered per-step (Round-4 M4) and recorded as failed — so one bad step cannot crash
+// the loop or leave the run without a record (SOAR-009). Runs inside the run's tx (M2).
+func (e *Executors) dispatch(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, act ActionCatalog, params map[string]any) (status, note string) {
 	if act.Executor == ExecutorManual {
 		return StatusAwaitingCustomer, "manual action — awaiting customer/analyst: " + act.ActionKey
 	}
 	if ex, ok := e.byKey[act.ActionKey]; ok {
-		out, err := ex.Execute(ctx, tenantID, act.ActionKey, params)
+		out, err := safeExecute(ctx, tx, tenantID, act.ActionKey, params, ex)
 		if err != nil {
 			return StatusFailed, "execution failed: " + err.Error()
 		}
@@ -80,6 +84,17 @@ func (e *Executors) dispatch(ctx context.Context, tenantID uuid.UUID, act Action
 	return StatusSimulated, fmt.Sprintf("simulated: would invoke %s.%s (no live executor configured)", target, act.ActionKey)
 }
 
+// safeExecute runs an executor with per-step panic recovery (Round-4 M4): a panic becomes an error,
+// so the dispatch loop records the step failed and continues rather than unwinding mid-run.
+func safeExecute(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, action string, params map[string]any, ex ActionExecutor) (out Outcome, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("executor panic: %v", r)
+		}
+	}()
+	return ex.Execute(ctx, tx, tenantID, action, params)
+}
+
 // --- notify executor (real, non-destructive) ---
 
 // notifyExecutor enqueues a notification to the durable outbox — a real, safe effect proving the
@@ -89,15 +104,16 @@ type notifyExecutor struct{ n Notifier }
 // NewNotifyExecutor builds the notify action executor.
 func NewNotifyExecutor(n Notifier) ActionExecutor { return &notifyExecutor{n: n} }
 
-func (x *notifyExecutor) Execute(ctx context.Context, tenantID uuid.UUID, action string, params map[string]any) (Outcome, error) {
+func (x *notifyExecutor) Execute(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, action string, params map[string]any) (Outcome, error) {
 	subject := "SOAR action: " + action
 	body := "SOAR playbook executed action " + action
 	if inc, ok := params["incident_id"].(string); ok && inc != "" {
 		body += " for incident " + inc
 	}
 	// Channel 'log' is always available and non-destructive; recipient resolution to the tenant
-	// escalation matrix is a slice-B concern. The durable outbox + dispatcher deliver it for real.
-	if err := x.n.Enqueue(ctx, tenantID, "log", "", subject, body); err != nil {
+	// escalation matrix is a slice-B concern. Enqueued within the run's tx so the notification and
+	// the run record commit atomically (M2); the dispatcher delivers it for real.
+	if err := x.n.EnqueueTx(ctx, tx, tenantID, "log", "", subject, body); err != nil {
 		return Outcome{}, err
 	}
 	return Outcome{Executed: true, Detail: "notification enqueued to outbox (" + action + ")"}, nil

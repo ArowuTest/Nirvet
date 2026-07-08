@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // TestSeparationOfDuties locks the four-eyes control on approvals: the user who
@@ -88,7 +90,7 @@ type fakeExecutor struct {
 	err    error
 }
 
-func (f *fakeExecutor) Execute(_ context.Context, _ uuid.UUID, _ string, _ map[string]any) (Outcome, error) {
+func (f *fakeExecutor) Execute(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ string, _ map[string]any) (Outcome, error) {
 	f.called = true
 	return f.out, f.err
 }
@@ -100,30 +102,70 @@ func TestExecutorDispatch(t *testing.T) {
 	tid := uuid.New()
 	ctx := context.Background()
 
-	// Registered + executed.
+	// Registered + executed (tx is nil — these executors don't touch the DB).
 	fe := &fakeExecutor{out: Outcome{Executed: true, Detail: "did the thing"}}
 	reg := NewExecutors().Register("notify_analyst", fe)
-	st, note := reg.dispatch(ctx, tid, ActionCatalog{ActionKey: "notify_analyst", Executor: ExecutorInternal}, nil)
+	st, note := reg.dispatch(ctx, nil, tid, ActionCatalog{ActionKey: "notify_analyst", Executor: ExecutorInternal}, nil)
 	if st != StatusExecuted || !fe.called || note != "did the thing" {
 		t.Fatalf("registered executor should run: status=%s called=%v note=%q", st, fe.called, note)
 	}
 
 	// Registered but errored → failed (SOAR-009, no panic).
 	reg2 := NewExecutors().Register("notify_analyst", &fakeExecutor{err: errBoom})
-	if st, _ := reg2.dispatch(ctx, tid, ActionCatalog{ActionKey: "notify_analyst", Executor: ExecutorInternal}, nil); st != StatusFailed {
+	if st, _ := reg2.dispatch(ctx, nil, tid, ActionCatalog{ActionKey: "notify_analyst", Executor: ExecutorInternal}, nil); st != StatusFailed {
 		t.Fatalf("executor error should yield failed, got %s", st)
 	}
 
+	// Registered but PANICKING → recovered as failed (Round-4 M4, no run-aborting panic).
+	reg3 := NewExecutors().Register("notify_analyst", &panicExecutor{})
+	if st, _ := reg3.dispatch(ctx, nil, tid, ActionCatalog{ActionKey: "notify_analyst", Executor: ExecutorInternal}, nil); st != StatusFailed {
+		t.Fatalf("panicking executor should be recovered as failed, got %s", st)
+	}
+
 	// Manual action → awaiting customer.
-	if st, _ := NewExecutors().dispatch(ctx, tid, ActionCatalog{ActionKey: "request_customer_action", Executor: ExecutorManual}, nil); st != StatusAwaitingCustomer {
+	if st, _ := NewExecutors().dispatch(ctx, nil, tid, ActionCatalog{ActionKey: "request_customer_action", Executor: ExecutorManual}, nil); st != StatusAwaitingCustomer {
 		t.Fatalf("manual action should await customer, got %s", st)
 	}
 
 	// Unregistered connector action → truthful simulation.
-	st, note = NewExecutors().dispatch(ctx, tid, ActionCatalog{ActionKey: "isolate_endpoint", Executor: ExecutorConnector, ConnectorKey: "defender"}, nil)
+	st, note = NewExecutors().dispatch(ctx, nil, tid, ActionCatalog{ActionKey: "isolate_endpoint", Executor: ExecutorConnector, ConnectorKey: "defender"}, nil)
 	if st != StatusSimulated || note == "" {
 		t.Fatalf("unregistered action should simulate, got status=%s note=%q", st, note)
 	}
+}
+
+// TestApproverFloor locks the Round-4 H2 approver-role floor: seniority required scales with §9.5
+// risk class and is raised (never lowered) by a configured approver_role.
+func TestApproverFloor(t *testing.T) {
+	// A high-risk step requires soc_manager; analyst_t3 is insufficient, soc_manager suffices.
+	highFloor := requiredApproverRank(RiskHigh, "")
+	if approverRank[auth.RoleAnalystT3] >= highFloor {
+		t.Fatal("analyst_t3 must NOT be able to approve a high-risk action")
+	}
+	if approverRank[auth.RoleSOCManager] < highFloor {
+		t.Fatal("soc_manager must be able to approve a high-risk action")
+	}
+	// Medium needs analyst_t3; low/informational have no default floor.
+	if requiredApproverRank(RiskMedium, "") != approverRank[auth.RoleAnalystT3] {
+		t.Fatal("medium floor should be analyst_t3")
+	}
+	if requiredApproverRank(RiskLow, "") != 0 {
+		t.Fatal("low should have no default floor")
+	}
+	// A configured approver_role can only RAISE the floor, never lower it.
+	if requiredApproverRank(RiskLow, string(auth.RoleSOCManager)) != approverRank[auth.RoleSOCManager] {
+		t.Fatal("configured approver_role must raise a low-risk floor to soc_manager")
+	}
+	if requiredApproverRank(RiskHigh, string(auth.RoleAnalystT1)) != highFloor {
+		t.Fatal("a weaker configured approver_role must not lower the risk-scaled floor")
+	}
+}
+
+// panicExecutor panics to exercise the M4 per-step recover().
+type panicExecutor struct{}
+
+func (panicExecutor) Execute(_ context.Context, _ pgx.Tx, _ uuid.UUID, _ string, _ map[string]any) (Outcome, error) {
+	panic("boom in executor")
 }
 
 var errBoom = errTest("boom")
