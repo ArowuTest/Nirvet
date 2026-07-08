@@ -789,6 +789,57 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("TenantGovernance", func(t *testing.T) {
+		// §6.1: profile is seeded to a default, changes are audited to the append-only change
+		// history, status transitions are guarded, escalation matrix + authority-to-act are
+		// admin-configurable, and authority resolution is fail-closed.
+		gov := tenant.NewService(tenant.NewRepository(h.db))
+
+		prof, err := gov.GetProfile(h.ctx, h.tenantID)
+		if err != nil || prof.Timezone != "UTC" {
+			t.Fatalf("default profile should exist with UTC timezone: %v (%+v)", err, prof)
+		}
+		tz := "Africa/Accra"
+		if _, err := gov.UpdateProfile(h.ctx, h.principal, h.tenantID, tenant.ProfileInput{Timezone: &tz}); err != nil {
+			t.Fatalf("update profile: %v", err)
+		}
+		hist, _ := gov.ListHistory(h.ctx, h.tenantID)
+		if len(hist) == 0 || hist[0].Field != "timezone" {
+			t.Fatalf("profile change must be recorded in change history, got %+v", hist)
+		}
+
+		// Guarded status lifecycle: onboarding->active legal; active->onboarding illegal.
+		if _, err := gov.SetStatus(h.ctx, h.principal, h.tenantID, tenant.StatusActive, "go live"); err != nil {
+			t.Fatalf("onboarding->active must be allowed: %v", err)
+		}
+		if _, err := gov.SetStatus(h.ctx, h.principal, h.tenantID, tenant.StatusOnboarding, "back"); err == nil {
+			t.Fatal("active->onboarding must be rejected (illegal transition)")
+		}
+
+		// Escalation matrix.
+		if _, err := gov.AddEscalationContact(h.ctx, h.principal, h.tenantID, tenant.EscalationInput{
+			Name: "SOC Duty", MinSeverity: "high", Channel: "email", Address: "soc@acme.test"}); err != nil {
+			t.Fatalf("add escalation contact: %v", err)
+		}
+		cs, _ := gov.ListEscalationContacts(h.ctx, h.tenantID)
+		if len(cs) != 1 || cs[0].Address != "soc@acme.test" {
+			t.Fatalf("escalation contact should be listed, got %d", len(cs))
+		}
+
+		// Authority-to-act: configure one action, then resolution — configured action returns
+		// its mode; an unconfigured action falls back to the fail-closed '*' catch-all.
+		if _, err := gov.SetAuthorityPolicy(h.ctx, h.principal, h.tenantID, tenant.AuthorityInput{
+			ActionType: "isolate_endpoint", Mode: "pre_authorized"}); err != nil {
+			t.Fatalf("set authority policy: %v", err)
+		}
+		if ap, err := gov.ResolveAuthority(h.ctx, h.tenantID, "isolate_endpoint"); err != nil || ap.Mode != "pre_authorized" {
+			t.Fatalf("configured action must resolve to pre_authorized, got %+v (%v)", ap, err)
+		}
+		if ap, err := gov.ResolveAuthority(h.ctx, h.tenantID, "disable_user"); err != nil || ap.Mode != "approval" {
+			t.Fatalf("unconfigured action must fall back fail-closed to approval, got %+v (%v)", ap, err)
+		}
+	})
+
 	t.Run("GlobalDetectionRuleRLS", func(t *testing.T) {
 		// A tenant reads the global detection catalogue but must NOT be able to delete or
 		// re-home a global rule (tenant_id IS NULL) — either would corrupt the shared

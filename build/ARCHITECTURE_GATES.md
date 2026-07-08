@@ -350,5 +350,36 @@ reviewer's order, each gated + tested + green on both backends.
   guarded) → notify channel. Integration test drives a real breach and asserts an outbox row is enqueued then
   delivered (pending→sent).
 - **Deferred**: routing the immediate create/assign notifications (best-effort, user present) through the outbox
-  too — out of scope; only the unattended SLA-sweep drop was the finding. Real email/Teams/Slack channels remain
-  TODO in notify (log channel ships).
+  too — out of scope; only the unattended SLA-sweep drop was the finding. Real email/Teams/Slack channels are a
+  tracked backlog task (§6.16 depth), not a code TODO (log channel ships as the seeded default).
+
+## Gate — §6.1 Tenant profile & governance (config-first) — TEN-004/006/010
+
+- **SRS section / requirement**: §6.1 — TEN-006 (org profile: escalation matrix/contacts, business hours,
+  authority-to-act policy, legal/regulatory profile, critical-asset notes), TEN-004 (status lifecycle
+  prospect→onboarding→active→suspended→churned→archived→legal_hold with guarded transitions), TEN-010 (append-only
+  tenant change history for material settings). Owner rule: **no hardcoding — every policy is an admin-configurable
+  DB record with a seeded default, never a code constant** ([[feedback-nirvet-no-hardcoding]]).
+- **Contract / interfaces**: extend `internal/tenant`. New admin endpoints (platform_admin / customer_admin per
+  scope): `GET/PUT /admin/tenants/{id}/profile`, `GET/PUT /admin/tenants/{id}/business-hours`,
+  `GET/POST/DELETE /admin/tenants/{id}/escalation-contacts`, `GET/PUT /admin/tenants/{id}/authority-policies`,
+  `POST /admin/tenants/{id}/status` (guarded transition), `GET /admin/tenants/{id}/history`. Downstream seams:
+  §6.16 notification routing reads escalation contacts + business hours; §6.11 SOAR reads authority policies (both
+  in later slices) — this slice OWNS the config, later slices CONSUME it.
+- **Invariants**: (1) config-not-constants — SLA/authority/escalation/business-hours live in tables with a seeded
+  default row per tenant at creation, overridable via API. (2) status transitions validated against a domain
+  transition map (structural, not per-tenant tunable); illegal transitions rejected fail-closed. (3) TEN-010 —
+  every material change appends to an **immutable** `tenant_change_history` (insert-only trigger, mirrors audit_log
+  0017/0024). (4) authority-to-act default is **fail-closed** (approval required) so an unconfigured tenant can
+  never auto-execute a high-impact action (NFR-009). (5) platform-level tables (WithSystem + RBAC), consistent with
+  the tenants registry (not tenant-RLS, since a platform admin manages them across tenants).
+- **Data model**: migrations `0028` — extend `tenants.status` allowed set; `tenant_profiles` (1:1, JSONB
+  legal/regulatory + critical-asset notes + timezone); `tenant_business_hours` (weekly schedule + timezone);
+  `escalation_contacts` (tenant_id, tier/min-severity, order_index, channel, address, active); `authority_policies`
+  (tenant_id, action_type/impact_class, mode observe|approval|pre_authorized|emergency, approver_role,
+  business_hours_only, seeded fail-closed default); `tenant_change_history` (append-only + insert-only trigger).
+- **End-to-end fit**: tenant Create seeds default profile + business hours + fail-closed authority policy in the
+  same tx (so no tenant is ever unconfigured). Heartbeat unaffected (additive). Later slices wire routing/authority.
+- **Deferred (tracked tasks, not code TODOs)**: TEN-001 tenant hierarchy/MSSP downstream, TEN-003 onboarding
+  templates, TEN-008 white-label branding, TEN-009 offboarding/export/cert-of-destruction — each its own §6.1/E15
+  slice.

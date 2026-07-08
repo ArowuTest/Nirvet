@@ -228,6 +228,18 @@ paths:
     get: { tags: [admin], summary: List tenants (platform_admin), responses: { '200': { description: tenants } } }
     post: { tags: [admin], summary: Create tenant (platform_admin), responses: { '201': { description: created } } }
   /admin/tenants/{id}: { get: { tags: [admin], summary: Get tenant, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: tenant }, '404': { description: not found } } } }
+  /admin/tenants/{id}/status: { post: { tags: [admin], summary: Guarded tenant status transition (platform_admin, TEN-004), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: tenant }, '400': { description: illegal transition } } } }
+  /admin/tenants/{id}/profile:
+    get: { tags: [admin], summary: Get tenant org profile (TEN-006), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: profile } } }
+    put: { tags: [admin], summary: Update tenant org profile (timezone/business-hours/legal), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: profile } } }
+  /admin/tenants/{id}/escalation-contacts:
+    get: { tags: [admin], summary: List escalation matrix contacts (TEN-006), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: contacts } } }
+    post: { tags: [admin], summary: Add an escalation contact, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created } } }
+  /admin/tenants/{id}/escalation-contacts/{cid}: { delete: { tags: [admin], summary: Remove an escalation contact, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
+  /admin/tenants/{id}/authority-policies:
+    get: { tags: [admin], summary: List authority-to-act policies (TEN-006/SOAR-003), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policies } } }
+    put: { tags: [admin], summary: Upsert an authority-to-act policy (fail-closed default), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policy } } }
+  /admin/tenants/{id}/history: { get: { tags: [admin], summary: Tenant change history (append-only, TEN-010), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: history } } } }
   /admin/users: { post: { tags: [admin], summary: Create user (platform_admin), responses: { '201': { description: created } } } }
   /ingest:
     post:

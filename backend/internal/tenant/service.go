@@ -46,6 +46,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, error) {
 	if err := s.repo.Create(ctx, t); err != nil {
 		return nil, err
 	}
+	// Seed the tenant's default governance config (profile + fail-closed catch-all authority
+	// policy) so no tenant is ever unconfigured (TEN-006). Best-effort: GetProfile and
+	// ResolveAuthority both lazily self-heal / fall back fail-closed if this did not land.
+	_ = s.repo.SeedGovernance(ctx, t.ID)
 	return t, nil
 }
 

@@ -45,6 +45,13 @@ These come straight from the spec and must hold for **every** feature you design
    under approval. AI outputs must separate observed evidence from inference and be logged.
 5. **Audit everything** — immutable append-only audit for login/admin/analyst/AI/SOAR actions.
 6. **Definition of Done** — a feature is portal/API-exposed, tenant-scoped, audited, tested, and documented.
+7. **Nothing hardcoded; no TODOs** (owner directive, Jul 2026) — every business policy (SLA targets, correlation
+   windows, risk-score weights, rate limits, escalation/routing, retention, authority-to-act, feature toggles) is an
+   **admin-configurable DB record** read at runtime, shipped with a **seeded default row** (default lives in data,
+   overridable via an admin API) — never a code constant. No `TODO`/`FIXME` markers: if something can't be built now
+   (external dep/creds), make it config-selected + fail-fast and log it as a backlog task + an ARCHITECTURE_GATES
+   "deferred" line, not a code marker. Build **all 18 SRS §6 domains** to depth, **backend-first**; **UI is a
+   separate designer's job** — build the APIs, don't block on screens.
 
 ## Standards spine
 

@@ -252,7 +252,7 @@ func main() {
 	// compromised or runaway T1 token can't rack up gateway spend (R3 AI-rate). Separate
 	// namespace ("ai"), so it does not interact with the general api bucket.
 	aiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.5, 5, "ai"), ratelimit.ByPrincipal) // ~1 AI call / 2s / principal, burst 5
-	auditMut := audit.Mutations(db)                                                                                                  // record successful mutations (NFR-003)
+	auditMut := audit.Mutations(db)                                                                    // record successful mutations (NFR-003)
 	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut) }
 	provider := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(providerRoles...))
@@ -335,6 +335,18 @@ func main() {
 	mux.Handle("POST /admin/tenants", padmin(tenantH.Create))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))
 	mux.Handle("GET /admin/tenants/{id}", padmin(tenantH.Get))
+	// Tenant governance (§6.1). Status lifecycle is a provider action (platform_admin only);
+	// profile/escalation/authority/history are the customer's own config (platform_admin or
+	// the tenant's own customer_admin — self-scope enforced in the handler).
+	mux.Handle("POST /admin/tenants/{id}/status", padmin(tenantH.SetStatus))
+	mux.Handle("GET /admin/tenants/{id}/profile", ssoAdmin(tenantH.GetProfile))
+	mux.Handle("PUT /admin/tenants/{id}/profile", ssoAdmin(tenantH.UpdateProfile))
+	mux.Handle("GET /admin/tenants/{id}/escalation-contacts", ssoAdmin(tenantH.ListEscalation))
+	mux.Handle("POST /admin/tenants/{id}/escalation-contacts", ssoAdmin(tenantH.AddEscalation))
+	mux.Handle("DELETE /admin/tenants/{id}/escalation-contacts/{cid}", ssoAdmin(tenantH.DeleteEscalation))
+	mux.Handle("GET /admin/tenants/{id}/authority-policies", ssoAdmin(tenantH.ListAuthority))
+	mux.Handle("PUT /admin/tenants/{id}/authority-policies", ssoAdmin(tenantH.SetAuthority))
+	mux.Handle("GET /admin/tenants/{id}/history", ssoAdmin(tenantH.ListHistory))
 	mux.Handle("POST /admin/users", padmin(iamH.Create))
 	// ingestion (any authenticated principal for the scaffold)
 	mux.Handle("POST /ingest", authed(ingestH.Ingest))
