@@ -219,7 +219,10 @@ func main() {
 	ingestH := ingestion.NewHandler(ingestSvc, events)
 
 	connectorH := connector.NewHandler(connector.NewService(connector.NewRepository(db), vault, ingestSvc))
-	soarH := soar.NewHandler(soar.NewService(soar.NewRepository(db)))
+	// SOAR resolves authority-to-act per action from the tenant's authority_policies
+	// (single source of truth; Phase 0 reconciliation — replaces tenants.authority_mode).
+	soarSvc := soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenantSvc)
+	soarH := soar.NewHandler(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
 	aiSvc.WithIncidentContext(incidentSvc, assetSvc)

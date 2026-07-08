@@ -21,8 +21,10 @@ type AuthorityMode string
 const (
 	AuthorityObserve   AuthorityMode = "observe"        // recommend only
 	AuthorityApproval  AuthorityMode = "approval"       // customer/SOC approves
-	AuthorityPreAuth   AuthorityMode = "pre_authorised" // agreed low-risk actions auto-run
+	AuthorityPreAuth   AuthorityMode = "pre_authorized" // agreed low-risk actions auto-run
 	AuthorityEmergency AuthorityMode = "emergency"      // critical-tier, contractual
+	// NOTE: spelling unified on "pre_authorized" (American) to match the per-action
+	// authority policy store (tenant.authority_policies) that SOAR now consumes (Phase 0).
 )
 
 // RiskClass of a SOAR action (doc 04 §9.5).

@@ -128,8 +128,11 @@ func (r *Repository) SeedGovernance(ctx context.Context, tenantID uuid.UUID) err
 		if _, err := tx.Exec(ctx, `INSERT INTO tenant_profiles (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING`, tenantID); err != nil {
 			return err
 		}
+		// Seeded catch-all is 'observe' — the most fail-closed mode: NO response action
+		// auto-executes until an admin configures otherwise (matches the platform's prior
+		// default and what SOAR consumes via ResolveAuthority; Phase 0 reconciliation).
 		_, err := tx.Exec(ctx,
-			`INSERT INTO authority_policies (id, tenant_id, action_type, mode) VALUES ($1,$2,'*','approval')
+			`INSERT INTO authority_policies (id, tenant_id, action_type, mode) VALUES ($1,$2,'*','observe')
 			 ON CONFLICT (tenant_id, action_type) DO NOTHING`, uuid.New(), tenantID)
 		return err
 	})
@@ -378,12 +381,12 @@ func (s *Service) SetAuthorityPolicy(ctx context.Context, p auth.Principal, tena
 }
 
 // ResolveAuthority returns the effective authority mode for an action type, falling back to
-// the '*' catch-all and finally to fail-closed 'approval' if nothing is configured. This is
-// the seam §6.11 SOAR consumes; the fail-closed fallback is defense-in-depth (NFR-009).
+// the '*' catch-all and finally to fail-closed 'observe' (nothing auto-executes) if nothing is
+// configured. This is the seam §6.11 SOAR consumes; the fallback is defense-in-depth (NFR-009).
 func (s *Service) ResolveAuthority(ctx context.Context, tenantID uuid.UUID, actionType string) (AuthorityPolicy, error) {
 	pols, err := s.repo.listAuthorityPolicies(ctx, tenantID)
 	if err != nil {
-		return AuthorityPolicy{Mode: "approval"}, err
+		return AuthorityPolicy{Mode: "observe"}, err
 	}
 	var star *AuthorityPolicy
 	for i := range pols {
@@ -400,7 +403,20 @@ func (s *Service) ResolveAuthority(ctx context.Context, tenantID uuid.UUID, acti
 	if star != nil {
 		return *star, nil
 	}
-	return AuthorityPolicy{TenantID: tenantID, ActionType: actionType, Mode: "approval", Active: true}, nil
+	return AuthorityPolicy{TenantID: tenantID, ActionType: actionType, Mode: "observe", Active: true}, nil
+}
+
+// ResolveAuthorityMode returns just the effective mode string (implements soar.Authorizer).
+func (s *Service) ResolveAuthorityMode(ctx context.Context, tenantID uuid.UUID, actionType string) (string, error) {
+	ap, err := s.ResolveAuthority(ctx, tenantID, actionType)
+	return ap.Mode, err
+}
+
+// SetCatchAllAuthority upserts the tenant-wide '*' authority-to-act policy (implements
+// soar.Authorizer; backs the legacy POST /soar/authority convenience endpoint).
+func (s *Service) SetCatchAllAuthority(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, mode string) error {
+	_, err := s.SetAuthorityPolicy(ctx, actor, tenantID, AuthorityInput{ActionType: "*", Mode: mode})
+	return err
 }
 
 // ListHistory returns the tenant's change history, newest first (TEN-010).

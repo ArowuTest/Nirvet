@@ -10,20 +10,53 @@ import (
 	"github.com/google/uuid"
 )
 
+// Authorizer resolves the tenant's per-action authority-to-act mode and sets the tenant-wide
+// catch-all. Implemented by tenant.Service (single source of truth: authority_policies). SOAR
+// consumes this instead of the legacy tenants.authority_mode column (Phase 0 reconciliation).
+type Authorizer interface {
+	ResolveAuthorityMode(ctx context.Context, tenantID uuid.UUID, actionType string) (string, error)
+	SetCatchAllAuthority(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, mode string) error
+}
+
 // Service orchestrates playbook runs under authority-to-act with approval gates.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo  *Repository
+	authz Authorizer
+}
 
 // NewService builds the service.
 func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+
+// WithAuthorizer wires the per-action authority store (tenant.Service). When set, SOAR resolves
+// authority per action from authority_policies; when nil it falls back to the legacy
+// tenants.authority_mode column (kept only so unit tests without a tenant service still run).
+func (s *Service) WithAuthorizer(a Authorizer) *Service { s.authz = a; return s }
 
 var validModes = map[AuthorityMode]bool{
 	AuthorityObserve: true, AuthorityApproval: true, AuthorityPreAuth: true, AuthorityEmergency: true,
 }
 
-// SetAuthority updates the caller's tenant authority-to-act mode.
-func (s *Service) SetAuthority(ctx context.Context, tenantID uuid.UUID, mode AuthorityMode) error {
+// resolveMode returns the authority mode for an action type, preferring the per-action policy
+// store and falling back to the legacy tenant-wide column.
+func (s *Service) resolveMode(ctx context.Context, tenantID uuid.UUID, actionType string) (AuthorityMode, error) {
+	if s.authz != nil {
+		m, err := s.authz.ResolveAuthorityMode(ctx, tenantID, actionType)
+		return AuthorityMode(m), err
+	}
+	return s.repo.TenantAuthority(ctx, tenantID)
+}
+
+// SetAuthority sets the tenant-wide catch-all authority-to-act mode (POST /soar/authority is a
+// convenience over the per-action policy API; it upserts the '*' policy).
+func (s *Service) SetAuthority(ctx context.Context, p auth.Principal, tenantID uuid.UUID, mode AuthorityMode) error {
 	if !validModes[mode] {
 		return httpx.ErrBadRequest("invalid authority mode")
+	}
+	if s.authz != nil {
+		if err := s.authz.SetCatchAllAuthority(ctx, p, tenantID, string(mode)); err != nil {
+			return httpx.ErrInternal("could not set authority")
+		}
+		return nil
 	}
 	if err := s.repo.SetTenantAuthority(ctx, tenantID, mode); err != nil {
 		return httpx.ErrInternal("could not set authority")
@@ -58,16 +91,18 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 	if err != nil {
 		return nil, httpx.ErrNotFound("playbook not found")
 	}
-	mode, err := s.repo.TenantAuthority(ctx, p.TenantID)
-	if err != nil {
-		return nil, httpx.ErrInternal("could not read authority-to-act")
-	}
 	run := &PlaybookRun{
 		ID: uuid.New(), TenantID: p.TenantID, PlaybookID: pb.ID,
 		IncidentID: incidentID, RequestedBy: &p.UserID,
 	}
 	needsApproval := false
 	for _, st := range pb.Steps {
+		// Authority is resolved PER ACTION (SOAR-003): a tenant may pre-authorise
+		// isolate_endpoint while still requiring approval for disable_user, etc.
+		mode, err := s.resolveMode(ctx, p.TenantID, st.Action)
+		if err != nil {
+			return nil, httpx.ErrInternal("could not read authority-to-act")
+		}
 		sr := StepResult{Name: st.Name, ConnectorKey: st.ConnectorKey, Action: st.Action, Risk: st.Risk}
 		if !st.RequiresApproval && Allowed(mode, st.Risk) {
 			sr.Status = "simulated"

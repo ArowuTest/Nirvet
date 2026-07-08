@@ -163,7 +163,7 @@ func newHarness(t *testing.T) *harness {
 		alertSvc:       alertSvc,
 		incSvc:         incSvc,
 		connSvc:        connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
-		soarSvc:        soar.NewService(soar.NewRepository(db)),
+		soarSvc:        soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenant.NewService(tenant.NewRepository(db))),
 		billSvc:        billing.NewService(billing.NewRepository(db)),
 		repSvc:         reporting.NewService(db, events),
 		corrSvc:        corrSvc,
@@ -1021,8 +1021,8 @@ func TestIntegration(t *testing.T) {
 		if ap, err := gov.ResolveAuthority(h.ctx, h.tenantID, "isolate_endpoint"); err != nil || ap.Mode != "pre_authorized" {
 			t.Fatalf("configured action must resolve to pre_authorized, got %+v (%v)", ap, err)
 		}
-		if ap, err := gov.ResolveAuthority(h.ctx, h.tenantID, "disable_user"); err != nil || ap.Mode != "approval" {
-			t.Fatalf("unconfigured action must fall back fail-closed to approval, got %+v (%v)", ap, err)
+		if ap, err := gov.ResolveAuthority(h.ctx, h.tenantID, "disable_user"); err != nil || ap.Mode != "observe" {
+			t.Fatalf("unconfigured action must fall back to the fail-closed '*' catch-all (observe), got %+v (%v)", ap, err)
 		}
 	})
 

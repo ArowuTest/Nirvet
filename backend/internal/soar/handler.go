@@ -24,7 +24,7 @@ func (h *Handler) SetAuthority(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.SetAuthority(r.Context(), p.TenantID, AuthorityMode(in.Mode)); err != nil {
+	if err := h.svc.SetAuthority(r.Context(), p, p.TenantID, AuthorityMode(in.Mode)); err != nil {
 		httpx.Error(w, err)
 		return
 	}

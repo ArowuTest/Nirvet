@@ -486,3 +486,25 @@ reviewer's order, each gated + tested + green on both backends.
 - **Deferred (tracked tasks)**: ABAC attribute constraints (IAM-002) — cross-cutting enforcement, its own slice D;
   scheduled expiry sweep for invitations (derived at read time now); email auto-send of the invite (the token is
   returned to the admin; notify-channel delivery is §6.16).
+
+## Phase 0 — Reconciliation (pay down debt from the full-repo audit)
+
+A 5-agent depth audit (memory: project-nirvet-audit-reality) found the §6.1 config surfaces I shipped were written
+but **consumed by nothing**. Phase 0 wires them to their enforcement points before building further breadth.
+
+### A — SOAR consumes per-action authority_policies (task #77, done)
+- **Problem**: two authority-to-act systems. SOAR `Run` read `tenants.authority_mode` (tenant-wide, enum
+  `pre_authorised`); tenant `authority_policies` (per-action, enum `pre_authorized`) was written by the admin API
+  but read only by a test. Divergent spelling would have mis-matched if ever wired.
+- **Fix**: `soar.Authorizer` interface (`ResolveAuthorityMode` + `SetCatchAllAuthority`) implemented by
+  tenant.Service; injected via `soar.Service.WithAuthorizer(tenantSvc)` in main + the integration harness. `Run`
+  now resolves authority **per step.Action** (SOAR-003 granularity) from `authority_policies`. Enum unified on
+  `pre_authorized`. `POST /soar/authority` repointed to upsert the `'*'` catch-all policy (legacy endpoint now
+  drives the unified store). Legacy `tenants.authority_mode` retained only as a nil-authorizer fallback for
+  unit tests.
+- **Correctness**: the seeded `'*'` catch-all is now **`observe`** (the most fail-closed mode — nothing
+  auto-executes — matching the platform's prior default), not `approval` (which permits low-risk auto-run).
+  Migration 0033 normalizes the 250 already-seeded rows; SeedGovernance + ResolveAuthority fallbacks updated.
+- **Invariant preserved**: heartbeat SOAR run still goes `pending_approval` (observe → all steps await). Verified.
+- **Remaining**: SOAR still SIMULATES the action itself (real connector actions = §6.11 depth slice); this gate
+  only fixes the authority *source of truth*.
