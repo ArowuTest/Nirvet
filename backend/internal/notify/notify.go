@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
@@ -41,11 +42,41 @@ func (c *logChannel) Send(_ context.Context, m Message) error {
 
 // Service routes messages to registered channels.
 type Service struct {
-	channels map[string]Channel
-	log      *slog.Logger
-	outbox   *OutboxRepository   // durable delivery queue (nil = direct dispatch only)
-	senders  *SenderRepo         // per-tenant email/sms sender config (nil = email/sms unavailable)
-	cipher   crypto.SecretCipher // vault for sender secrets (nil = email/sms unavailable)
+	channels  map[string]Channel
+	log       *slog.Logger
+	outbox    *OutboxRepository   // durable delivery queue (nil = direct dispatch only)
+	senders   *SenderRepo         // per-tenant email/sms sender config (nil = email/sms unavailable)
+	cipher    crypto.SecretCipher // vault for sender secrets (nil = email/sms unavailable)
+	templates *TemplateRepo       // templates + settings (nil = templates/throttle unavailable)
+	linkKey   []byte              // HMAC key for secure expiring links (nil = links unavailable)
+}
+
+// WithTemplates wires the template store + notification settings (COMM-006/007/008).
+func (s *Service) WithTemplates(repo *TemplateRepo) *Service { s.templates = repo; return s }
+
+// WithLinkKey wires the HMAC key used to sign secure expiring links (COMM-009).
+func (s *Service) WithLinkKey(key []byte) *Service { s.linkKey = key; return s }
+
+// EnqueueThrottled enqueues a notification unless an identical one (channel, recipient, subject) was
+// enqueued within the tenant's throttle window (COMM-006 de-dup). Returns whether it was enqueued.
+// Requires the outbox and template (settings) repos. The SLA path stays on the claim-deduped EnqueueTx.
+func (s *Service) EnqueueThrottled(ctx context.Context, tenantID uuid.UUID, channel, recipient, subject, body string) (bool, error) {
+	if s.outbox == nil {
+		return false, httpx.ErrInternal("outbox not available")
+	}
+	if s.templates != nil {
+		window, _, err := s.templates.settings(ctx, tenantID)
+		if err == nil && window > 0 {
+			dup, derr := s.templates.recentlyEnqueued(ctx, tenantID, channel, recipient, subject, window)
+			if derr == nil && dup {
+				return false, nil // throttled
+			}
+		}
+	}
+	if err := s.outbox.Enqueue(ctx, tenantID, channel, recipient, subject, body); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // NewService builds the dispatcher with the log channel plus the real webhook/Teams/Slack channels
@@ -132,4 +163,80 @@ func (h *Handler) ListSenders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"senders": xs})
+}
+
+// ListTemplates handles GET /notify/templates (COMM-007).
+func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	xs, err := h.svc.ListTemplates(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list templates"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"templates": xs})
+}
+
+// UpsertTemplate handles PUT /notify/templates (COMM-007).
+func (h *Handler) UpsertTemplate(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in TemplateInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.UpsertTemplate(r.Context(), p.TenantID, in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// UpdateSettings handles PUT /notify/settings — throttle window + default locale (COMM-006/008).
+func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in SettingsInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.UpdateSettings(r.Context(), p.TenantID, in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// MintLink handles POST /notify/links — mint a secure expiring link for a resource (COMM-009).
+func (h *Handler) MintLink(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in struct {
+		Resource   string `json:"resource"`
+		TTLSeconds int    `json:"ttl_seconds"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	token, err := h.svc.GenerateLink(p.TenantID, in.Resource, time.Duration(in.TTLSeconds)*time.Second, time.Now())
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"token": token})
+}
+
+// VerifyLink handles GET /notify/links/verify?token= — validate a secure link (COMM-009). Only returns
+// the resource when the token's tenant matches the caller's tenant.
+func (h *Handler) VerifyLink(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	tid, resource, err := h.svc.VerifyLink(r.URL.Query().Get("token"), time.Now())
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid or expired link"))
+		return
+	}
+	if tid != p.TenantID {
+		httpx.Error(w, httpx.ErrForbidden("link belongs to another tenant"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"resource": resource})
 }

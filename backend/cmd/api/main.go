@@ -158,7 +158,9 @@ func main() {
 	// delivered by a background dispatcher with retry (R3 §6.5 — no silent drop).
 	outboxRepo := notify.NewOutboxRepository(db)
 	notifySvc := notify.NewService(log).WithOutbox(outboxRepo).
-		WithSenders(notify.NewSenderRepo(db), cipher, notify.DefaultSMSClient()) // §6.16 email/SMS via per-tenant sender config
+		WithSenders(notify.NewSenderRepo(db), cipher, notify.DefaultSMSClient()). // §6.16 email/SMS via per-tenant sender config
+		WithTemplates(notify.NewTemplateRepo(db)).                                // §6.16 templates + throttle/localization
+		WithLinkKey([]byte(cfg.JWTSecret))                                        // §6.16 secure expiring links (HMAC)
 	notifyH := notify.NewHandler(notifySvc)
 	// Break-glass access fires an automatic alert (§6.2 IAM-006).
 	iamSvc.WithAlerter(notifySvc)
@@ -464,6 +466,12 @@ func main() {
 	// §6.16 per-tenant email/SMS sender config (COMM-001); secrets vault-encrypted, manager-gated.
 	mux.Handle("GET /notify/senders", provider(notifyH.ListSenders))
 	mux.Handle("PUT /notify/senders", manager(notifyH.ConfigureSender))
+	// §6.16 slice C: templates (COMM-007), settings/throttle+locale (COMM-006/008), secure links (COMM-009).
+	mux.Handle("GET /notify/templates", provider(notifyH.ListTemplates))
+	mux.Handle("PUT /notify/templates", manager(notifyH.UpsertTemplate))
+	mux.Handle("PUT /notify/settings", manager(notifyH.UpdateSettings))
+	mux.Handle("POST /notify/links", provider(notifyH.MintLink))
+	mux.Handle("GET /notify/links/verify", provider(notifyH.VerifyLink))
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}

@@ -101,3 +101,72 @@ func TestIntegration_NotificationSenders(t *testing.T) {
 		t.Fatalf("expected email + sms senders, got %d", len(senders))
 	}
 }
+
+// TestIntegration_NotificationTemplatesThrottle exercises §6.16 slice C: template render + localization
+// (COMM-007/008), tenant override, and throttle de-dup (COMM-006).
+func TestIntegration_NotificationTemplatesThrottle(t *testing.T) {
+	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
+	}
+	ctx := context.Background()
+	db, err := database.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(db.Close)
+
+	tenSvc := tenant.NewService(tenant.NewRepository(db))
+	tnA, _ := tenSvc.Create(ctx, tenant.CreateInput{Name: "tmpl-A-" + uuid.NewString()})
+
+	svc := notify.NewService(discardLogger()).
+		WithOutbox(notify.NewOutboxRepository(db)).
+		WithTemplates(notify.NewTemplateRepo(db))
+
+	// COMM-007: the seeded GLOBAL incident_opened/email template renders with vars.
+	r, err := svc.Render(ctx, tnA.ID, "incident_opened", "email", "en", map[string]string{
+		"severity": "high", "title": "Ransomware", "incident_id": "INC-1",
+	})
+	if err != nil {
+		t.Fatalf("render global template: %v", err)
+	}
+	if r.Subject != "Incident opened: Ransomware" || r.Body == "" {
+		t.Fatalf("global template render wrong: %+v", r)
+	}
+
+	// Tenant override wins over the global template.
+	if err := svc.UpsertTemplate(ctx, tnA.ID, notify.TemplateInput{
+		Key: "incident_opened", Channel: "email", Locale: "en",
+		Subject: "[{{severity}}] {{title}}", Body: "Custom body {{incident_id}}",
+	}); err != nil {
+		t.Fatalf("upsert template: %v", err)
+	}
+	r, _ = svc.Render(ctx, tnA.ID, "incident_opened", "email", "en", map[string]string{
+		"severity": "critical", "title": "Breach", "incident_id": "INC-9",
+	})
+	if r.Subject != "[critical] Breach" {
+		t.Fatalf("tenant override should win: %q", r.Subject)
+	}
+
+	// COMM-006 throttle: set a window, then two identical enqueues — first enqueues, second is throttled.
+	if err := svc.UpdateSettings(ctx, tnA.ID, notify.SettingsInput{ThrottleWindowSeconds: 300, DefaultLocale: "en"}); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	subj := "dup-" + uuid.NewString()
+	first, err := svc.EnqueueThrottled(ctx, tnA.ID, "log", "soc@x", subj, "body")
+	if err != nil || !first {
+		t.Fatalf("first enqueue should succeed: %v enq=%v", err, first)
+	}
+	second, err := svc.EnqueueThrottled(ctx, tnA.ID, "log", "soc@x", subj, "body")
+	if err != nil {
+		t.Fatalf("second enqueue error: %v", err)
+	}
+	if second {
+		t.Fatal("identical notification within the throttle window must be de-duped (not enqueued)")
+	}
+	// A different subject is NOT throttled.
+	other, _ := svc.EnqueueThrottled(ctx, tnA.ID, "log", "soc@x", "other-"+uuid.NewString(), "body")
+	if !other {
+		t.Fatal("a distinct notification must not be throttled")
+	}
+}
