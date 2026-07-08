@@ -52,6 +52,43 @@ func TestConditionMatches(t *testing.T) {
 	}
 }
 
+// TestValidateCondition: an invalid regex predicate is rejected at validation time (so
+// it never silently never-matches on the hot path), while valid predicates pass (R3 L3).
+func TestValidateCondition(t *testing.T) {
+	if err := validateCondition(Condition{All: []Predicate{{"actor_ref", OpRegex, "user:("}}}); err == nil {
+		t.Fatal("an unclosed-group regex must be rejected at create time")
+	}
+	if err := validateCondition(Condition{Any: []Predicate{{"target_ref", OpRegex, "[a-z"}}}); err == nil {
+		t.Fatal("an unterminated character class regex must be rejected")
+	}
+	// Valid patterns (and non-regex predicates) pass.
+	if err := validateCondition(Condition{
+		All: []Predicate{{"actor_ref", OpRegex, "^user:"}},
+		Any: []Predicate{{"severity", OpGte, "high"}},
+	}); err != nil {
+		t.Fatalf("valid condition must pass validation: %v", err)
+	}
+}
+
+// TestCompileRegexCache: the same pattern returns the same cached *Regexp instance (the
+// hot path does not recompile), and an invalid pattern surfaces its error (R3 M1).
+func TestCompileRegexCache(t *testing.T) {
+	a, err := compileRegex(`^host:[0-9]+$`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	b, err := compileRegex(`^host:[0-9]+$`)
+	if err != nil {
+		t.Fatalf("compile (cached): %v", err)
+	}
+	if a != b {
+		t.Fatal("identical pattern must return the cached compiled instance")
+	}
+	if _, err := compileRegex("("); err == nil {
+		t.Fatal("invalid pattern must return a compile error")
+	}
+}
+
 func TestSeverityRank(t *testing.T) {
 	if SeverityRank("critical") <= SeverityRank("high") {
 		t.Fatal("critical must outrank high")

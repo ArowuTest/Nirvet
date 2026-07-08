@@ -28,6 +28,25 @@ each gated + tested + green on both backends:
 | M-A single-event auto-promotion spam | corroboration (≥2 alerts) before auto-promote | `5c8cd64` |
 | lows: SSO role re-validate, vault key-version byte, gosec+govulncheck CI | — | `2c65037` |
 
+## Round 3 (Jul 2026) — all findings fixed, no deferrals
+
+Third external review (of the Round-2 fixes) confirmed "excellent remediation": no Critical
+or High, tenant isolation still airtight. It raised one regression from my own Round-2 vault
+fix plus a correctness/hardening punch-list. Owner directive again: fix everything now for a
+clean pass. Status:
+
+| Finding | Sev | Fix | Commit |
+|---|---|---|---|
+| M-NEW vault version-byte broke legacy decrypt (would orphan existing MFA/connector secrets on deploy) | Med | Decrypt falls back to the pre-version `[nonce][ct]` layout; `TestDecryptLegacyFormat` | `4c4f965` |
+| L-Triage-Audit: incident-triage persisted only a char count, not the copilot output | Low | `TriageIncident` audits `auditMeta(model, text)` (full output + sha256), matching SummariseAlert | _this batch_ |
+| M-D asset criticality change had no before/after audit (an escalation-suppressing edit was invisible) | Med | `Create` is actor-attributed; on a new/changed criticality it writes an `asset.criticality_set` audit entry with previous→new | _this batch_ |
+| L3 regex predicate not validated at rule-create (a bad pattern silently never-matched on the hot path) | Low | `validateCondition` rejects an uncompilable regex at create (also warms the cache) | _this batch_ |
+| M1 regex predicate recompiled per-event on the detection hot path | Med | package `regexCache` (sync.Map); evaluator + validation share `compileRegex` | _this batch_ |
+| CI pinned gosec/govulncheck to `@latest` (non-reproducible; a release could change results/break build) | Low | pinned `govulncheck@v1.1.3`, `gosec@v2.21.4` | _this batch_ |
+| M3 CEL cost/deadline limit on hot path | Med | _pending (#71)_ | — |
+| AI rate-limit: dedicated low-QPS bucket for /summarise + /triage | Med | _pending (#71)_ | — |
+| global detection-rule RLS: split into restrictive FOR UPDATE/DELETE policy | Low | _pending (#71)_ | — |
+
 ## Fixed — Round 1 (committed, tested)
 
 | # | Severity | Finding | Fix | Commit |

@@ -65,6 +65,22 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Asset, e
 	return &a, nil
 }
 
+// GetByRef returns the asset with the given ref, or (nil, nil) if none — used to
+// capture the before-value when a write changes criticality (R3 M-D audit).
+func (r *Repository) GetByRef(ctx context.Context, tenantID uuid.UUID, ref string) (*Asset, error) {
+	var a Asset
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return scan(tx.QueryRow(ctx, `SELECT `+assetCols+` FROM assets WHERE ref=$1`, ref), &a)
+	})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &a, nil
+}
+
 // FindByRefs returns the tenant's assets whose ref is in refs (incident enrichment).
 func (r *Repository) FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]Asset, error) {
 	if len(refs) == 0 {

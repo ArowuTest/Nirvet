@@ -142,6 +142,11 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 	if len(in.Condition.All) == 0 && len(in.Condition.Any) == 0 {
 		return nil, httpx.ErrBadRequest("condition must have at least one predicate")
 	}
+	// Reject (and pre-warm) regex predicates now, so a bad pattern never reaches the
+	// detection hot path where it would silently never match (R3 L3).
+	if err := validateCondition(in.Condition); err != nil {
+		return nil, httpx.ErrBadRequest(err.Error())
+	}
 	rule := &Rule{
 		ID: uuid.New(), Name: in.Name, Description: in.Description,
 		Severity: in.Severity, Confidence: in.Confidence, MITRE: in.MITRE,

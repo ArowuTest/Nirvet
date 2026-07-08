@@ -146,7 +146,7 @@ func newHarness(t *testing.T) *harness {
 	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{})
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
-	assetSvc := asset.NewService(asset.NewRepository(db))
+	assetSvc := asset.NewService(asset.NewRepository(db), db)
 	incSvc.WithAssetContext(assetSvc) // critical-asset escalation (§6.8/§6.15)
 	vulnSvc := vulnerability.NewService(vulnerability.NewRepository(db))
 	_, evidenceSigner, _ := ed25519.GenerateKey(rand.Reader)
@@ -486,7 +486,7 @@ func TestIntegration(t *testing.T) {
 		// §6.12: assistive-only triage grounded in the incident's own evidence, with the
 		// offline deterministic fallback (no LLM key). Guardrails: assistive flag,
 		// observed-only confidence, actions routed via approval, evidence-linked, audited.
-		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:triage", Name: "Triage Host", Kind: "host", Criticality: "critical"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:triage", Name: "Triage Host", Kind: "host", Criticality: "critical"}); err != nil {
 			t.Fatalf("asset: %v", err)
 		}
 		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "ai", TargetRef: "host:triage"}
@@ -536,7 +536,7 @@ func TestIntegration(t *testing.T) {
 		// §6.9: the entity graph gathers everything touching a ref — alerts, the
 		// incidents they belong to, and the matched asset.
 		ref := "host:graph-target"
-		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: ref, Name: "Graph Target", Kind: "host", Criticality: "medium"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: ref, Name: "Graph Target", Kind: "host", Criticality: "medium"}); err != nil {
 			t.Fatalf("register asset: %v", err)
 		}
 		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "graph", TargetRef: ref}
@@ -572,7 +572,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("IncidentEscalatesForCriticalAsset", func(t *testing.T) {
 		// §6.8/§6.15: a high-severity alert on a CRITICAL asset promotes to a CRITICAL
 		// incident (severity raised, never lowered), with the escalation on the timeline.
-		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:crown-jewel", Name: "Crown Jewel DB", Kind: "host", Criticality: "critical"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:crown-jewel", Name: "Crown Jewel DB", Kind: "host", Criticality: "critical"}); err != nil {
 			t.Fatalf("register critical asset: %v", err)
 		}
 		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "esc", TargetRef: "host:crown-jewel"}
@@ -665,7 +665,7 @@ func TestIntegration(t *testing.T) {
 		}
 		// Register the affected asset + an open vuln on it so the pack carries asset +
 		// exposure context (§6.15).
-		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:e", Name: "Evidence Host", Kind: "host", Criticality: "high"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:e", Name: "Evidence Host", Kind: "host", Criticality: "high"}); err != nil {
 			t.Fatalf("register asset: %v", err)
 		}
 		if _, err := h.vulnSvc.Create(h.ctx, h.tenantID, vulnerability.CreateInput{Ref: "host:e", CVE: "CVE-2026-2000", Title: "Evidence-host RCE", Severity: "critical", CVSS: 9.1, Exploited: true}); err != nil {
@@ -757,13 +757,13 @@ func TestIntegration(t *testing.T) {
 		// Registering the same ref twice updates in place (idempotent), and FindByRefs
 		// resolves it. Tenant-scoped.
 		in := asset.CreateInput{Ref: "user:jane@acme.com", Name: "Jane", Kind: "user", Criticality: "medium"}
-		a1, err := h.assetSvc.Create(h.ctx, h.tenantID, in)
+		a1, err := h.assetSvc.Create(h.ctx, h.principal,in)
 		if err != nil {
 			t.Fatalf("create asset: %v", err)
 		}
 		in.Criticality = "critical"
 		in.Name = "Jane Doe (VIP)"
-		a2, err := h.assetSvc.Create(h.ctx, h.tenantID, in)
+		a2, err := h.assetSvc.Create(h.ctx, h.principal,in)
 		if err != nil {
 			t.Fatalf("upsert asset: %v", err)
 		}
@@ -779,7 +779,7 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("FindByRefs should resolve exactly the known ref, got %d", len(found))
 		}
 		// Invalid criticality is rejected.
-		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:x", Name: "x", Criticality: "bogus"}); err == nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:x", Name: "x", Criticality: "bogus"}); err == nil {
 			t.Fatal("invalid criticality must be rejected")
 		}
 	})

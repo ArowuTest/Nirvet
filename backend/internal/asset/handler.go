@@ -22,7 +22,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	a, err := h.svc.Create(r.Context(), p.TenantID, in)
+	a, err := h.svc.Create(r.Context(), p, in)
 	if err != nil {
 		httpx.Error(w, err)
 		return

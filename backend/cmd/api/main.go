@@ -168,7 +168,7 @@ func main() {
 	correlationSvc.WithIncidenter(incidentSvc)
 
 	// Asset inventory (§6.15): tenant-scoped assets with business criticality.
-	assetSvc := asset.NewService(asset.NewRepository(db))
+	assetSvc := asset.NewService(asset.NewRepository(db), db)
 	assetH := asset.NewHandler(assetSvc)
 	// A critical affected asset escalates incident severity + tightens SLA (§6.8/§6.15).
 	incidentSvc.WithAssetContext(assetSvc)

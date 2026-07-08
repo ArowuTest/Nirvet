@@ -4,8 +4,12 @@ import (
 	"context"
 	"strings"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
+	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 var validKinds = map[string]bool{
@@ -16,10 +20,14 @@ var validCriticality = map[string]bool{
 }
 
 // Service holds asset-inventory business logic.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo *Repository
+	db   *database.DB // for the criticality-change audit (R3 M-D)
+}
 
-// NewService builds the service.
-func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+// NewService builds the service. db is used to audit criticality changes (may be nil in
+// unit tests that don't exercise the audit path).
+func NewService(repo *Repository, db *database.DB) *Service { return &Service{repo: repo, db: db} }
 
 // CreateInput registers (or updates) an asset.
 type CreateInput struct {
@@ -31,8 +39,11 @@ type CreateInput struct {
 	Tags        []string `json:"tags"`
 }
 
-// Create validates and upserts an asset in the tenant (idempotent on ref).
-func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput) (*Asset, error) {
+// Create validates and upserts an asset (idempotent on ref), attributed to the caller.
+// When the criticality is new or changed it writes an explicit audit entry capturing the
+// before/after value, so an escalation-suppressing criticality edit is reconstructable
+// (R3 M-D).
+func (s *Service) Create(ctx context.Context, p auth.Principal, in CreateInput) (*Asset, error) {
 	in.Ref = strings.TrimSpace(in.Ref)
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Ref == "" || in.Name == "" {
@@ -53,12 +64,26 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 	if in.Tags == nil {
 		in.Tags = []string{}
 	}
+	prev, _ := s.repo.GetByRef(ctx, p.TenantID, in.Ref) // before-value for the audit
 	a := &Asset{
-		ID: uuid.New(), TenantID: tenantID, Ref: in.Ref, Name: in.Name,
+		ID: uuid.New(), TenantID: p.TenantID, Ref: in.Ref, Name: in.Name,
 		Kind: in.Kind, Criticality: in.Criticality, Owner: in.Owner, Tags: in.Tags,
 	}
 	if err := s.repo.Upsert(ctx, a); err != nil {
 		return nil, httpx.ErrInternal("could not save asset")
+	}
+	if s.db != nil && (prev == nil || prev.Criticality != a.Criticality) {
+		prevCrit := ""
+		if prev != nil {
+			prevCrit = prev.Criticality
+		}
+		_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return audit.Record(ctx, tx, audit.Entry{
+				ActorID: p.UserID, ActorEmail: p.Email, Action: "asset.criticality_set",
+				Target:   "asset:" + a.Ref,
+				Metadata: map[string]any{"criticality": a.Criticality, "previous": prevCrit, "kind": a.Kind},
+			})
+		})
 	}
 	return a, nil
 }

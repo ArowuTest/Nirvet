@@ -222,7 +222,7 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "ai.triage_incident",
 			Target:   "incident:" + inc.ID.String(),
-			Metadata: map[string]any{"model": sum.Model, "output_chars": len(sum.Text)},
+			Metadata: auditMeta(sum.Model, sum.Text), // persist the copilot's output (R3 L-Triage-Audit)
 		})
 	})
 	return sum, nil
