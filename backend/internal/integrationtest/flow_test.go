@@ -147,7 +147,7 @@ func newHarness(t *testing.T) *harness {
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), q, nil, blobs)
 	outboxRepo := notify.NewOutboxRepository(db)
 	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
-	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}).WithEnqueuer(outboxRepo)
+	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}).WithEnqueuer(outboxRepo).WithEscalation(tenant.NewService(tenant.NewRepository(db)))
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 	assetSvc := asset.NewService(asset.NewRepository(db), db)
@@ -1003,13 +1003,20 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// Escalation matrix.
-		if _, err := gov.AddEscalationContact(h.ctx, h.principal, h.tenantID, tenant.EscalationInput{
-			Name: "SOC Duty", MinSeverity: "high", Channel: "email", Address: "soc@acme.test"}); err != nil {
+		ec, err := gov.AddEscalationContact(h.ctx, h.principal, h.tenantID, tenant.EscalationInput{
+			Name: "SOC Duty", MinSeverity: "high", Channel: "email", Address: "soc@acme.test"})
+		if err != nil {
 			t.Fatalf("add escalation contact: %v", err)
 		}
 		cs, _ := gov.ListEscalationContacts(h.ctx, h.tenantID)
 		if len(cs) != 1 || cs[0].Address != "soc@acme.test" {
 			t.Fatalf("escalation contact should be listed, got %d", len(cs))
+		}
+		// Remove it — the escalation matrix now drives real notification routing (Phase 0), so
+		// leaving a contact in the shared test tenant would route later subtests' breaches to
+		// the (unregistered) email channel.
+		if err := gov.DeleteEscalationContact(h.ctx, h.principal, h.tenantID, ec.ID); err != nil {
+			t.Fatalf("cleanup escalation contact: %v", err)
 		}
 
 		// Authority-to-act: configure one action, then resolution — configured action returns
@@ -1073,6 +1080,79 @@ func TestIntegration(t *testing.T) {
 		if !stillGlobal {
 			t.Fatal("global rule must remain global after the blocked attempts")
 		}
+	})
+
+	t.Run("EscalationRouting", func(t *testing.T) {
+		// Phase 0: the §6.1 escalation matrix now drives breach notification routing. A
+		// contact firing at high severity must receive a critical breach but not a low one,
+		// and the SLA sweeper must enqueue an outbox row addressed to that contact.
+		gov := tenant.NewService(tenant.NewRepository(h.db))
+		c, err := gov.AddEscalationContact(h.ctx, h.principal, h.tenantID, tenant.EscalationInput{
+			Name: "On-call", MinSeverity: "high", Channel: "email", Address: "oncall@acme.test"})
+		if err != nil {
+			t.Fatalf("add escalation contact: %v", err)
+		}
+
+		// Resolution: critical includes the high-min contact; low does not.
+		crit, err := gov.ResolveEscalation(h.ctx, h.tenantID, "critical")
+		hit := false
+		for _, tg := range crit {
+			if tg.Address == "oncall@acme.test" && tg.Channel == "email" {
+				hit = true
+			}
+		}
+		if err != nil || !hit {
+			t.Fatalf("critical breach must route to the high-min contact: %v %+v", err, crit)
+		}
+		if low, _ := gov.ResolveEscalation(h.ctx, h.tenantID, "low"); len(low) != 0 {
+			for _, tg := range low {
+				if tg.Address == "oncall@acme.test" {
+					t.Fatal("a low-severity breach must not reach a high-min contact")
+				}
+			}
+		}
+
+		// End-to-end: breach a critical incident, sweep, confirm the outbox routed to the contact.
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "critical", Source: "esc"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "esc-alert", Severity: "critical", DedupeKey: ev.ID.String() + ":esc"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE incidents SET resolve_due_at = now() - interval '1 hour' WHERE id=$1`, inc.ID)
+			return e
+		}); err != nil {
+			t.Fatalf("age incident: %v", err)
+		}
+		if _, err := h.incSvc.SweepSLABreaches(h.ctx, time.Now(), 500); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		var count int
+		_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx,
+				`SELECT count(*) FROM notification_outbox WHERE recipient=$1 AND channel='email' AND body LIKE '%'||$2||'%'`,
+				"oncall@acme.test", inc.ID.String()).Scan(&count)
+		})
+		if count == 0 {
+			t.Fatal("SLA breach must enqueue a notification addressed to the escalation contact (not just 'log')")
+		}
+		// Cleanup shared-tenant state so later drain-based subtests aren't affected: remove the
+		// contact (checked — surfaces a broken delete) and this subtest's routed outbox rows
+		// (which target the unregistered 'email' channel and would otherwise sit pending).
+		if err := gov.DeleteEscalationContact(h.ctx, h.principal, h.tenantID, c.ID); err != nil {
+			t.Fatalf("cleanup escalation contact: %v", err)
+		}
+		if left, _ := gov.ResolveEscalation(h.ctx, h.tenantID, "critical"); len(left) != 0 {
+			t.Fatalf("escalation contact must be gone after delete, got %+v", left)
+		}
+		_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `DELETE FROM notification_outbox WHERE body LIKE '%'||$1||'%'`, inc.ID.String())
+			return e
+		})
 	})
 
 	t.Run("IncidentSLATimersAndBreach", func(t *testing.T) {
@@ -1191,7 +1271,7 @@ func TestIntegration(t *testing.T) {
 		// about. An unknown channel makes Dispatch fail every time.
 		marker := "deadletter-" + uuid.NewString()
 		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
-			return notify.NewOutboxRepository(h.db).EnqueueTx(ctx, tx, h.tenantID, "no-such-channel", marker, marker)
+			return notify.NewOutboxRepository(h.db).EnqueueTx(ctx, tx, h.tenantID, "no-such-channel", "", marker, marker)
 		}); err != nil {
 			t.Fatalf("enqueue: %v", err)
 		}

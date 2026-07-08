@@ -167,7 +167,7 @@ func main() {
 	ticketingH := ticketing.NewHandler(ticketingSvc)
 
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
-		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo)
+		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc)
 	incidentH := incident.NewHandler(incidentSvc)
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	correlationSvc.WithIncidenter(incidentSvc)

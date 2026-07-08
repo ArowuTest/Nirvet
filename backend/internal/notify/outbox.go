@@ -18,12 +18,13 @@ const maxDeliveryAttempts = 5
 
 // OutboxItem is one pending outbound notification drained by the dispatcher.
 type OutboxItem struct {
-	ID       uuid.UUID
-	TenantID uuid.UUID
-	Channel  string
-	Subject  string
-	Body     string
-	Attempts int
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	Channel   string
+	Recipient string
+	Subject   string
+	Body      string
+	Attempts  int
 }
 
 // OutboxRepository persists the durable notification outbox (SRS §6.8/§6.16; R3 delivery
@@ -37,14 +38,14 @@ func NewOutboxRepository(db *database.DB) *OutboxRepository { return &OutboxRepo
 // EnqueueTx inserts a pending notification within an EXISTING tenant transaction. The
 // caller's tx must already have the tenant GUC set to tenantID (it does, when called from
 // a WithTenant block), so the RLS WITH CHECK passes. Satisfies incident.Enqueuer.
-func (r *OutboxRepository) EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, channel, subject, body string) error {
+func (r *OutboxRepository) EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, channel, recipient, subject, body string) error {
 	if channel == "" {
 		channel = "log"
 	}
 	_, err := tx.Exec(ctx,
-		`INSERT INTO notification_outbox (id, tenant_id, channel, subject, body)
-		 VALUES ($1,$2,$3,$4,$5)`,
-		uuid.New(), tenantID, channel, subject, body)
+		`INSERT INTO notification_outbox (id, tenant_id, channel, recipient, subject, body)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		uuid.New(), tenantID, channel, recipient, subject, body)
 	return err
 }
 
@@ -56,14 +57,14 @@ func (r *OutboxRepository) pending(ctx context.Context, limit int) ([]OutboxItem
 	}
 	var out []OutboxItem
 	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id, tenant_id, channel, subject, body, attempts FROM notification_outbox_pending($1)`, limit)
+		rows, err := tx.Query(ctx, `SELECT id, tenant_id, channel, recipient, subject, body, attempts FROM notification_outbox_pending($1)`, limit)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var it OutboxItem
-			if err := rows.Scan(&it.ID, &it.TenantID, &it.Channel, &it.Subject, &it.Body, &it.Attempts); err != nil {
+			if err := rows.Scan(&it.ID, &it.TenantID, &it.Channel, &it.Recipient, &it.Subject, &it.Body, &it.Attempts); err != nil {
 				return err
 			}
 			out = append(out, it)
@@ -112,7 +113,7 @@ func (s *Service) Drain(ctx context.Context, limit int) (int, error) {
 	}
 	sent := 0
 	for _, it := range items {
-		derr := s.Dispatch(ctx, Message{Subject: it.Subject, Body: it.Body, Channel: it.Channel})
+		derr := s.Dispatch(ctx, Message{To: it.Recipient, Subject: it.Subject, Body: it.Body, Channel: it.Channel})
 		if derr != nil {
 			_ = s.outbox.markFailed(ctx, it.TenantID, it.ID, it.Attempts, derr.Error())
 			continue

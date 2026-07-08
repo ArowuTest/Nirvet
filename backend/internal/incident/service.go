@@ -27,7 +27,20 @@ type Notifier interface {
 // silently dropped on a transient delivery failure — the outbox dispatcher retries it
 // (R3 §6.5). Kept narrow so incident does not depend on the notify package.
 type Enqueuer interface {
-	EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, channel, subject, body string) error
+	EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, channel, recipient, subject, body string) error
+}
+
+// EscalationTarget is one resolved notification destination (channel + address).
+type EscalationTarget struct {
+	Channel string
+	Address string
+}
+
+// EscalationResolver returns the tenant escalation-matrix contacts that fire at or above a
+// severity, in escalation order (implemented by tenant.Service). Empty = no matrix configured
+// → fall back to the log channel. Keeps incident decoupled from tenant governance internals.
+type EscalationResolver interface {
+	ResolveEscalation(ctx context.Context, tenantID uuid.UUID, severity string) ([]EscalationTarget, error)
 }
 
 // Assignees resolves a candidate analyst within a tenant, returning their email.
@@ -59,13 +72,14 @@ var severityRank = map[string]int{"informational": 0, "low": 1, "medium": 2, "hi
 // Service holds incident business logic. It depends on the alert service to
 // promote alerts (one-way dependency: incident -> alert) and an optional notifier.
 type Service struct {
-	repo      *Repository
-	alertSvc  *alert.Service
-	notifier  Notifier
-	enqueuer  Enqueuer
-	assignees Assignees
-	ticketer  Ticketer
-	assets    AssetContext
+	repo       *Repository
+	alertSvc   *alert.Service
+	notifier   Notifier
+	enqueuer   Enqueuer
+	escalation EscalationResolver
+	assignees  Assignees
+	ticketer   Ticketer
+	assets     AssetContext
 }
 
 // NewService builds the service. notifier and assignees may be nil.
@@ -78,6 +92,23 @@ func (s *Service) WithAssignees(a Assignees) *Service { s.assignees = a; return 
 
 // WithEnqueuer wires the durable notification outbox used by the SLA sweeper (R3 §6.5).
 func (s *Service) WithEnqueuer(e Enqueuer) *Service { s.enqueuer = e; return s }
+
+// WithEscalation wires the tenant escalation-matrix resolver so breach notifications route to
+// the configured on-call contacts by severity (§6.1 TEN-006 → §6.16 routing, Phase 0).
+func (s *Service) WithEscalation(r EscalationResolver) *Service { s.escalation = r; return s }
+
+// resolveTargets returns the escalation-matrix destinations for a severity (best-effort — a
+// resolver error or missing resolver yields no targets, and the caller falls back to log).
+func (s *Service) resolveTargets(ctx context.Context, tenantID uuid.UUID, severity string) []EscalationTarget {
+	if s.escalation == nil {
+		return nil
+	}
+	t, err := s.escalation.ResolveEscalation(ctx, tenantID, severity)
+	if err != nil {
+		return nil
+	}
+	return t
+}
 
 // WithTicketer wires outbound ITSM mirroring (best-effort on incident open).
 func (s *Service) WithTicketer(t Ticketer) *Service { s.ticketer = t; return s }
@@ -235,11 +266,24 @@ func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int
 			ID: uuid.New(), IncidentID: b.ID, Author: "system", Kind: "status",
 			Note: fmt.Sprintf("SLA %s deadline breached", b.Kind),
 		}
-		tenantID, kind := b.TenantID, b.Kind
+		tenantID, kind, severity := b.TenantID, b.Kind, b.Severity
 		var onClaim func(ctx context.Context, tx pgx.Tx) error
 		if s.enqueuer != nil {
+			// Route to the tenant's escalation matrix: one durable outbox row per contact
+			// whose min_severity <= the incident severity, in escalation order. When no matrix
+			// is configured (or no resolver wired), fall back to a single log-channel row so a
+			// breach is never silently unnotified.
+			targets := s.resolveTargets(ctx, tenantID, severity)
 			onClaim = func(ctx context.Context, tx pgx.Tx) error {
-				return s.enqueuer.EnqueueTx(ctx, tx, tenantID, "log", subject, body)
+				if len(targets) == 0 {
+					return s.enqueuer.EnqueueTx(ctx, tx, tenantID, "log", "", subject, body)
+				}
+				for _, t := range targets {
+					if e := s.enqueuer.EnqueueTx(ctx, tx, tenantID, t.Channel, t.Address, subject, body); e != nil {
+						return e
+					}
+				}
+				return nil
 			}
 		}
 		claimed, err := s.repo.ClaimBreachTx(ctx, tenantID, b.ID, kind, entry, onClaim)

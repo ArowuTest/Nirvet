@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -263,6 +264,27 @@ func (s *Service) SetStatus(ctx context.Context, p auth.Principal, tenantID uuid
 // ListEscalationContacts / AddEscalationContact / DeleteEscalationContact manage the matrix.
 func (s *Service) ListEscalationContacts(ctx context.Context, tenantID uuid.UUID) ([]EscalationContact, error) {
 	return s.repo.listEscalationContacts(ctx, tenantID)
+}
+
+// escSevRank orders severities so a contact's min_severity can be compared to an event's.
+var escSevRank = map[string]int{"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+// ResolveEscalation returns the active escalation contacts that fire at or above the given
+// severity, in escalation (order_index) order — the routing seam §6.16/incident consumes to
+// deliver breach notifications to the on-call matrix (implements incident.EscalationResolver).
+func (s *Service) ResolveEscalation(ctx context.Context, tenantID uuid.UUID, severity string) ([]incident.EscalationTarget, error) {
+	contacts, err := s.repo.listEscalationContacts(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	want := escSevRank[severity]
+	var out []incident.EscalationTarget
+	for _, c := range contacts {
+		if c.Active && escSevRank[c.MinSeverity] <= want {
+			out = append(out, incident.EscalationTarget{Channel: c.Channel, Address: c.Address})
+		}
+	}
+	return out, nil
 }
 
 // EscalationInput adds a contact to the escalation matrix.
