@@ -69,6 +69,36 @@ func TestTampering(t *testing.T) {
 	}
 }
 
+// TestDecryptLegacyFormat: a ciphertext written in the pre-version-byte layout
+// [nonce][ciphertext] must still decrypt after the version byte was introduced, so a
+// deploy does not orphan existing stored secrets (R2 M-NEW back-compat).
+func TestDecryptLegacyFormat(t *testing.T) {
+	c := newTestCipher(t)
+	lc := c.(*localCipher)
+	tenant := uuid.New()
+	// Hand-build a LEGACY blob: [nonce][sealed], no version prefix.
+	nonce := make([]byte, lc.aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	sealed := lc.aead.Seal(nil, nonce, []byte("legacy-refresh-token"), tenant[:])
+	legacy := append(append([]byte{}, nonce...), sealed...)
+
+	got, err := c.Decrypt(tenant, legacy)
+	if err != nil {
+		t.Fatalf("legacy-format blob must still decrypt: %v", err)
+	}
+	if string(got) != "legacy-refresh-token" {
+		t.Fatalf("legacy round-trip mismatch: got %q", got)
+	}
+
+	// And a current-format blob still round-trips.
+	cur, _ := c.Encrypt(tenant, []byte("new-token"))
+	if out, err := c.Decrypt(tenant, cur); err != nil || string(out) != "new-token" {
+		t.Fatalf("current-format round-trip failed: out=%q err=%v", out, err)
+	}
+}
+
 // TestNonceUniqueness verifies two encryptions of the same plaintext differ.
 func TestNonceUniqueness(t *testing.T) {
 	c := newTestCipher(t)

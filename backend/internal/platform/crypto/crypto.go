@@ -90,15 +90,21 @@ func (c *localCipher) Encrypt(tenantID uuid.UUID, plaintext []byte) ([]byte, err
 
 func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, error) {
 	ns := c.aead.NonceSize()
-	if len(ciphertext) < 1+ns {
+	aad := tenantID[:]
+	// Current layout: [version][nonce][ciphertext]. Try it when the first byte matches.
+	if len(ciphertext) >= 1+ns && ciphertext[0] == cipherKeyVersion {
+		if pt, err := c.aead.Open(nil, ciphertext[1:1+ns], ciphertext[1+ns:], aad); err == nil {
+			return pt, nil
+		}
+		// fall through — a rare legacy blob whose first byte happens to equal the version.
+	}
+	// Legacy layout: [nonce][ciphertext] (pre-version-byte). Back-compat so existing
+	// stored secrets (MFA/connector creds) keep decrypting across the version-byte deploy
+	// (R2 M-NEW: the version byte must NOT be a data-loss landmine).
+	if len(ciphertext) < ns {
 		return nil, errors.New("crypto: ciphertext too short")
 	}
-	if ciphertext[0] != cipherKeyVersion {
-		return nil, fmt.Errorf("crypto: unsupported key version %d", ciphertext[0])
-	}
-	nonce, sealed := ciphertext[1:1+ns], ciphertext[1+ns:]
-	aad := tenantID[:]
-	return c.aead.Open(nil, nonce, sealed, aad)
+	return c.aead.Open(nil, ciphertext[:ns], ciphertext[ns:], aad)
 }
 
 // kmsCipher is the production backend that wraps data keys with GCP Cloud KMS.
