@@ -26,6 +26,13 @@ const Window = 6 * time.Hour
 // incident (the SOC's "this is worth a human" line).
 const PromoteThreshold = 70
 
+// MinAlertsForPromotion requires corroboration before auto-opening an incident: a
+// single event — however high its risk — must not spawn a case (R2 M-A). It takes at
+// least two alerts on the same entity within the window, so one crafted "critical"
+// event in customer telemetry cannot flood incidents/emails. A human can still promote
+// a single alert manually.
+const MinAlertsForPromotion = 2
+
 // Correlation is a cluster of related alerts on one entity.
 type Correlation struct {
 	ID          uuid.UUID  `json:"id"`

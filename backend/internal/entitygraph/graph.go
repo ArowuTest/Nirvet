@@ -40,7 +40,7 @@ type Alerts interface {
 	ListByRef(ctx context.Context, tenantID uuid.UUID, ref string) ([]alert.Alert, error)
 }
 type Incidents interface {
-	Get(ctx context.Context, tenantID, id uuid.UUID) (*incident.Incident, error)
+	GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]incident.Incident, error)
 }
 type Correlations interface {
 	ListByEntity(ctx context.Context, tenantID uuid.UUID, entity string) ([]correlation.Correlation, error)
@@ -73,20 +73,23 @@ func (s *Service) Build(ctx context.Context, tenantID uuid.UUID, ref string) (*G
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read alerts")
 	}
-	// Distinct incidents the alerts belong to.
-	var incidents []incident.Incident
-	openInc := 0
+	// The distinct incidents the alerts belong to, fetched in ONE query (no N+1, R2 M-E).
+	var ids []uuid.UUID
 	seen := map[uuid.UUID]bool{}
 	for _, a := range alerts {
-		if a.IncidentID == nil || seen[*a.IncidentID] {
-			continue
+		if a.IncidentID != nil && !seen[*a.IncidentID] {
+			seen[*a.IncidentID] = true
+			ids = append(ids, *a.IncidentID)
 		}
-		seen[*a.IncidentID] = true
-		if inc, gerr := s.incidents.Get(ctx, tenantID, *a.IncidentID); gerr == nil {
-			incidents = append(incidents, *inc)
-			if inc.Stage != incident.StageClosed {
-				openInc++
-			}
+	}
+	incidents, err := s.incidents.GetByIDs(ctx, tenantID, ids)
+	if err != nil {
+		return nil, httpx.ErrInternal("could not read incidents")
+	}
+	openInc := 0
+	for i := range incidents {
+		if incidents[i].Stage != incident.StageClosed {
+			openInc++
 		}
 	}
 	corrs, err := s.correlations.ListByEntity(ctx, tenantID, ref)

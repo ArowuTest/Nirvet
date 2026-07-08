@@ -71,7 +71,9 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 // failure never breaks correlation; on incident-open failure the cluster stays 'promoted'
 // with no incident (it will not re-promote or spam) rather than looping forever.
 func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity string, c *Correlation) {
-	if s.incidenter == nil || c.RiskScore < PromoteThreshold {
+	// Corroboration + threshold: an incident is auto-opened only when the cluster is
+	// both high-risk AND seen by >= MinAlertsForPromotion alerts (R2 M-A anti-spam).
+	if s.incidenter == nil || c.RiskScore < PromoteThreshold || c.AlertCount < MinAlertsForPromotion {
 		return
 	}
 	// The in-memory status may be stale; the DB WHERE status='open' is authoritative.

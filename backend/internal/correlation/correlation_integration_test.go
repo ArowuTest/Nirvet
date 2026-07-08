@@ -108,21 +108,30 @@ func TestCorrelation_AutoPromotesHighRisk(t *testing.T) {
 	svc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(inc)
 	host := "host:" + uuid.NewString()
 
-	// A single critical alert with breadth is above the promote threshold → auto-incident.
+	// Corroboration (R2 M-A): a SINGLE high-risk alert must NOT auto-open an incident,
+	// even above the risk threshold — one crafted event can't spawn a case.
 	cid, _, err := svc.Correlate(ctx, tn.ID, host, "critical", []string{"T1486", "T1490", "T1059"}, 90)
 	if err != nil {
 		t.Fatalf("correlate: %v", err)
 	}
+	if inc.opened != 0 {
+		t.Fatalf("a single high-risk alert must NOT auto-open an incident (needs corroboration), got %d", inc.opened)
+	}
+	// A SECOND corroborating alert on the same entity crosses the corroboration bar →
+	// exactly one incident is opened.
+	if _, _, err := svc.Correlate(ctx, tn.ID, host, "critical", []string{"T1055"}, 90); err != nil {
+		t.Fatalf("second correlate: %v", err)
+	}
 	if inc.opened != 1 {
-		t.Fatalf("a high-risk cluster should auto-open exactly one incident, got %d", inc.opened)
+		t.Fatalf("a corroborated high-risk cluster should auto-open exactly one incident, got %d", inc.opened)
 	}
 	got, _ := svc.Get(ctx, tn.ID, cid)
 	if got.Status != correlation.StatusPromoted || got.IncidentID == nil {
 		t.Fatalf("cluster should be marked promoted with an incident: status=%s incident=%v", got.Status, got.IncidentID)
 	}
-	// A further alert on the same (now promoted) cluster must NOT open a second incident.
-	if _, _, err := svc.Correlate(ctx, tn.ID, host, "critical", []string{"T1055"}, 90); err != nil {
-		t.Fatalf("second correlate: %v", err)
+	// A third alert on the same (now promoted) cluster must NOT open a second incident.
+	if _, _, err := svc.Correlate(ctx, tn.ID, host, "critical", []string{"T1071"}, 90); err != nil {
+		t.Fatalf("third correlate: %v", err)
 	}
 	if inc.opened != 1 {
 		t.Fatalf("an already-promoted cluster must not re-promote, opened=%d", inc.opened)

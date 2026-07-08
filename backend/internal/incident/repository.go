@@ -96,6 +96,40 @@ func (r *Repository) ListAtRisk(ctx context.Context, tenantID uuid.UUID) ([]Inci
 	return out, err
 }
 
+// GetByIDs returns incidents by id in one query (avoids the entity-graph N+1 —
+// R2 M-E). Tenant-scoped via RLS; ids cast text[]->uuid[] for portable binding.
+func (r *Repository) GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]Incident, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = id.String()
+	}
+	var out []Incident
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at,
+			        acknowledged_at, ack_due_at, resolve_due_at
+			   FROM incidents WHERE id = ANY($1::uuid[])`, strs)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var i Incident
+			if err := rows.Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category,
+				&i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt,
+				&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt); err != nil {
+				return err
+			}
+			out = append(out, i)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // Get returns one incident.
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident, error) {
 	var i Incident

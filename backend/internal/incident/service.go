@@ -280,6 +280,20 @@ func (s *Service) AtRisk(ctx context.Context, tenantID uuid.UUID) ([]Incident, e
 	return incs, nil
 }
 
+// GetByIDs returns incidents by id (batched, with SLA-breach status computed) — used by
+// the entity graph to avoid an N+1 (R2 M-E).
+func (s *Service) GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]Incident, error) {
+	incs, err := s.repo.GetByIDs(ctx, tenantID, ids)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for idx := range incs {
+		computeBreach(&incs[idx], now)
+	}
+	return incs, nil
+}
+
 // Get returns one incident with its SLA-breach status computed as of now.
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident, error) {
 	i, err := s.repo.Get(ctx, tenantID, id)
