@@ -655,3 +655,52 @@ change mid-lifecycle (already handled at create).
 required-fields. Integration: full lifecycle walk (triage→investigating→containment_pending→contained→
 eradication→recovery→monitoring→closed with closure) + illegal-transition rejection + customer-timeline
 filter (internal note hidden). Heartbeat green; migrations apply; build/vet/gofmt clean.
+
+---
+
+## Gate — §6.16 real notification channels, slice A (COMM-001/010) + closes R-5 — reviewed Jul 2026
+
+**Why now.** Post-§6.8. A lot of already-built capability dead-ends at the `log` channel: the SLA-breach
+sweeper, the Phase-0 escalation-matrix routing, and the §6.11 SOAR notify executor all enqueue durable
+outbox rows — but `notify.NewService` registers only `log` (with an explicit `// TODO` for real
+channels), so an escalation contact with `channel=webhook/teams/slack` produces an outbox row that
+**fails delivery** ("unknown channel") and dead-letters. This slice makes those deliver for real, and
+is the correct home to close Round-4 **R-5** (the send-time SSRF re-check I deferred).
+
+**SRS grounding.** COMM-001 (email/Teams/Slack/webhook/in-platform channels), COMM-002 (route per
+escalation matrix/severity — already built, Phase 0-B), COMM-010 (don't send sensitive incident detail
+to insecure channels). NFR-SEC / OWASP SSRF for the outbound HTTP.
+
+**In scope (slice A).**
+1. **Real webhook / Teams / Slack channels.** Implement `notify.Channel` for `webhook`, `teams`,
+   `slack`: HTTP POST the message to the recipient URL (Slack/Teams incoming-webhooks accept a JSON
+   body; webhook posts `{subject, body, to}`; Slack posts `{text}`; Teams a minimal card). Registered
+   in `NewService`, so the outbox dispatcher delivers `channel=webhook/teams/slack` rows for real.
+2. **`internal/platform/netsafe` (new) — closes R-5.** Move `IsInternalHost` (+ the numeric-IP guard)
+   out of `tenant` into a shared leaf package, and add a hardened `*http.Client` whose
+   `net.Dialer.Control` hook rejects a connection whose RESOLVED IP is internal/loopback/link-local/
+   metadata — the real **send-time, post-DNS** SSRF defence (defeats DNS-rebinding, which a write-time
+   string check cannot). The webhook channels dial only through this client. `tenant`'s write-time
+   `validateEscalationAddress` reuses `netsafe.IsInternalHost` (single definition).
+3. **Remove the `// TODO`** in `notify.NewService` (owner no-TODO rule) — replaced by the registered
+   channels + a documented note on what's deferred.
+
+**Out of scope (slice B).** Email (SMTP) + SMS channels — they need per-tenant sender config (SMTP
+host/creds via the KMS vault, SMS gateway key), a config table + admin API; until then an `email`/`sms`
+escalation contact still dead-letters (honest — no sender configured). COMM-006 throttle/digest,
+COMM-007 templates, COMM-009 secure expiring links, COMM-008 localisation.
+
+**Interfaces / portability.** No new external SDK — stdlib `net/http` + `net`. The webhook channels
+take an injected `*http.Client` (the netsafe client) so they're testable against an `httptest` server
+and unchanged for GCP. The `Channel` seam is unchanged (Key/Send), so this is purely additive
+registration.
+
+**Invariants.** Send-time SSRF guard on EVERY outbound POST (no channel bypasses the safe client);
+https-only (rejected at the write-time validator + the client refuses cleartext internal); no secret
+material in the posted body; the dispatcher stays panic-guarded + at-least-once (unchanged); tenant
+isolation unaffected (recipient URL comes from the tenant's own escalation contact, RLS-scoped).
+
+**Verify.** Unit: `netsafe.IsInternalHost` (incl. numeric/hex forms), the safe dialer refuses an
+internal-IP connection, webhook channel POSTs the expected body to an `httptest` server + is refused
+for an internal URL. Integration: an escalation contact with `channel=webhook` pointed at a test server
+delivers via the outbox dispatcher (row → sent). Heartbeat green; build/vet/gofmt clean.

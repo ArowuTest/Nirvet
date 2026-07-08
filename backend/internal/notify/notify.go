@@ -44,11 +44,14 @@ type Service struct {
 	outbox   *OutboxRepository // durable delivery queue (nil = direct dispatch only)
 }
 
-// NewService builds the dispatcher with the default log channel.
+// NewService builds the dispatcher with the log channel plus the real webhook/Teams/Slack channels
+// (§6.16 COMM-001) — HTTP POST over an SSRF-safe client, so an escalation contact or SOAR notify with
+// channel=webhook/teams/slack is delivered, not dead-lettered. Email(SMTP)/SMS are deferred to slice B
+// (they need per-tenant sender config via the vault); an email/sms row dead-letters until then.
 func NewService(log *slog.Logger) *Service {
 	s := &Service{channels: map[string]Channel{}, log: log}
 	s.register(&logChannel{log: log})
-	// TODO: register email(SMTP)/teams/slack channels when their creds are set.
+	s.registerHTTPChannels(defaultHTTPClient())
 	return s
 }
 

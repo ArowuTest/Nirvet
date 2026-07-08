@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/ArowuTest/nirvet/internal/platform/severity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -135,49 +135,11 @@ func validateEscalationAddress(channel, address string) error {
 		if err != nil || u.Scheme != "https" || u.Host == "" {
 			return httpx.ErrBadRequest(channel + " address must be an absolute https URL")
 		}
-		if isInternalHost(u.Hostname()) {
+		if netsafe.IsInternalHost(u.Hostname()) {
 			return httpx.ErrForbidden("webhook address may not target an internal, loopback, or metadata host")
 		}
 	}
 	return nil
-}
-
-// isInternalHost reports whether a host literal is an internal/loopback/link-local/metadata target.
-// Only literal IPs are decided here; a real hostname returns false. Round-4 R-5: also reject numeric
-// integer/hex IP encodings (e.g. "2130706433" or "0x7f000001" = 127.0.0.1) which net.ParseIP does not
-// recognise as IPs — deny them outright rather than let an alternate encoding slip past the checks.
-func isInternalHost(host string) bool {
-	h := strings.ToLower(host)
-	if h == "localhost" || strings.HasSuffix(h, ".local") || strings.HasSuffix(h, ".internal") {
-		return true
-	}
-	if isNumericHost(h) {
-		return true // integer/hex/octal IP encoding — not a real hostname; fail closed
-	}
-	ip := net.ParseIP(h)
-	if ip == nil {
-		return false
-	}
-	// IsLinkLocalUnicast covers 169.254.0.0/16 incl. the 169.254.169.254 cloud metadata endpoint.
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
-}
-
-// isNumericHost reports whether a host is an all-numeric (decimal integer), hex (0x…), or octal-ish
-// (leading-zero) form that some HTTP clients would decode to an IP — a valid dotted IP is NOT numeric
-// here (it contains dots and parses via net.ParseIP), so this only fires on the alternate encodings.
-func isNumericHost(h string) bool {
-	if h == "" || strings.Contains(h, ".") || strings.Contains(h, ":") {
-		return false
-	}
-	if strings.HasPrefix(h, "0x") {
-		return true
-	}
-	for _, c := range h {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true // all digits with no dots — a decimal integer IP encoding
 }
 
 // =========================== repository (governance) ===========================
