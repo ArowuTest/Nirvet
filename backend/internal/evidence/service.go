@@ -28,6 +28,7 @@ import (
 type Incidents interface {
 	Get(ctx context.Context, tenantID, id uuid.UUID) (*incident.Incident, error)
 	Timeline(ctx context.Context, tenantID, id uuid.UUID) ([]incident.TimelineEntry, error)
+	ListAttachments(ctx context.Context, tenantID, id uuid.UUID) ([]incident.Attachment, error) // chain-of-custody (R5-M6)
 }
 
 // Alerts resolves the alerts promoted into an incident.
@@ -123,6 +124,13 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read vulnerabilities")
 	}
+	// Chain-of-custody (R5-M6): the incident's attachments with full sha256/size/uploader are a
+	// first-class signed section, so the custody metadata is inside the Ed25519 digest — not just a
+	// truncated hash in a timeline note.
+	attachments, err := s.incidents.ListAttachments(ctx, p.TenantID, incidentID)
+	if err != nil {
+		return nil, httpx.ErrInternal("could not read attachments")
+	}
 	auditRows, err := audit.FindByActionContains(ctx, s.db, p.TenantID, incidentID.String(), 500)
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read audit trail")
@@ -138,6 +146,7 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 		Events:          events,
 		Assets:          assets,
 		Vulnerabilities: vulns,
+		Attachments:     attachments,
 		Audit:           auditRows,
 	}
 	pack.Manifest = s.buildManifest(pack)
@@ -161,6 +170,7 @@ func sectionChecksums(p *Pack) map[string]string {
 		"events":          checksum(p.Events),
 		"assets":          checksum(p.Assets),
 		"vulnerabilities": checksum(p.Vulnerabilities),
+		"attachments":     checksum(p.Attachments),
 		"audit":           checksum(p.Audit),
 	}
 }
@@ -196,6 +206,7 @@ func (s *Service) buildManifest(p *Pack) Manifest {
 		"events":          len(p.Events),
 		"assets":          len(p.Assets),
 		"vulnerabilities": len(p.Vulnerabilities),
+		"attachments":     len(p.Attachments),
 		"audit":           len(p.Audit),
 	}
 	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, sc)

@@ -4,12 +4,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// hasControlChar reports whether s contains an ASCII control character (used to reject unsafe filenames).
+func hasControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
 
 // BlobPutter stores an evidence blob for a tenant and returns its URI. Narrow interface so incident does
 // not depend on the blobstore package (implemented by blobstore.Store).
@@ -142,6 +153,11 @@ func (s *Service) RegisterAttachment(ctx context.Context, p auth.Principal, inci
 	}
 	if filename == "" {
 		return nil, httpx.ErrBadRequest("filename is required")
+	}
+	// Round-5 observation: reject a filename with path separators or control chars (path-traversal /
+	// stored-XSS when a UI renders it verbatim), and cap the length.
+	if len(filename) > 255 || strings.ContainsAny(filename, "/\\") || hasControlChar(filename) {
+		return nil, httpx.ErrBadRequest("filename contains illegal characters or is too long")
 	}
 	if len(data) == 0 {
 		return nil, httpx.ErrBadRequest("empty attachment")

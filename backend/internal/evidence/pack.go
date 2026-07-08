@@ -33,6 +33,7 @@ type Pack struct {
 	Events          []eventstore.NormalizedEvent `json:"events"`
 	Assets          []asset.Asset                `json:"assets"`          // affected assets (§6.15), matched by alert refs
 	Vulnerabilities []vulnerability.Vuln         `json:"vulnerabilities"` // open vulns on those assets (§6.15 ASSET-002/007)
+	Attachments     []incident.Attachment        `json:"attachments"`     // chain-of-custody: full sha256/size/uploader per file (R5-M6)
 	Audit           []audit.LogEntry             `json:"audit"`
 	Manifest        Manifest                     `json:"manifest"`
 }

@@ -184,6 +184,10 @@ func TestIntegration_CaseworkSliceC(t *testing.T) {
 	if _, err := svc.RegisterAttachment(ctx, pA, inc.ID, "x", "", nil, ""); err == nil {
 		t.Fatal("empty attachment must be rejected")
 	}
+	// R5 observation: a filename with a path separator is rejected (traversal / stored-XSS).
+	if _, err := svc.RegisterAttachment(ctx, pA, inc.ID, "../../etc/passwd", "", []byte("x"), ""); err == nil {
+		t.Fatal("filename with path separators must be rejected")
+	}
 
 	// CASE-010: seeded global runbooks are visible; link one; it shows on the incident.
 	arts, err := svc.ListArticles(ctx, tnA.ID)
