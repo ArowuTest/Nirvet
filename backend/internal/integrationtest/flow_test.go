@@ -784,6 +784,55 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("GlobalDetectionRuleRLS", func(t *testing.T) {
+		// A tenant reads the global detection catalogue but must NOT be able to delete or
+		// re-home a global rule (tenant_id IS NULL) — either would corrupt the shared
+		// catalogue for every other tenant (R3 global-rule RLS: per-command policies).
+		var globalID uuid.UUID
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT id FROM detection_rules WHERE tenant_id IS NULL LIMIT 1`).Scan(&globalID)
+		}); err != nil {
+			t.Fatalf("tenant must be able to READ a seeded global rule: %v", err)
+		}
+		var delRows, updRows int64
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			ct, e := tx.Exec(ctx, `DELETE FROM detection_rules WHERE id=$1`, globalID)
+			if e != nil {
+				return e
+			}
+			delRows = ct.RowsAffected()
+			return nil
+		}); err != nil {
+			t.Fatalf("delete attempt errored: %v", err)
+		}
+		if delRows != 0 {
+			t.Fatalf("SECURITY: tenant DELETEd a global rule (%d rows) — RLS split failed", delRows)
+		}
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			ct, e := tx.Exec(ctx, `UPDATE detection_rules SET tenant_id=$1 WHERE id=$2`, h.tenantID, globalID)
+			if e != nil {
+				return e
+			}
+			updRows = ct.RowsAffected()
+			return nil
+		}); err != nil {
+			t.Fatalf("re-home attempt errored: %v", err)
+		}
+		if updRows != 0 {
+			t.Fatalf("SECURITY: tenant RE-HOMED a global rule (%d rows) — RLS split failed", updRows)
+		}
+		// The rule is untouched and still global (visible via the SELECT policy).
+		var stillGlobal bool
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT tenant_id IS NULL FROM detection_rules WHERE id=$1`, globalID).Scan(&stillGlobal)
+		}); err != nil {
+			t.Fatalf("re-read global rule: %v", err)
+		}
+		if !stillGlobal {
+			t.Fatal("global rule must remain global after the blocked attempts")
+		}
+	})
+
 	t.Run("IncidentSLATimersAndBreach", func(t *testing.T) {
 		// Promote a fresh critical alert and verify SLA timers are stamped, the case is
 		// acknowledged (analyst-owned) and not yet breached — then force the deadlines

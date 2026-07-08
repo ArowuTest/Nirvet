@@ -43,9 +43,9 @@ clean pass. Status:
 | L3 regex predicate not validated at rule-create (a bad pattern silently never-matched on the hot path) | Low | `validateCondition` rejects an uncompilable regex at create (also warms the cache) | _this batch_ |
 | M1 regex predicate recompiled per-event on the detection hot path | Med | package `regexCache` (sync.Map); evaluator + validation share `compileRegex` | _this batch_ |
 | CI pinned gosec/govulncheck to `@latest` (non-reproducible; a release could change results/break build) | Low | pinned `govulncheck@v1.1.3`, `gosec@v2.21.4` | _this batch_ |
-| M3 CEL cost/deadline limit on hot path | Med | _pending (#71)_ | — |
-| AI rate-limit: dedicated low-QPS bucket for /summarise + /triage | Med | _pending (#71)_ | — |
-| global detection-rule RLS: split into restrictive FOR UPDATE/DELETE policy | Low | _pending (#71)_ | — |
+| M3 CEL expression could burn CPU on the hot path (no cost bound) | Med | `cel.CostLimit(100k)` per program; over-budget eval fails safe (no-match). Deterministic cost limit chosen over a wall-clock deadline so detection stays reproducible | _this batch_ |
+| AI copilot routes shared the 50-rps API bucket (LLM latency + token-spend abuse) | Med | dedicated tight per-principal `ai` bucket (~1 call/2s, burst 5) on /summarise + /triage | _this batch_ |
+| global detection-rule RLS: single policy let a tenant DELETE or re-home the shared global catalogue | Med | split into per-command policies (SELECT global+own; INSERT/UPDATE/DELETE own-only). Migration 0026; integration test proves a tenant can read but not delete/re-home a global rule | _this batch_ |
 
 ## Fixed — Round 1 (committed, tested)
 

@@ -244,10 +244,20 @@ func main() {
 	// fail-closed brute-force control is the DB-backed per-account lockout in iam.Login.
 	loginLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.2, 8, "login"), ratelimit.ByIPTrusting(cfg.TrustedProxyDepth)) // ~1 login / 5s / IP, burst 8
 	apiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "api"), ratelimit.ByPrincipal)                            // 50 rps / principal
+	// AI copilot calls hit the LLM gateway (latency + token cost), so they get their own
+	// much tighter per-principal bucket instead of sharing the 50-rps API allowance — a
+	// compromised or runaway T1 token can't rack up gateway spend (R3 AI-rate). Separate
+	// namespace ("ai"), so it does not interact with the general api bucket.
+	aiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.5, 5, "ai"), ratelimit.ByPrincipal) // ~1 AI call / 2s / principal, burst 5
 	auditMut := audit.Mutations(db)                                                                                                  // record successful mutations (NFR-003)
 	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut) }
 	provider := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(providerRoles...))
+	}
+	// aiProvider is the provider chain with the tight AI bucket swapped in for apiLimit —
+	// same roles (T1 keeps assistive AI), stricter throughput (R3 AI-rate).
+	aiProvider := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, aiLimit, auditMut, auth.RequireRole(providerRoles...))
 	}
 	padmin := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin))
@@ -334,8 +344,8 @@ func main() {
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
 	mux.Handle("POST /alerts/{id}/promote", senior(incidentH.PromoteFromAlert))
-	mux.Handle("POST /alerts/{id}/summarise", provider(aiH.SummariseAlert))
-	mux.Handle("POST /incidents/{id}/triage", provider(aiH.TriageIncident))
+	mux.Handle("POST /alerts/{id}/summarise", aiProvider(aiH.SummariseAlert))
+	mux.Handle("POST /incidents/{id}/triage", aiProvider(aiH.TriageIncident))
 	// detection engineering
 	mux.Handle("GET /detections", provider(detectionH.List))
 	mux.Handle("POST /detections", detEng(detectionH.Create))

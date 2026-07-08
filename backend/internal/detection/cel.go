@@ -21,6 +21,15 @@ import (
 // map with dynamic values (canonical fields + the data payload). Built once.
 var celEnv = mustCELEnv()
 
+// celCostLimit bounds the work a single CEL evaluation may perform on the detection hot
+// path (R3 M3). A hostile or accidentally-expensive rule — e.g. a comprehension macro
+// (.all/.exists) over a large vendor-supplied list in event.data — is cut off instead of
+// burning CPU per event. A *cost* limit (not a wall-clock deadline) is used deliberately:
+// it is deterministic and machine-independent, so the same event+rule always evaluates
+// the same way, which a detection engine requires. Legitimate detection expressions cost
+// only tens of units; 100k is a wide margin below which nothing real is truncated.
+const celCostLimit uint64 = 100_000
+
 func mustCELEnv() *cel.Env {
 	env, err := cel.NewEnv(cel.Variable("event", cel.MapType(cel.StringType, cel.DynType)))
 	if err != nil {
@@ -43,7 +52,9 @@ func CompileCEL(expr string) (cel.Program, error) {
 	if ast.OutputType() != cel.BoolType {
 		return nil, fmt.Errorf("expression must evaluate to bool, got %s", ast.OutputType())
 	}
-	return celEnv.Program(ast)
+	// CostLimit bounds runtime work; an over-budget eval returns an error, which EvalCEL
+	// treats as "did not fire" (fail-safe) — the hot path can never be pinned by one rule.
+	return celEnv.Program(ast, cel.CostLimit(celCostLimit))
 }
 
 // EvalCEL runs a compiled program against an event, returning whether it fired.

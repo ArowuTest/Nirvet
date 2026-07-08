@@ -61,6 +61,29 @@ func TestCEL_InvalidExpressionRejected(t *testing.T) {
 	}
 }
 
+// TestCEL_CostLimit: a comprehension over a large vendor-supplied list is cut off by
+// the runtime cost limit and treated as "did not fire" (fail-safe), while the same
+// expression over a small list evaluates normally (R3 M3 — hot path can't be pinned).
+func TestCEL_CostLimit(t *testing.T) {
+	prog, err := CompileCEL(`event.data.items.all(x, x == "a")`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Small list: fully evaluated, all elements "a" → fires.
+	if !EvalCEL(prog, celEvent("high", "x", 0, map[string]any{"items": []any{"a", "a", "a"}})) {
+		t.Fatal("a cheap comprehension over a small list must still evaluate")
+	}
+	// Huge list: iterating it would exceed the cost budget, so the eval errors and is
+	// treated as no-match rather than burning CPU.
+	big := make([]any, 300000)
+	for i := range big {
+		big[i] = "a"
+	}
+	if EvalCEL(prog, celEvent("high", "x", 0, map[string]any{"items": big})) {
+		t.Fatal("an over-budget comprehension must be cut off (no-match), not run to completion")
+	}
+}
+
 func TestCEL_EvalErrorIsSafe(t *testing.T) {
 	// Referencing a missing nested key evaluates to an error at runtime; EvalCEL
 	// must treat that as "did not fire" rather than panic.
