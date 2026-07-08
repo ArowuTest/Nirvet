@@ -31,6 +31,33 @@ func (h *Handler) SetAuthority(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]string{"authority_mode": in.Mode})
 }
 
+// ListActionCatalog handles GET /soar/action-catalog (effective catalog: global + tenant overrides).
+func (h *Handler) ListActionCatalog(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	cs, err := h.svc.ListActionCatalog(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"actions": cs})
+}
+
+// SetActionCatalog handles PUT /soar/action-catalog (upsert a tenant override for an action).
+func (h *Handler) SetActionCatalog(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in ActionCatalogInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	a, err := h.svc.SetActionCatalog(r.Context(), p, p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, a)
+}
+
 // ListPlaybooks handles GET /playbooks.
 func (h *Handler) ListPlaybooks(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

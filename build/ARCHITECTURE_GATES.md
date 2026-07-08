@@ -508,3 +508,81 @@ but **consumed by nothing**. Phase 0 wires them to their enforcement points befo
 - **Invariant preserved**: heartbeat SOAR run still goes `pending_approval` (observe → all steps await). Verified.
 - **Remaining**: SOAR still SIMULATES the action itself (real connector actions = §6.11 depth slice); this gate
   only fixes the authority *source of truth*.
+
+---
+
+## Gate — §6.11 real SOAR action execution, slice A (SOAR-001..009, §9.5 risk classes) — reviewed Jul 2026
+
+**Why now.** Post-Phase-0 domain depth. The full-repo audit's biggest STUB: SOAR actions are 100%
+`status="simulated"` — every step records "would invoke connector.action" and nothing runs. Phase 0-A fixed the
+authority *source of truth* (per-action `authority_policies`); this slice turns simulation into **real dispatch**
+and corrects the risk model to the SRS's own §9.5 class scale.
+
+**SRS grounding.** SOAR-002 action catalog (notify, ticket, enrich, block IP/domain/hash, quarantine email,
+disable user, revoke session, isolate endpoint, collect evidence, request customer action, generate report);
+SOAR-003 authority per tenant/action/severity/hours/approval-group; SOAR-004 classify actions into the **five
+§9.5 classes** (0 Informational, 1 Low, 2 Medium, 3 High, 4 Business-critical); SOAR-005 human approval for
+high-impact unless contractually pre-authorised AND technically safe; **§9.5 Class 4 = incident-commander +
+customer authority, NO full autonomous execution in MVP/V1**; SOAR-006 log every execution/input/output/
+decision/approval/error; SOAR-007 dry-run/simulation mode; SOAR-009 failure handling + escalation to human.
+
+**In scope (slice A).**
+1. **§9.5 risk-class model.** Replace the ad-hoc 4-value `RiskClass` (low/medium/high/critical) with the five
+   canonical classes `informational|low|medium|high|business_critical`. `Allowed(mode, class)` encodes the rule
+   that **`business_critical` NEVER auto-executes** regardless of authority mode (fail-closed to approval) — the
+   §9.5 no-autonomy guarantee, enforced in code not config.
+2. **Action catalog (config, no-hardcoding).** New `soar_action_catalog` table: `action_key`, `title`,
+   `risk_class`, `executor` (`connector|internal|manual`), `connector_key`, `enabled`; global (tenant_id NULL)
+   or tenant-override, mirroring `playbooks` RLS. Seeded with the SOAR-002 catalog + their §9.5 classes. The
+   step's risk class is now resolved from the catalog (admin-configurable) instead of hardcoded in each
+   playbook step's JSON; a step whose action is absent from the catalog fails closed to `business_critical`
+   (max approval) rather than defaulting permissive.
+3. **Executor seam + registry.** `ActionExecutor` interface
+   `Execute(ctx, tenantID, action string, params map[string]any) (Outcome, error)` where Outcome is
+   `{Executed bool, Detail string}`. A registry resolves by the catalog `executor` kind.
+   - **Grounding correction (from reading the code, not assumed):** `connector.Service` has **no** dispatch-by-key
+     `Execute` and there is **no live per-tenant Actioner registry** — the audit's "connector actions unbuilt" is
+     real. So real containment (isolate/disable/revoke/block/quarantine) is NOT runnable in this slice; forcing it
+     would be dishonest. Those dispatch to the **simulating executor**: records `simulated (no live connector for
+     <key>)` naming the connector.action it would invoke, preserving the full authority+approval+audit path. The
+     live Actioner registry (vault creds + msgraph/Defender action impls) is its own later slice — the seam is ready.
+   - **One genuinely-real executor ships now:** `internal:notify` (customer notification / `request_customer_action`)
+     backed by the durable notification **outbox** — non-destructive, already-built, safe. Proves the seam does real
+     work end-to-end (playbook step → outbox row → dispatcher delivers). Needs a small non-tx
+     `OutboxRepository.Enqueue` (wraps `EnqueueTx` in its own tenant tx) + a narrow `soar.Notifier` interface.
+   - `manual` actions record `awaiting_customer`. **Deferred to slice B:** other internal executors
+     (ticketing/evidence/reporting) and the live connector Actioner registry.
+4. **Execution + audit.** `Run`/`Approve` dispatch each permitted step through the executor and record the real
+   outcome (`executed|simulated|failed|awaiting_approval|awaiting_customer|skipped`) with detail; **every step
+   dispatch writes an audit row** (SOAR-006: action, class, authority mode, decision, outcome, error). A step
+   error is caught per-step (SOAR-009): the step is `failed`, the run continues to the next step, and the run
+   ends `completed` if all non-failed or `failed` if any hard-failed — never a panic.
+
+**Out of scope (later slices).** Full SOAR-001 branch/wait/rollback playbook DSL (today steps are a linear
+array); ticketing/evidence/reporting internal executors (slice B); the live EDR/IdP containment Actioner registry
+(needs vault creds + action impls — the seam is ready); business-continuity auto-throttle (SOAR-010); customer
+approval-request UX (§6.16/designer).
+
+**Entities / schema / enums.**
+- `soar_action_catalog` (RLS FORCE, global-or-tenant like playbooks). `risk_class` CHECK on the five §9.5 values;
+  `executor` CHECK `(connector|internal|manual)`. `UNIQUE (COALESCE(tenant_id,'0..0'), action_key)` so a tenant
+  can override a global action's class/executor. Index `(tenant_id, action_key)` for the per-step lookup.
+- Go `RiskClass` constants unified on the five values; `soar_test.go` matrix updated. Existing `playbook_runs`
+  step-result JSON gains no schema change (statuses are values in `steps_result`); the `StepResult.Status` set
+  widens (documented). Existing seeded playbook's inline `risk` values are migrated to catalog classes
+  (`revoke_sessions`/`reset_password` → `high`, `enrich`/`inspect_mailbox` → `low`).
+- **Idempotency**: catalog seed `ON CONFLICT DO NOTHING`; admin upsert `ON CONFLICT DO UPDATE`. Executor dispatch
+  is at-least-once within a run but a run is created once (existing behavior); connector-side idempotency is the
+  connector's concern (documented).
+
+**Correctness invariants (must hold).**
+- Heartbeat SOAR run stays `pending_approval` under the seeded `observe` authority (all steps await). ✓ target.
+- `business_critical` step never auto-runs even under `emergency` authority (new unit test).
+- Absent-from-catalog action → treated as `business_critical` (fail-closed), never permissive.
+- Four-eyes (requester ≠ approver) unchanged; per-step audit added.
+- No cross-tenant catalog read (RLS FORCE; global rows readable, tenant rows isolated).
+
+**Verify.** Unit: risk-class matrix incl. Class-4 no-autonomy + absent-action fail-closed + executor dispatch
+(fake executor: executed/failed) . Integration: playbook run against a catalog action with a fake connector
+executor asserts `executed` outcome + audit rows; run under `observe` still `pending_approval`. Migration applies;
+build/vet/gofmt/heartbeat green.

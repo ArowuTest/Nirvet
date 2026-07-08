@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -72,15 +73,18 @@ func (r *Repository) GetPlaybook(ctx context.Context, tenantID, id uuid.UUID) (*
 	return &p, nil
 }
 
-// CreateRun inserts a playbook run.
-func (r *Repository) CreateRun(ctx context.Context, run *PlaybookRun) error {
+// CreateRun inserts a playbook run and its audit entry atomically (SOAR-006).
+func (r *Repository) CreateRun(ctx context.Context, run *PlaybookRun, entry audit.Entry) error {
 	steps, _ := json.Marshal(run.Steps)
 	return r.db.WithTenant(ctx, run.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			`INSERT INTO playbook_runs (id, tenant_id, playbook_id, incident_id, status, steps_result, requested_by)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
 			run.ID, run.TenantID, run.PlaybookID, run.IncidentID, run.Status, steps, run.RequestedBy,
-		).Scan(&run.CreatedAt)
+		).Scan(&run.CreatedAt); err != nil {
+			return err
+		}
+		return audit.Record(ctx, tx, entry)
 	})
 }
 
@@ -132,18 +136,20 @@ func (r *Repository) ListRuns(ctx context.Context, tenantID uuid.UUID) ([]Playbo
 	return out, err
 }
 
-// UpdateRun persists status/steps/approval/completion.
-func (r *Repository) UpdateRun(ctx context.Context, run *PlaybookRun) error {
+// UpdateRun persists status/steps/approval/completion and its audit entry atomically (SOAR-006).
+func (r *Repository) UpdateRun(ctx context.Context, run *PlaybookRun, entry audit.Entry) error {
 	steps, _ := json.Marshal(run.Steps)
 	var completed any
 	if run.CompletedAt != nil {
 		completed = *run.CompletedAt
 	}
 	return r.db.WithTenant(ctx, run.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`UPDATE playbook_runs SET status=$2, steps_result=$3, approved_by=$4, completed_at=$5 WHERE id=$1`,
-			run.ID, run.Status, steps, run.ApprovedBy, completed)
-		return err
+			run.ID, run.Status, steps, run.ApprovedBy, completed); err != nil {
+			return err
+		}
+		return audit.Record(ctx, tx, entry)
 	})
 }
 

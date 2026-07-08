@@ -1,12 +1,13 @@
-// Package soar is response orchestration (SRS §6.11; doc 04 §7). Playbooks run
-// steps that may require approval and execute actions through connectors. The
-// authority-to-act policy (doc 03 §6) gates every action — AI never executes
-// destructive actions, only this engine under policy, with full audit.
+// Package soar is response orchestration (SRS §6.11; doc 04 §7). Playbooks run steps that may
+// require approval; each step's §9.5 risk class comes from the admin-configurable action catalog,
+// and the per-action authority-to-act policy (tenant.authority_policies) gates auto-execution. AI
+// never executes destructive actions — only this engine, under policy, with full audit.
 //
-// Action execution against real connectors (Defender isolate, Entra disable)
-// requires live credentials; in this build a gated action is recorded as
-// "simulated" with the connector/action it WOULD invoke, preserving the full
-// approval + audit path.
+// Permitted steps dispatch through the ActionExecutor seam (executor.go). Actions with a registered
+// real executor run for real (e.g. notify via the durable outbox); actions without one — notably the
+// destructive connector containment actions, which need a live per-tenant Actioner registry that does
+// not yet exist — record a TRUTHFUL "simulated" outcome naming what they would invoke, preserving the
+// full authority + approval + audit path. business_critical (§9.5 Class 4) never auto-executes.
 package soar
 
 import (
@@ -27,15 +28,22 @@ const (
 	// authority policy store (tenant.authority_policies) that SOAR now consumes (Phase 0).
 )
 
-// RiskClass of a SOAR action (doc 04 §9.5).
+// RiskClass of a SOAR action — the canonical five-level SRS §9.5 scale (Class 0..4). The action
+// catalog (soar_action_catalog) assigns each action a class; the engine gates auto-execution on it.
 type RiskClass string
 
 const (
-	RiskLow      RiskClass = "low"
-	RiskMedium   RiskClass = "medium"
-	RiskHigh     RiskClass = "high"
-	RiskCritical RiskClass = "critical"
+	RiskInformational    RiskClass = "informational"     // Class 0 — enrich, note; no approval
+	RiskLow              RiskClass = "low"               // Class 1 — ticket, notify analyst, watchlist
+	RiskMedium           RiskClass = "medium"            // Class 2 — customer notify, password reset
+	RiskHigh             RiskClass = "high"              // Class 3 — disable user, isolate, block
+	RiskBusinessCritical RiskClass = "business_critical" // Class 4 — network block, mass quarantine, cloud lockdown
 )
+
+// validRiskClass is the set the catalog CHECK constraint enforces (kept in sync with migration 0036).
+var validRiskClass = map[RiskClass]bool{
+	RiskInformational: true, RiskLow: true, RiskMedium: true, RiskHigh: true, RiskBusinessCritical: true,
+}
 
 // Step is one action in a playbook.
 type Step struct {
@@ -93,18 +101,27 @@ type PlaybookRun struct {
 	CompletedAt *time.Time   `json:"completed_at,omitempty"`
 }
 
-// Allowed reports whether an action of the given risk may auto-execute (without
-// approval) under the tenant's authority mode. Higher risk requires approval.
+// Allowed reports whether an action of the given §9.5 risk class may auto-execute (without human
+// approval) under the tenant's authority-to-act mode. The rule set (SOAR-004/005, §9.5):
+//   - business_critical (Class 4) NEVER auto-executes under ANY mode — the §9.5 "no full autonomous
+//     execution in MVP/V1" guarantee, enforced in code so no misconfiguration can bypass it.
+//   - observe: nothing auto-runs (recommend-only) — fully fail-closed.
+//   - approval: only informational + low auto-run; medium/high await approval.
+//   - pre_authorized: informational + low + medium auto-run (agreed lower-risk containment).
+//   - emergency: everything except business_critical auto-runs (contractual high-impact response).
 func Allowed(mode AuthorityMode, risk RiskClass) bool {
+	if risk == RiskBusinessCritical {
+		return false // Class 4: incident-commander + customer authority only, never autonomous
+	}
 	switch mode {
 	case AuthorityObserve:
 		return false
 	case AuthorityApproval:
-		return risk == RiskLow
+		return risk == RiskInformational || risk == RiskLow
 	case AuthorityPreAuth:
-		return risk == RiskLow || risk == RiskMedium
+		return risk == RiskInformational || risk == RiskLow || risk == RiskMedium
 	case AuthorityEmergency:
-		return risk != RiskCritical
+		return true // all but business_critical (handled above)
 	default:
 		return false
 	}

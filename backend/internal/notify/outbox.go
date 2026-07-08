@@ -49,6 +49,15 @@ func (r *OutboxRepository) EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uu
 	return err
 }
 
+// Enqueue inserts a pending notification in its own tenant transaction — for callers that are not
+// already inside a WithTenant block (e.g. the SOAR notify action executor). Prefer EnqueueTx when
+// the enqueue must commit atomically with another state change.
+func (r *OutboxRepository) Enqueue(ctx context.Context, tenantID uuid.UUID, channel, recipient, subject, body string) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return r.EnqueueTx(ctx, tx, tenantID, channel, recipient, subject, body)
+	})
+}
+
 // pending returns undelivered notifications across all tenants via the SECURITY DEFINER
 // drain function (the table is RLS-FORCEd, so a plain WithSystem select would see nothing).
 func (r *OutboxRepository) pending(ctx context.Context, limit int) ([]OutboxItem, error) {

@@ -158,13 +158,16 @@ func newHarness(t *testing.T) *harness {
 
 	return &harness{
 		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, approver: approver, email: email,
-		iamSvc:         iamSvc,
-		ingest:         ingestSvc,
-		worker:         ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
-		alertSvc:       alertSvc,
-		incSvc:         incSvc,
-		connSvc:        connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
-		soarSvc:        soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenant.NewService(tenant.NewRepository(db))),
+		iamSvc:   iamSvc,
+		ingest:   ingestSvc,
+		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
+		alertSvc: alertSvc,
+		incSvc:   incSvc,
+		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
+		soarSvc: soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenant.NewService(tenant.NewRepository(db))).
+			WithExecutors(soar.NewExecutors().
+				Register("notify_analyst", soar.NewNotifyExecutor(outboxRepo)).
+				Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))),
 		billSvc:        billing.NewService(billing.NewRepository(db)),
 		repSvc:         reporting.NewService(db, events),
 		corrSvc:        corrSvc,
@@ -1339,6 +1342,47 @@ func TestIntegration(t *testing.T) {
 		}
 		if approved.Status != soar.RunCompleted {
 			t.Fatalf("after approval the run must be completed, got %s", approved.Status)
+		}
+	})
+
+	// §6.11 slice A: a permitted notify action EXECUTES for real (durable outbox row), not simulated.
+	t.Run("SOARNotifyActionExecutes", func(t *testing.T) {
+		gov := tenant.NewService(tenant.NewRepository(h.db))
+		// Pre-authorise ONLY the low-risk notify action; the '*' catch-all stays 'observe' so other
+		// subtests (heartbeat) are unaffected.
+		if _, err := gov.SetAuthorityPolicy(h.ctx, h.principal, h.tenantID, tenant.AuthorityInput{ActionType: "notify_analyst", Mode: "approval"}); err != nil {
+			t.Fatalf("set per-action authority: %v", err)
+		}
+		outboxCount := func() int {
+			var n int
+			_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT count(*) FROM notification_outbox`).Scan(&n)
+			})
+			return n
+		}
+		before := outboxCount()
+		// A tenant playbook with a single auto-runnable notify step.
+		pbID := uuid.New()
+		steps := `[{"name":"Notify SOC","connector_key":"","action":"notify_analyst","risk":"low","requires_approval":false}]`
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `INSERT INTO playbooks (id, tenant_id, name, description, trigger_category, steps)
+			                       VALUES ($1,$2,'Notify test','','*',$3)`, pbID, h.tenantID, steps)
+			return e
+		}); err != nil {
+			t.Fatalf("insert playbook: %v", err)
+		}
+		run, err := h.soarSvc.Run(h.ctx, h.principal, pbID, nil)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if run.Status != soar.RunCompleted {
+			t.Fatalf("notify run should complete (no approval needed), got %s", run.Status)
+		}
+		if len(run.Steps) != 1 || run.Steps[0].Status != soar.StatusExecuted {
+			t.Fatalf("notify step should be EXECUTED (real), got %+v", run.Steps)
+		}
+		if after := outboxCount(); after <= before {
+			t.Fatalf("notify executor should have enqueued a durable outbox row (before=%d after=%d)", before, after)
 		}
 	})
 

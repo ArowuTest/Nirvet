@@ -222,7 +222,12 @@ func main() {
 	connectorH := connector.NewHandler(connector.NewService(connector.NewRepository(db), vault, ingestSvc))
 	// SOAR resolves authority-to-act per action from the tenant's authority_policies
 	// (single source of truth; Phase 0 reconciliation — replaces tenants.authority_mode).
-	soarSvc := soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenantSvc)
+	// SOAR action executors (§6.11): notify actions run for real via the durable outbox; connector
+	// containment actions simulate until the live Actioner registry exists (the seam is ready).
+	soarExecs := soar.NewExecutors().
+		Register("notify_analyst", soar.NewNotifyExecutor(outboxRepo)).
+		Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))
+	soarSvc := soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenantSvc).WithExecutors(soarExecs)
 	soarH := soar.NewHandler(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
@@ -424,6 +429,8 @@ func main() {
 	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))
 	mux.Handle("POST /soar/runs/{id}/reject", soarApprover(soarH.Reject))
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
+	mux.Handle("GET /soar/action-catalog", provider(soarH.ListActionCatalog))
+	mux.Handle("PUT /soar/action-catalog", padmin(soarH.SetActionCatalog))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
 	mux.Handle("POST /threat-intel", senior(threatH.Add))
