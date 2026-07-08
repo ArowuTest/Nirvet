@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -30,19 +31,25 @@ type Alerts interface {
 	ListByIncident(ctx context.Context, tenantID, incidentID uuid.UUID) ([]alert.Alert, error)
 }
 
-// Service assembles evidence packs read-only from the case, alert, event and audit
-// stores. Every read is tenant-scoped, so a pack can only ever contain the caller's
-// own tenant data.
+// Assets resolves inventory assets by their canonical refs (affected-asset context).
+type Assets interface {
+	FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]asset.Asset, error)
+}
+
+// Service assembles evidence packs read-only from the case, alert, event, asset and
+// audit stores. Every read is tenant-scoped, so a pack can only ever contain the
+// caller's own tenant data.
 type Service struct {
 	incidents Incidents
 	alerts    Alerts
 	events    eventstore.EventStore
+	assets    Assets
 	db        *database.DB
 }
 
 // NewService builds the evidence service.
-func NewService(incidents Incidents, alerts Alerts, events eventstore.EventStore, db *database.DB) *Service {
-	return &Service{incidents: incidents, alerts: alerts, events: events, db: db}
+func NewService(incidents Incidents, alerts Alerts, events eventstore.EventStore, assets Assets, db *database.DB) *Service {
+	return &Service{incidents: incidents, alerts: alerts, events: events, assets: assets, db: db}
 }
 
 // Build assembles the evidence pack for an incident in the caller's tenant, stamped
@@ -74,6 +81,22 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read events")
 	}
+	// Affected assets (§6.15): the distinct actor/target refs the alerts touch,
+	// resolved against the tenant's inventory.
+	var refs []string
+	seenRef := map[string]bool{}
+	for _, a := range alerts {
+		for _, ref := range []string{a.TargetRef, a.ActorRef} {
+			if ref != "" && !seenRef[ref] {
+				seenRef[ref] = true
+				refs = append(refs, ref)
+			}
+		}
+	}
+	assets, err := s.assets.FindByRefs(ctx, p.TenantID, refs)
+	if err != nil {
+		return nil, httpx.ErrInternal("could not read assets")
+	}
 	auditRows, err := audit.FindByActionContains(ctx, s.db, p.TenantID, incidentID.String(), 500)
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read audit trail")
@@ -87,6 +110,7 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 		Timeline:      timeline,
 		Alerts:        alerts,
 		Events:        events,
+		Assets:        assets,
 		Audit:         auditRows,
 	}
 	pack.Manifest = buildManifest(pack)
@@ -108,12 +132,14 @@ func buildManifest(p *Pack) Manifest {
 		"timeline": checksum(p.Timeline),
 		"alerts":   checksum(p.Alerts),
 		"events":   checksum(p.Events),
+		"assets":   checksum(p.Assets),
 		"audit":    checksum(p.Audit),
 	}
 	counts := map[string]int{
 		"timeline": len(p.Timeline),
 		"alerts":   len(p.Alerts),
 		"events":   len(p.Events),
+		"assets":   len(p.Assets),
 		"audit":    len(p.Audit),
 	}
 	keys := make([]string, 0, len(sc))

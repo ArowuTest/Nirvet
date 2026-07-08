@@ -16,6 +16,7 @@ import (
 	"github.com/ArowuTest/nirvet/api"
 	"github.com/ArowuTest/nirvet/internal/ai"
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/billing"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/connector"
@@ -148,8 +149,12 @@ func main() {
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	correlationSvc.WithIncidenter(incidentSvc)
 
-	// Evidence-pack export (§6.13): composes case + alert + event + audit read paths.
-	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, db))
+	// Asset inventory (§6.15): tenant-scoped assets with business criticality.
+	assetSvc := asset.NewService(asset.NewRepository(db))
+	assetH := asset.NewHandler(assetSvc)
+
+	// Evidence-pack export (§6.13): composes case + alert + event + asset + audit reads.
+	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, db))
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
 	billingH := billing.NewHandler(billingSvc)
@@ -310,6 +315,10 @@ func main() {
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
 	mux.Handle("GET /incidents/{id}/evidence-pack", provider(evidenceH.Pack))
+	// Asset inventory (§6.15)
+	mux.Handle("POST /assets", provider(assetH.Create))
+	mux.Handle("GET /assets", provider(assetH.List))
+	mux.Handle("GET /assets/{id}", provider(assetH.Get))
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))

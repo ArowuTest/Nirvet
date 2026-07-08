@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
@@ -29,6 +30,7 @@ type Pack struct {
 	Timeline      []incident.TimelineEntry     `json:"timeline"`
 	Alerts        []alert.Alert                `json:"alerts"`
 	Events        []eventstore.NormalizedEvent `json:"events"`
+	Assets        []asset.Asset                `json:"assets"` // affected assets (§6.15), matched by alert refs
 	Audit         []audit.LogEntry             `json:"audit"`
 	Manifest      Manifest                     `json:"manifest"`
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/billing"
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
@@ -59,6 +60,7 @@ type harness struct {
 	corrSvc  *correlation.Service
 	events   eventstore.EventStore
 	evidence *evidence.Service
+	assetSvc *asset.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -136,6 +138,7 @@ func newHarness(t *testing.T) *harness {
 	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{})
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
+	assetSvc := asset.NewService(asset.NewRepository(db))
 
 	return &harness{
 		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, approver: approver, email: email,
@@ -150,7 +153,8 @@ func newHarness(t *testing.T) *harness {
 		repSvc:   reporting.NewService(db, events),
 		corrSvc:  corrSvc,
 		events:   events,
-		evidence: evidence.NewService(incSvc, alertSvc, events, db),
+		assetSvc: assetSvc,
+		evidence: evidence.NewService(incSvc, alertSvc, events, assetSvc, db),
 	}
 }
 
@@ -382,6 +386,10 @@ func TestIntegration(t *testing.T) {
 		if err != nil || !ins {
 			t.Fatalf("seed alert: %v ins=%v", err, ins)
 		}
+		// Register the affected asset so the pack carries asset context (§6.15).
+		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:e", Name: "Evidence Host", Kind: "host", Criticality: "high"}); err != nil {
+			t.Fatalf("register asset: %v", err)
+		}
 		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
 		if err != nil {
 			t.Fatalf("promote: %v", err)
@@ -429,6 +437,47 @@ func TestIntegration(t *testing.T) {
 		}
 		if pack.Manifest.Counts["alerts"] != len(pack.Alerts) {
 			t.Fatalf("manifest alert count %d must match %d", pack.Manifest.Counts["alerts"], len(pack.Alerts))
+		}
+		// Affected-asset context (§6.15): the registered host must appear in the pack.
+		foundAsset := false
+		for _, as := range pack.Assets {
+			if as.Ref == "host:e" && as.Criticality == "high" {
+				foundAsset = true
+			}
+		}
+		if !foundAsset {
+			t.Fatal("pack must contain the affected asset (host:e, high criticality)")
+		}
+	})
+
+	t.Run("AssetRegistryUpsert", func(t *testing.T) {
+		// Registering the same ref twice updates in place (idempotent), and FindByRefs
+		// resolves it. Tenant-scoped.
+		in := asset.CreateInput{Ref: "user:jane@acme.com", Name: "Jane", Kind: "user", Criticality: "medium"}
+		a1, err := h.assetSvc.Create(h.ctx, h.tenantID, in)
+		if err != nil {
+			t.Fatalf("create asset: %v", err)
+		}
+		in.Criticality = "critical"
+		in.Name = "Jane Doe (VIP)"
+		a2, err := h.assetSvc.Create(h.ctx, h.tenantID, in)
+		if err != nil {
+			t.Fatalf("upsert asset: %v", err)
+		}
+		if a2.ID != a1.ID {
+			t.Fatal("re-registering the same ref must update in place, not create a new asset")
+		}
+		got, _ := h.assetSvc.Get(h.ctx, h.tenantID, a1.ID)
+		if got.Criticality != "critical" || got.Name != "Jane Doe (VIP)" {
+			t.Fatalf("upsert must update attributes, got crit=%s name=%q", got.Criticality, got.Name)
+		}
+		found, _ := h.assetSvc.FindByRefs(h.ctx, h.tenantID, []string{"user:jane@acme.com", "host:nonexistent"})
+		if len(found) != 1 || found[0].Ref != "user:jane@acme.com" {
+			t.Fatalf("FindByRefs should resolve exactly the known ref, got %d", len(found))
+		}
+		// Invalid criticality is rejected.
+		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:x", Name: "x", Criticality: "bogus"}); err == nil {
+			t.Fatal("invalid criticality must be rejected")
 		}
 	})
 

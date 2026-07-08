@@ -86,6 +86,17 @@ components:
         resolve_due_at: { type: string, format: date-time, nullable: true, description: SLA resolve deadline (per-severity) }
         ack_breached: { type: boolean, description: derived — acknowledged late or still unacknowledged past due }
         resolve_breached: { type: boolean, description: derived — closed late or still open past due }
+    Asset:
+      type: object
+      required: [ref, name]
+      properties:
+        id: { type: string, format: uuid }
+        ref: { type: string, description: canonical reference matching actor_ref/target_ref (e.g. host:FIN-01) }
+        name: { type: string }
+        kind: { type: string, enum: [host, user, service, cloud, network, other] }
+        criticality: { type: string, enum: [low, medium, high, critical] }
+        owner: { type: string }
+        tags: { type: array, items: { type: string } }
     DetectionRule:
       type: object
       properties:
@@ -246,7 +257,9 @@ paths:
   /alerts/{id}/summarise: { post: { tags: [ai], summary: AI summary of an alert (assistive), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: summary } } } }
   /incidents: { get: { tags: [incidents], summary: List incidents, responses: { '200': { description: incidents } } } }
   /incidents/{id}: { get: { tags: [incidents], summary: Get incident + timeline, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: incident } } } }
-  /incidents/{id}/evidence-pack: { get: { tags: [incidents], summary: Export a tamper-evident evidence pack (case + timeline + alerts + events + audit + SHA-256 manifest), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: evidence pack (downloadable JSON) }, '404': { description: incident not found } } } }
+  /incidents/{id}/evidence-pack: { get: { tags: [incidents], summary: Export a tamper-evident evidence pack (case + timeline + alerts + events + assets + audit + SHA-256 manifest), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: evidence pack (downloadable JSON) }, '404': { description: incident not found } } } }
+  /assets: { get: { tags: [assets], summary: List assets, responses: { '200': { description: assets } } }, post: { tags: [assets], summary: Register or update an asset (upsert on ref), requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Asset' } } } }, responses: { '201': { description: asset } } } }
+  /assets/{id}: { get: { tags: [assets], summary: Get an asset, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: asset }, '404': { description: not found } } } }
   /incidents/{id}/assign: { post: { tags: [incidents], summary: Assign incident to an analyst (same-tenant), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], requestBody: { required: true, content: { application/json: { schema: { type: object, required: [assignee_id], properties: { assignee_id: { type: string, format: uuid } } } } } }, responses: { '200': { description: assigned }, '400': { description: invalid assignee } } } }
   /incidents/{id}/notes: { post: { tags: [incidents], summary: Add a note, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: added } } } }
   /incidents/{id}/close: { post: { tags: [incidents], summary: Close incident, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: closed } } } }

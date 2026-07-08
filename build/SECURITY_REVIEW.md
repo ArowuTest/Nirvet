@@ -56,8 +56,12 @@ is still required **pre-go-live** (build-phase sign-off only — see memory
 - **compliance** — static/reference responses, not a live control-status engine.
 - **reporting** — JSON aggregates only; no scheduled/exported report artifacts.
 - **evidence-pack export (§6.13)** — DONE (Jul 2026): GET /incidents/{id}/evidence-pack
-  bundles the case + timeline + linked alerts + underlying events + audit trail with a
-  SHA-256 checksum manifest (tamper-evident). Follow-on: signed/PDF export + object-store
-  archival of generated packs.
+  bundles the case + timeline + linked alerts + underlying events + affected assets +
+  audit trail with a SHA-256 checksum manifest (tamper-evident). Follow-on: signed/PDF
+  export + object-store archival of generated packs.
+- **asset inventory (§6.15)** — slice 1 DONE (Jul 2026): tenant-scoped asset registry
+  (host/user/service/cloud) with business criticality, matched to cases by ref and
+  surfaced in the evidence pack (migration 0022, `internal/asset`). Follow-on:
+  vulnerability + exposure records, and criticality feeding incident severity/SLA.
 
 See `MODULE_DEFINITION_OF_DONE.md` for the per-module test/RBAC/observability matrix.
