@@ -90,19 +90,21 @@ func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, er
 
 // kmsCipher is the production backend that wraps data keys with GCP Cloud KMS.
 // TODO(ADR-0004): implement envelope encryption via cloud.google.com/go/kms.
-//   1. generate a random DEK, AES-256-GCM encrypt plaintext (tenant_id as AAD),
-//   2. wrap the DEK with the tenant's KMS CryptoKey, store {wrappedDEK, ciphertext},
-//   3. on decrypt, unwrap DEK via KMS then open. Cache decrypted secrets only in
-//      memory for the duration of a connector run.
+//  1. generate a random DEK, AES-256-GCM encrypt plaintext (tenant_id as AAD),
+//  2. wrap the DEK with the tenant's KMS CryptoKey, store {wrappedDEK, ciphertext},
+//  3. on decrypt, unwrap DEK via KMS then open. Cache decrypted secrets only in
+//     memory for the duration of a connector run.
 type kmsCipher struct{ keyName string }
 
-// NewKMS returns the KMS-backed cipher. Not yet implemented — wired in before
-// go-live when GCP credentials are available.
-func NewKMS(keyName string) (SecretCipher, error) {
-	return &kmsCipher{keyName: keyName}, nil
-}
+var errKMSNotImplemented = errors.New("crypto: GCP KMS cipher not yet implemented (ADR-0004); until it is, unset NIRVET_KMS_KEY_NAME and set a persistent NIRVET_SECRET_MASTER_KEY")
 
-var errKMSNotImplemented = errors.New("crypto: GCP KMS cipher not yet implemented (ADR-0004) — set NIRVET_KMS_KEY_NAME empty to use local cipher")
+// NewKMS returns the KMS-backed cipher. It is NOT yet implemented, so it fails at
+// construction (fail-fast at startup) rather than returning a cipher that would error
+// on every connector-credential / MFA-secret operation at runtime. Wired in before
+// go-live when GCP credentials are available (see the kmsCipher TODO above).
+func NewKMS(keyName string) (SecretCipher, error) {
+	return nil, errKMSNotImplemented
+}
 
 func (c *kmsCipher) Encrypt(uuid.UUID, []byte) ([]byte, error) { return nil, errKMSNotImplemented }
 func (c *kmsCipher) Decrypt(uuid.UUID, []byte) ([]byte, error) { return nil, errKMSNotImplemented }

@@ -100,6 +100,15 @@ func Load() (*Config, error) {
 	if c.IsProduction() && c.BootstrapPassword == "ChangeMe123!" {
 		return nil, fmt.Errorf("config: NIRVET_BOOTSTRAP_PASSWORD must be changed from the default in production")
 	}
+	// Vault (ADR-0004): the connector-credential + MFA-secret cipher must have
+	// persistent key material in production. With neither KMS nor a master key set,
+	// the local cipher falls back to an EPHEMERAL key — every stored secret becomes
+	// unrecoverable across a restart — so refuse to boot. GCP KMS is the target
+	// production backend; until it is implemented, a persistent NIRVET_SECRET_MASTER_KEY
+	// is the supported path.
+	if c.IsProduction() && c.KMSKeyName == "" && c.SecretMasterKey == "" {
+		return nil, fmt.Errorf("config: set NIRVET_SECRET_MASTER_KEY (or NIRVET_KMS_KEY_NAME) in production; otherwise connector credentials and MFA secrets use an ephemeral key and are lost on restart")
+	}
 	return c, nil
 }
 
