@@ -164,9 +164,10 @@ behind interfaces that already exist — not up front:
 ## Next gates (before starting)
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 - **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
-- **Pluggable detection DSLs** (§6.6, reviewer): the detection engine is already an interface over a condition
-  evaluator; add Sigma import → the condition model, and (later) YARA/CEL/custom-DSL evaluators behind the same
-  `Engine` seam so customers can bring their own rules. Don't hardcode one rule language.
+- **Pluggable detection DSLs** (§6.6, reviewer): **Sigma import DONE** (`detection.ImportSigma` → native Condition
+  model; POST /detections/import/sigma; supports selections/`and`, contains/startswith/endswith/re modifiers,
+  list=OR, level→severity, attack.t* tags→MITRE; unsupported constructs error). Remaining: YARA/CEL/custom-DSL
+  evaluators behind the same `Engine` seam; full Sigma condition grammar (or/not/`N of`/parentheses).
 - **Redis-backed distributed rate limiting** (scaling): Redis backend behind the `ratelimit` seam for N-replica
   API (see scaling sequence above) — pull forward to the first horizontal scale-out.
 - **Schema v1.1 — promote hot fields to columns** (ADR-0006): `mitre`, `ip`, `hostname`, `vendor`, `product`

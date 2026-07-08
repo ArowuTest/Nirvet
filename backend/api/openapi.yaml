@@ -190,6 +190,12 @@ paths:
   /detections:
     get: { tags: [detection], summary: List detection rules, responses: { '200': { description: rules } } }
     post: { tags: [detection], summary: Create rule (detection_engineer), requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/DetectionRule' } } } }, responses: { '201': { description: created } } }
+  /detections/import/sigma:
+    post:
+      tags: [detection]
+      summary: Import a Sigma rule (YAML body) — translated to the native condition model
+      requestBody: { required: true, content: { application/x-yaml: { schema: { type: string } } } }
+      responses: { '201': { description: rule created, content: { application/json: { schema: { $ref: '#/components/schemas/DetectionRule' } } } }, '400': { description: unsupported/invalid Sigma } }
   /detections/{id}/enabled: { post: { tags: [detection], summary: Enable/disable a rule, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok } } } }
   /alerts: { get: { tags: [alerts], summary: List alerts, parameters: [{ name: status, in: query, schema: { type: string } }], responses: { '200': { description: alerts } } } }
   /alerts/{id}: { get: { tags: [alerts], summary: Get alert, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: alert, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } } } } }

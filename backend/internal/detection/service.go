@@ -123,6 +123,16 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 	return rule, nil
 }
 
+// ImportSigma translates a Sigma rule (YAML) into the native Condition model and
+// stores it as a tenant rule — customers bring their own detections (SRS §6.6).
+func (s *Service) ImportSigma(ctx context.Context, tenantID uuid.UUID, sigmaYAML []byte) (*Rule, error) {
+	in, err := ImportSigma(sigmaYAML)
+	if err != nil {
+		return nil, httpx.ErrBadRequest(err.Error())
+	}
+	return s.Create(ctx, tenantID, in)
+}
+
 // SetEnabled enables/disables a tenant rule.
 func (s *Service) SetEnabled(ctx context.Context, tenantID, id uuid.UUID, enabled bool) error {
 	if err := s.repo.SetEnabled(ctx, tenantID, id, enabled); err != nil {
