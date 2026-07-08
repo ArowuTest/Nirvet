@@ -10,6 +10,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,11 +27,18 @@ type Summary struct {
 	EventsLast24h    int            `json:"events_last_24h"`
 }
 
-// Service computes reports.
-type Service struct{ db *database.DB }
+// Service computes reports. Alerts/incidents come from the Postgres system of
+// record; the event count comes from the EventStore so it is correct on any
+// backend (Postgres or ClickHouse — ADR-0002/0006).
+type Service struct {
+	db     *database.DB
+	events eventstore.EventStore
+}
 
 // NewService builds the service.
-func NewService(db *database.DB) *Service { return &Service{db: db} }
+func NewService(db *database.DB, events eventstore.EventStore) *Service {
+	return &Service{db: db, events: events}
+}
 
 // GeneratedAt is injected (Date.now unavailable in some contexts); here it's the
 // server clock, which is valid for a normal service.
@@ -46,13 +54,19 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID) (*Summary, er
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM alerts WHERE status IN ('new','assigned')`).Scan(&sum.OpenAlerts); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE stage <> 'closed'`).Scan(&sum.OpenIncidents); err != nil {
-			return err
-		}
-		return tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE observed_at >= now() - interval '24 hours'`).Scan(&sum.EventsLast24h)
+		return tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE stage <> 'closed'`).Scan(&sum.OpenIncidents)
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Event volume comes from the EventStore (Postgres or ClickHouse), not a raw
+	// Postgres query — so dashboards are correct whichever telemetry backend is live.
+	if s.events != nil {
+		n, cerr := s.events.CountSince(ctx, tenantID, sum.GeneratedAt.Add(-24*time.Hour))
+		if cerr != nil {
+			return nil, cerr
+		}
+		sum.EventsLast24h = n
 	}
 	return sum, nil
 }

@@ -142,7 +142,7 @@ func main() {
 	connectorH := connector.NewHandler(connector.NewService(connector.NewRepository(db), vault, ingestSvc))
 	soarH := soar.NewHandler(soar.NewService(soar.NewRepository(db)))
 	aiH := ai.NewHandler(ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db))
-	reportingH := reporting.NewHandler(reporting.NewService(db))
+	reportingH := reporting.NewHandler(reporting.NewService(db, events))
 	complianceH := compliance.NewHandler()
 
 	// --- bootstrap first-run provider tenant + platform admin ---

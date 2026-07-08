@@ -123,7 +123,7 @@ func newHarness(t *testing.T) *harness {
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
 		billSvc:  billing.NewService(billing.NewRepository(db)),
-		repSvc:   reporting.NewService(db),
+		repSvc:   reporting.NewService(db, events),
 	}
 }
 
@@ -472,6 +472,15 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("seed incident: %v", err)
 		}
 
+		// Ingest a real event through the pipeline so it lands in the EventStore;
+		// the summary's event count must come from the store (Postgres or ClickHouse).
+		if _, err := h.ingest.Ingest(h.ctx, h.tenantID, ingestion.IngestInput{Source: "rep", NativeID: "rep-" + uuid.NewString(), Severity: "low"}); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("worker: %v", err)
+		}
+
 		sum, err := h.repSvc.Summary(h.ctx, h.tenantID)
 		if err != nil {
 			t.Fatalf("summary: %v", err)
@@ -484,6 +493,10 @@ func TestIntegration(t *testing.T) {
 		}
 		if sum.OpenIncidents < 1 || len(sum.IncidentsByStage) == 0 {
 			t.Fatalf("expected >=1 open incident in summary: open=%d byStage=%v", sum.OpenIncidents, sum.IncidentsByStage)
+		}
+		// Event count comes from the EventStore (the point of this gate).
+		if sum.EventsLast24h < 1 {
+			t.Fatalf("expected EventsLast24h >=1 from the EventStore, got %d", sum.EventsLast24h)
 		}
 	})
 

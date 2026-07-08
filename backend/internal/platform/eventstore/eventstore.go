@@ -58,4 +58,7 @@ type EventStore interface {
 	Append(ctx context.Context, tenantID uuid.UUID, events []NormalizedEvent) (int, error)
 	// Query returns a tenant's events matching q.
 	Query(ctx context.Context, tenantID uuid.UUID, q Query) ([]NormalizedEvent, error)
+	// CountSince returns the number of a tenant's events observed at or after
+	// `since` — used by reporting/dashboards so counts are correct on any backend.
+	CountSince(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error)
 }

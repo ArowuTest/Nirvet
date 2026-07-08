@@ -159,6 +159,17 @@ func (s *ClickHouseStore) Append(ctx context.Context, tenantID uuid.UUID, events
 	return inserted, nil
 }
 
+// CountSince counts a tenant's events observed at or after `since`. The tenant_id
+// predicate is mandatory (isolation, ADR-0002).
+func (s *ClickHouseStore) CountSince(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error) {
+	var n uint64
+	if err := s.conn.QueryRow(ctx,
+		`SELECT count() FROM events WHERE tenant_id = ? AND observed_at >= ?`, tenantID, since).Scan(&n); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // Query returns matching events for the tenant, newest first. The tenant_id
 // predicate is mandatory and always applied first (isolation, ADR-0002).
 func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) ([]NormalizedEvent, error) {

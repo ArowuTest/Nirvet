@@ -162,8 +162,6 @@ behind interfaces that already exist — not up front:
   system of record) are unaffected. **Deferred:** BigQuery cold tier + retention tiering (ADR-0002 §4), OpenSearch.
 
 ## Next gates (before starting)
-- **Reporting event-count via EventStore** (small): make reporting read the 24h event count from the EventStore
-  so it is correct under both backends (reviewer's dashboards-on-ClickHouse point).
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 - **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
 - **Pluggable detection DSLs** (§6.6, reviewer): the detection engine is already an interface over a condition

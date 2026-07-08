@@ -107,6 +107,16 @@ func (s *PostgresStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) 
 	return out, err
 }
 
+// CountSince counts a tenant's events observed at or after `since` (tenant-scoped
+// via RLS).
+func (s *PostgresStore) CountSince(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error) {
+	var n int
+	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE observed_at >= $1`, since).Scan(&n)
+	})
+	return n, err
+}
+
 func nullableTime(t time.Time) any {
 	if t.IsZero() {
 		return nil
