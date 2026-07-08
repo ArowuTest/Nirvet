@@ -368,6 +368,49 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("IncidentSLATimersAndBreach", func(t *testing.T) {
+		// Promote a fresh critical alert and verify SLA timers are stamped, the case is
+		// acknowledged (analyst-owned) and not yet breached — then force the deadlines
+		// into the past and confirm the derived breach flags flip.
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "critical", Source: "sla"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "sla-alert", Severity: "critical", DedupeKey: ev.ID.String() + ":sla"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v ins=%v", err, ins)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		got, err := h.incSvc.Get(h.ctx, h.tenantID, inc.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.AckDueAt == nil || got.ResolveDueAt == nil {
+			t.Fatal("SLA due-times must be stamped at creation")
+		}
+		if got.AcknowledgedAt == nil {
+			t.Fatal("an analyst-promoted incident must be acknowledged")
+		}
+		if got.AckBreached || got.ResolveBreached {
+			t.Fatalf("a just-created incident must not be breached (ack=%v resolve=%v)", got.AckBreached, got.ResolveBreached)
+		}
+		// Critical ack target is 15m: a fresh incident's ack deadline must be in the future.
+		if !got.AckDueAt.After(got.CreatedAt) {
+			t.Fatal("ack_due_at must be after created_at")
+		}
+		// Force the deadlines into the past → both SLAs should now read as breached.
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE incidents SET ack_due_at = now() - interval '1 hour', resolve_due_at = now() - interval '1 hour', acknowledged_at = NULL WHERE id=$1`, inc.ID)
+			return e
+		}); err != nil {
+			t.Fatalf("backdate SLA: %v", err)
+		}
+		breached, _ := h.incSvc.Get(h.ctx, h.tenantID, inc.ID)
+		if !breached.AckBreached || !breached.ResolveBreached {
+			t.Fatalf("past-due open incident must be breached (ack=%v resolve=%v)", breached.AckBreached, breached.ResolveBreached)
+		}
+	})
+
 	t.Run("ConnectorWebhookAuth", func(t *testing.T) {
 		res, err := h.connSvc.Create(h.ctx, h.tenantID, connector.CreateInput{Kind: connector.KindWebhook, Name: "wh"})
 		if err != nil {

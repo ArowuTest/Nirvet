@@ -17,9 +17,11 @@ func NewRepository(db *database.DB) *Repository { return &Repository{db: db} }
 // CreateTx inserts an incident within an existing transaction.
 func (r *Repository) CreateTx(ctx context.Context, tx pgx.Tx, i *Incident) error {
 	return tx.QueryRow(ctx,
-		`INSERT INTO incidents (id, tenant_id, title, severity, category, stage, owner_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING created_at`,
+		`INSERT INTO incidents (id, tenant_id, title, severity, category, stage, owner_id,
+		                        acknowledged_at, ack_due_at, resolve_due_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING created_at`,
 		i.ID, i.TenantID, i.Title, i.Severity, i.Category, i.Stage, i.OwnerID,
+		i.AcknowledgedAt, i.AckDueAt, i.ResolveDueAt,
 	).Scan(&i.CreatedAt)
 }
 
@@ -37,7 +39,8 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID) ([]Incident, 
 	var out []Incident
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at
+			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at,
+			        acknowledged_at, ack_due_at, resolve_due_at
 			   FROM incidents ORDER BY created_at DESC LIMIT 200`)
 		if err != nil {
 			return err
@@ -46,7 +49,8 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID) ([]Incident, 
 		for rows.Next() {
 			var i Incident
 			if err := rows.Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category,
-				&i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt); err != nil {
+				&i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt,
+				&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt); err != nil {
 				return err
 			}
 			out = append(out, i)
@@ -61,9 +65,11 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident
 	var i Incident
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at
+			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at,
+			        acknowledged_at, ack_due_at, resolve_due_at
 			   FROM incidents WHERE id=$1`, id,
-		).Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category, &i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt)
+		).Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category, &i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt,
+			&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt)
 	})
 	if err != nil {
 		return nil, err
@@ -109,6 +115,7 @@ func (r *Repository) Assign(ctx context.Context, tenantID, id, ownerID uuid.UUID
 		ct, err := tx.Exec(ctx,
 			`UPDATE incidents
 			    SET owner_id = $2,
+			        acknowledged_at = COALESCE(acknowledged_at, now()),
 			        stage = CASE WHEN stage IN ('new','triage') THEN 'investigating' ELSE stage END
 			  WHERE id = $1 AND stage <> 'closed'`, id, ownerID)
 		if err != nil {

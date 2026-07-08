@@ -103,5 +103,7 @@ intentionally shallow and must not be read as full features (see SECURITY_REVIEW
 "Known functional gaps"): **threatintel** is watchlist-only (no STIX/TAXII),
 **notify** logs rather than delivering to real channels, **compliance** is static,
 **reporting** is JSON aggregates only. Not yet built: **customer-facing portal**,
-fine-grained **read-side RBAC** for customer viewers, incident **SLA timers**, and the
-**MFA login UI** (API + enforcement exist; front-end prompt pending designer HTML).
+fine-grained **read-side RBAC** for customer viewers, and the **MFA login UI** (API +
+enforcement exist; front-end prompt pending designer HTML). Incident **SLA timers** are
+now implemented (per-severity ack/resolve targets + derived breach flags); proactive
+breach alerting is the remaining follow-on.

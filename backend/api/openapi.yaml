@@ -81,6 +81,11 @@ components:
         title: { type: string }
         severity: { type: string }
         stage: { type: string, enum: [new, triage, investigating, contained, closed] }
+        acknowledged_at: { type: string, format: date-time, nullable: true }
+        ack_due_at: { type: string, format: date-time, nullable: true, description: SLA acknowledge deadline (per-severity) }
+        resolve_due_at: { type: string, format: date-time, nullable: true, description: SLA resolve deadline (per-severity) }
+        ack_breached: { type: boolean, description: derived — acknowledged late or still unacknowledged past due }
+        resolve_breached: { type: boolean, description: derived — closed late or still open past due }
     DetectionRule:
       type: object
       properties:

@@ -43,7 +43,10 @@ is still required **pre-go-live** (build-phase sign-off only — see memory
 - **Read-side RBAC** — write paths are gated by `RequireRole`; fine-grained read
   scoping for customer viewers (what a viewer may see vs an analyst) is not fully
   enforced across all GET endpoints.
-- **SLA timers** — incident SLA tracking / breach timers are not implemented.
+- **SLA timers** — DONE (Jul 2026): per-severity ack/resolve targets, due-times stamped
+  at creation, acknowledged_at on first ownership, derived ack/resolve breach flags
+  (`internal/incident/sla.go`, migration 0020). Not yet surfaced: proactive breach
+  alerting / an at-risk dashboard (breach is computed on read).
 - **MFA login UI** — TOTP enroll/activate/verify exist in the API and are enforced at
   login; the front-end MFA prompt is deferred pending the designer HTML.
 - **threatintel** — watchlist enrichment only; no STIX/TAXII ingest (§6.10 deferred).

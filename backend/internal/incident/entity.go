@@ -30,6 +30,15 @@ type Incident struct {
 	OwnerID   *uuid.UUID `json:"owner_id,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+
+	// SLA timers (SRS §6.8). Due-times are stamped at creation from the severity
+	// policy; acknowledged_at on first ownership. The *Breached flags are derived on
+	// read (not persisted).
+	AcknowledgedAt  *time.Time `json:"acknowledged_at,omitempty"`
+	AckDueAt        *time.Time `json:"ack_due_at,omitempty"`
+	ResolveDueAt    *time.Time `json:"resolve_due_at,omitempty"`
+	AckBreached     bool       `json:"ack_breached"`
+	ResolveBreached bool       `json:"resolve_breached"`
 }
 
 // TimelineEntry is one event in an incident's investigation timeline.

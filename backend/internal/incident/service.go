@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -62,14 +63,21 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 		return nil, err
 	}
 	owner := p.UserID
+	// SLA: an analyst promoted and owns this case, so it is acknowledged now; the
+	// ack/resolve deadlines follow the severity policy (§6.8).
+	now := time.Now()
+	ackDue, resolveDue := slaFor(a.Severity).dueTimes(now)
 	inc := &Incident{
-		ID:       uuid.New(),
-		TenantID: p.TenantID,
-		Title:    a.Title,
-		Severity: a.Severity,
-		Category: "uncategorised",
-		Stage:    StageTriage,
-		OwnerID:  &owner,
+		ID:             uuid.New(),
+		TenantID:       p.TenantID,
+		Title:          a.Title,
+		Severity:       a.Severity,
+		Category:       "uncategorised",
+		Stage:          StageTriage,
+		OwnerID:        &owner,
+		AcknowledgedAt: &now,
+		AckDueAt:       &ackDue,
+		ResolveDueAt:   &resolveDue,
 	}
 	seed := &TimelineEntry{ID: uuid.New(), Author: p.Email, Kind: "status", Note: "Promoted from alert " + alertID.String()}
 	promote := func(ctx context.Context, tx pgx.Tx, incidentID uuid.UUID) error {
@@ -133,10 +141,14 @@ func (s *Service) Assign(ctx context.Context, p auth.Principal, id, assigneeID u
 // severity carried from the cluster, and the customer is notified (best-effort).
 // Satisfies correlation.Incidenter.
 func (s *Service) OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, entity, severity string, risk int, techniques []string) (uuid.UUID, error) {
+	// SLA: system-opened and unassigned (no acknowledgement yet); ack/resolve
+	// deadlines follow the severity policy so a neglected auto-incident will breach.
+	ackDue, resolveDue := slaFor(severity).dueTimes(time.Now())
 	inc := &Incident{
 		ID: uuid.New(), TenantID: tenantID,
 		Title: "Correlated activity on " + entity, Severity: severity,
 		Category: "correlation", Stage: StageTriage,
+		AckDueAt: &ackDue, ResolveDueAt: &resolveDue,
 	}
 	seed := &TimelineEntry{
 		ID: uuid.New(), Author: "system", Kind: "status",
@@ -153,17 +165,26 @@ func (s *Service) OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, e
 	return inc.ID, nil
 }
 
-// List returns incidents.
+// List returns incidents with their SLA-breach status computed as of now.
 func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Incident, error) {
-	return s.repo.List(ctx, tenantID)
+	incs, err := s.repo.List(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for idx := range incs {
+		computeBreach(&incs[idx], now)
+	}
+	return incs, nil
 }
 
-// Get returns one incident.
+// Get returns one incident with its SLA-breach status computed as of now.
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident, error) {
 	i, err := s.repo.Get(ctx, tenantID, id)
 	if err != nil {
 		return nil, httpx.ErrNotFound("incident not found")
 	}
+	computeBreach(i, time.Now())
 	return i, nil
 }
 
