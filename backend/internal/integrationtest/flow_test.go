@@ -99,7 +99,13 @@ func newHarness(t *testing.T) *harness {
 	_, _ = rand.Read(key)
 	cipher, _ := crypto.NewLocal(base64.StdEncoding.EncodeToString(key), nil)
 	blobs, _ := blobstore.NewLocal(t.TempDir())
-	q := queue.NewPostgres(db.Pool)
+	// Queue is interface-selected: with NIRVET_NATS_URL set the whole heartbeat runs
+	// on NATS/JetStream (proving the ADR-0003 backend swap); else the Postgres queue.
+	q, closeQ, _, qErr := queue.New(ctx, os.Getenv("NIRVET_NATS_URL"), db.Pool)
+	if qErr != nil {
+		t.Fatalf("queue: %v", qErr)
+	}
+	t.Cleanup(closeQ)
 	// The telemetry store is interface-selected: with NIRVET_CLICKHOUSE_DSN set, the
 	// WHOLE heartbeat runs on ClickHouse (proving the ADR-0002 backend swap); else
 	// Postgres. The system-of-record (tenants/users/alerts/incidents) stays Postgres.

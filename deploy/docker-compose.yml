@@ -59,6 +59,15 @@ services:
       timeout: 3s
       retries: 10
 
+  # Optional: durable ingestion queue (JetStream) at scale. Enable with
+  #   NIRVET_NATS_URL=nats://localhost:4222
+  nats:
+    image: nats:2.10
+    container_name: nirvet-nats
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+
 volumes:
   nirvet_pg:
   nirvet_ch:

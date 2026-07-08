@@ -203,6 +203,9 @@ behind interfaces that already exist — not up front:
   Remaining: extend Redis to a general cache seam (session/hot-lookup) at the same scale point.
 - **Schema v1.1 — promote hot fields to columns** (ADR-0006): `mitre`, `ip`, `hostname`, `vendor`, `product`
   from `data` to indexed columns when analytics query patterns justify the column cost.
-- **NATS/Kafka queue backend** (scaling): behind the existing `queue` seam (ADR-0003) once event volume/worker
-  pools justify it (>500M/day) — after Redis, per the scaling sequence.
+- ~~**NATS queue backend**~~ DONE: `queue.NATSQueue` (JetStream durable stream + pull consumer, explicit ack,
+  in-flight msg→ack bridge, NakWithDelay backoff, Term dead-letter after MaxAttempts), selected by
+  `NIRVET_NATS_URL` (`queue.New`). Verified vs a real NATS: ack/no-redelivery, fail→redelivery-with-attempt,
+  dead-letter after MaxAttempts, AND the full heartbeat runs on NATS (ADR-0003 swap proven). Postgres default
+  unchanged. Remaining: GCP Pub/Sub adapter (same seam), per-connector DLQ stream + replay UI.
 - **Dashboards** (UI): the API contracts already exist (designer supplies HTML).

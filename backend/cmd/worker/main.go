@@ -59,7 +59,13 @@ func main() {
 	}
 	defer func() { _ = closeEvents() }()
 	log.Info("event store ready", "backend", esBackend)
-	jobs := queue.NewPostgres(db.Pool)
+	jobs, closeJobs, queueBackend, err := queue.New(ctx, cfg.NATSURL, db.Pool)
+	if err != nil {
+		log.Error("queue init failed", "err", err)
+		os.Exit(1)
+	}
+	defer closeJobs()
+	log.Info("queue backend ready", "backend", queueBackend)
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	detEngine := detection.NewEngine(detection.NewRepository(db))
 	enricher := threatintel.NewEnricher(threatintel.NewRepository(db))

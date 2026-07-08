@@ -52,6 +52,10 @@ type Config struct {
 	// address (host:port) to make rate limits global across API replicas.
 	RedisAddr string
 
+	// Queue backend (ADR-0003). Empty => Postgres queue (MVP). Set a NATS URL
+	// (nats://host:4222) to use the JetStream durable queue.
+	NATSURL string
+
 	// Ingestion (ADR-0003)
 	IngestWorkers int
 	InlineWorker  bool // run the ingest worker inside the api process (dev)
@@ -82,6 +86,7 @@ func Load() (*Config, error) {
 		OTLPEndpoint:    env("NIRVET_OTLP_ENDPOINT", env("OTEL_EXPORTER_OTLP_ENDPOINT", "")),
 		ServiceVer:      env("NIRVET_SERVICE_VERSION", "dev"),
 		RedisAddr:       env("NIRVET_REDIS_ADDR", ""),
+		NATSURL:         env("NIRVET_NATS_URL", ""),
 		IngestWorkers:   envInt("NIRVET_INGEST_WORKERS", 4),
 		InlineWorker:    env("NIRVET_INLINE_WORKER", "true") == "true",
 		BootstrapEmail:    env("NIRVET_BOOTSTRAP_EMAIL", "admin@nirvet.local"),
