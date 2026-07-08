@@ -49,6 +49,12 @@ func completeSSO(ctx context.Context, dir Directory, tokens *auth.Manager, db *d
 			return nil, httpx.ErrForbidden("user belongs to a different tenant")
 		}
 	} else {
+		// Defence in depth (R2 low): re-validate the connection's default_role at login,
+		// so even a bad/legacy DB row (default_role=platform_admin) cannot JIT-mint a
+		// privileged account here — not just at connection-create time.
+		if !ValidSSORole(defaultRole) {
+			return nil, httpx.ErrForbidden("SSO default_role is not a permitted customer role")
+		}
 		newID, perr := dir.ProvisionForSSO(ctx, tenantID, email, defaultRole)
 		if perr != nil {
 			return nil, httpx.ErrInternal("could not provision user")

@@ -29,6 +29,11 @@ type SecretCipher interface {
 	Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, error)
 }
 
+// cipherKeyVersion is a 1-byte discriminator prefixed to every ciphertext (R2 vault
+// residual). It gives key rotation a hook: a future key can bump the version so decrypt
+// can select the right key by the stored byte, without a data migration.
+const cipherKeyVersion byte = 1
+
 // localCipher is an AES-256-GCM cipher using a single master key. Dev/MVP only.
 type localCipher struct {
 	aead cipher.AEAD
@@ -75,15 +80,23 @@ func (c *localCipher) Encrypt(tenantID uuid.UUID, plaintext []byte) ([]byte, err
 	}
 	aad := tenantID[:] // tenant binding
 	sealed := c.aead.Seal(nil, nonce, plaintext, aad)
-	return append(nonce, sealed...), nil
+	// Stored layout: [version byte][nonce][ciphertext]. The version supports rotation.
+	out := make([]byte, 0, 1+len(nonce)+len(sealed))
+	out = append(out, cipherKeyVersion)
+	out = append(out, nonce...)
+	out = append(out, sealed...)
+	return out, nil
 }
 
 func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, error) {
 	ns := c.aead.NonceSize()
-	if len(ciphertext) < ns {
+	if len(ciphertext) < 1+ns {
 		return nil, errors.New("crypto: ciphertext too short")
 	}
-	nonce, sealed := ciphertext[:ns], ciphertext[ns:]
+	if ciphertext[0] != cipherKeyVersion {
+		return nil, fmt.Errorf("crypto: unsupported key version %d", ciphertext[0])
+	}
+	nonce, sealed := ciphertext[1:1+ns], ciphertext[1+ns:]
 	aad := tenantID[:]
 	return c.aead.Open(nil, nonce, sealed, aad)
 }

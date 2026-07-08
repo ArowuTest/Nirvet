@@ -69,3 +69,26 @@ jobs:
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+
+  security-scan:
+    name: Security scan (gosec + govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # Known-vulnerable dependencies / stdlib (R2 low).
+      - name: govulncheck
+        working-directory: backend
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      # Static security analysis; high-severity findings fail the build (lower-severity
+      # style nits are reported but don't gate, to avoid drowning the signal).
+      - name: gosec
+        working-directory: backend
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude-generated -severity high -confidence medium ./...
