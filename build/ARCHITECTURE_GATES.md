@@ -704,3 +704,55 @@ isolation unaffected (recipient URL comes from the tenant's own escalation conta
 internal-IP connection, webhook channel POSTs the expected body to an `httptest` server + is refused
 for an internal URL. Integration: an escalation contact with `channel=webhook` pointed at a test server
 delivers via the outbox dispatcher (row → sent). Heartbeat green; build/vet/gofmt clean.
+
+---
+
+## Gate — §6.10 threat intel → real STIX 2.1 store, slice A (TI-001..004) — reviewed Jul 2026
+
+**Why now.** Biggest remaining STUB. Grounding confirms threatintel is a `{type,value,tlp,score,tags}`
+watchlist (`threat_indicators`) + a substring enricher — the memory's own test "watchlist ≠ STIX" is
+literally true: no SDO/SRO objects, no malware/campaign/actor/attack-pattern, no sighting/confidence/
+decay/kill-chain. This slice makes it a real STIX 2.1 object store feeding enrichment + correlation.
+
+**SRS grounding.** TI-001 ingest via STIX/TAXII/MISP-like/CSV/API/manual; TI-002 objects = indicators,
+malware, campaigns, threat-actors, attack-patterns, tools, vulnerabilities, reports, sightings; TI-003
+confidence/source-reliability/first-seen/last-seen/TLP/expiry/kill-chain/ATT&CK/sharing-scope; TI-004
+enrich alerts+incidents and show why a match matters. Built to the OASIS STIX 2.1 model captured in
+[[reference-appsec-standards-2025]] (SDO/SRO/SCO, common props, TLP marking).
+
+**In scope (slice A).**
+1. **STIX object store.** `stix_objects` (id `type--uuid`, type, spec_version '2.1', tenant_id NULL=global
+   or own, created/modified, confidence 0-100, revoked, valid_from/until, pattern + pattern_type
+   (stix|sigma|snort|yara), labels[], external_references jsonb (ATT&CK/CVE), tlp (from
+   object_marking_refs), value (extracted observable for matching), raw jsonb (the full object)). RLS
+   FORCE, global-or-tenant like detection_rules (per-command policies, so a tenant can't rehome a global
+   object). Supports the real SDO/SCO set; `stix_sightings` (SRO) is a lightweight companion for TI "seen"
+   counts.
+2. **Ingest.** AddObject (validated: type in the known set, spec_version, id shape) + ImportBundle (a STIX
+   bundle's `objects[]`), UPSERTING by `id` only when the incoming `modified` is newer (STIX versioning),
+   honoring `revoked`. Manual analyst submission (TI-001) is the same AddObject path.
+3. **Typed enrichment (TI-004).** Extend the enricher to ALSO match event entities against STIX INDICATOR
+   observable values (the `value` column, extracted from a simple `[type:value = 'x']` pattern or an SCO),
+   returning confidence + TLP + labels + kill-chain — richer than the substring watchlist, and it records
+   *why* (the matched object id + labels). Existing `threat_indicators` watchlist stays as the quick
+   manual-IOC path (TI-001) and is matched alongside — additive, no enricher regression.
+
+**Out of scope (later slices).** TAXII 2.1 inbound POLLER (slice B — needs a live TAXII server; the
+enrichment/store it feeds is built here so wiring it is additive); exposing Nirvet as a TAXII SERVER
+(slice C, sharing); the full STIX PATTERNING grammar (slice A extracts a single observable value from the
+common `[type:value = 'x']` form and matches that — complex boolean patterns are deferred, logged not
+skipped); relationship graph traversal beyond sightings; decay scoring curves.
+
+**Entities / schema / enums.** `stix_objects` PK on `id` (text); index `(tenant_id, type)` + a partial
+index on `value` where value<>'' for enrichment lookups; per-command RLS (SELECT global+own, INSERT/
+UPDATE/DELETE own-only). `stix_type` CHECK constrained to the known SDO/SCO set. TLP CHECK
+red|amber+strict|amber|green|clear (TLP 2.0). Go: `StixObject`, `validStixType`, `Sighting`.
+
+**Invariants.** Tenant isolation (global feeds readable, tenant objects isolated, no cross-tenant); the
+enricher stays cached (per-tenant TTL, no per-event DB hit); ingest is idempotent (upsert by id+modified);
+audit on manual add/import; TLP respected in output (a match carries its TLP so downstream honors sharing).
+
+**Verify.** Unit: STIX object validation (type/id/spec_version), upsert-only-on-newer-modified, observable
+extraction from a simple pattern, TLP validation. Integration: import a small STIX bundle (indicator +
+malware + relationship) → stored; an event entity matching a STIX indicator enriches with confidence+TLP+
+labels; global object visible to a tenant, tenant object isolated. Heartbeat green; build/vet/gofmt clean.

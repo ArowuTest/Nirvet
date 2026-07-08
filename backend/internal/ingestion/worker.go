@@ -156,9 +156,23 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 	if wk.enricher != nil {
 		if matches, _ := wk.enricher.Enrich(ctx, j.TenantID, []string{ev.ActorRef, ev.TargetRef, ev.Source}); len(matches) > 0 {
 			vals := make([]string, 0, len(matches))
+			detail := make([]map[string]any, 0, len(matches))
 			maxScore := 0
 			for _, m := range matches {
 				vals = append(vals, m.Value)
+				// Structured provenance so downstream (correlation COR-002, analyst triage) can see
+				// WHY a hit matters: source, matched STIX object, confidence, labels, kill-chain (TI-004).
+				d := map[string]any{"source": m.Source, "value": m.Value, "tlp": m.TLP, "score": m.Score}
+				if m.ObjectID != "" {
+					d["object_id"] = m.ObjectID
+				}
+				if len(m.Labels) > 0 {
+					d["labels"] = m.Labels
+				}
+				if len(m.KillChain) > 0 {
+					d["kill_chain"] = m.KillChain
+				}
+				detail = append(detail, d)
 				if m.Score > maxScore {
 					maxScore = m.Score
 				}
@@ -167,6 +181,7 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 				ev.Data = map[string]any{}
 			}
 			ev.Data["threat_intel_hits"] = vals
+			ev.Data["threat_intel_matches"] = detail
 			if maxScore > ev.Confidence {
 				ev.Confidence = maxScore
 			}

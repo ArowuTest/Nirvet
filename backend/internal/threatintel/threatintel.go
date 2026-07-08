@@ -17,7 +17,7 @@ import (
 type Indicator struct {
 	ID        uuid.UUID `json:"id"`
 	TenantID  uuid.UUID `json:"tenant_id"`
-	Type      string    `json:"type"`  // ip|domain|url|hash|email|user|host
+	Type      string    `json:"type"` // ip|domain|url|hash|email|user|host
 	Value     string    `json:"value"`
 	TLP       string    `json:"tlp"`   // red|amber|green|clear
 	Score     int       `json:"score"` // 0-100

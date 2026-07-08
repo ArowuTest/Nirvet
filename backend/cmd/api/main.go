@@ -434,6 +434,12 @@ func main() {
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
 	mux.Handle("POST /threat-intel", senior(threatH.Add))
+	// STIX 2.1 object store (§6.10 TI-001..004). Reads are provider-wide; writes (manual add /
+	// bundle import) are senior — same gate as watchlist writes.
+	mux.Handle("GET /threat-intel/stix", provider(threatH.ListStix))
+	mux.Handle("GET /threat-intel/stix/{id}", provider(threatH.GetStix))
+	mux.Handle("POST /threat-intel/stix", senior(threatH.AddStix))
+	mux.Handle("POST /threat-intel/stix/bundle", senior(threatH.ImportBundle))
 	// reporting
 	mux.Handle("GET /reports/summary", provider(reportingH.SummaryHTTP))
 	// compliance
