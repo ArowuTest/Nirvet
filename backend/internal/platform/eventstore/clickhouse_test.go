@@ -18,7 +18,8 @@ func ev(tenant uuid.UUID, dedupe, sev, class, actor string) eventstore.Normalize
 	return eventstore.NormalizedEvent{
 		ID: uuid.New(), TenantID: tenant, DedupeKey: dedupe, Source: "itest",
 		CollectedAt: now, ObservedAt: now, ClassName: class, Severity: sev,
-		ActorRef: actor, Confidence: 50, Data: map[string]any{"k": "v"},
+		ActorRef: actor, Confidence: 50, MITRE: []string{"T1059"}, Vendor: "CrowdStrike", Product: "Falcon",
+		Data: map[string]any{"k": "v"},
 	}
 }
 
@@ -108,6 +109,31 @@ func TestClickHouseEventStore(t *testing.T) {
 			if r.SchemaVersion != eventstore.CanonicalSchemaVersion {
 				t.Fatalf("schema_version = %q, want %q", r.SchemaVersion, eventstore.CanonicalSchemaVersion)
 			}
+			// v1.1 promoted columns round-trip.
+			if len(r.MITRE) != 1 || r.MITRE[0] != "T1059" || r.Vendor != "CrowdStrike" || r.Product != "Falcon" {
+				t.Fatalf("v1.1 columns wrong: mitre=%v vendor=%q product=%q", r.MITRE, r.Vendor, r.Product)
+			}
 		}
 	})
+
+	t.Run("TopMITRE", func(t *testing.T) {
+		tid := uuid.New()
+		// Two events with T1059, one with T1055 → T1059 ranks first.
+		_, _ = store.Append(ctx, tid, []eventstore.NormalizedEvent{
+			mitreEv(tid, "m1", []string{"T1059"}), mitreEv(tid, "m2", []string{"T1059", "T1055"}),
+		})
+		top, err := store.TopMITRE(ctx, tid, time.Now().Add(-time.Hour), 10)
+		if err != nil {
+			t.Fatalf("TopMITRE: %v", err)
+		}
+		if len(top) == 0 || top[0].Technique != "T1059" || top[0].Count != 2 {
+			t.Fatalf("expected T1059 with count 2 first, got %+v", top)
+		}
+	})
+}
+
+func mitreEv(tenant uuid.UUID, dedupe string, mitre []string) eventstore.NormalizedEvent {
+	e := ev(tenant, dedupe+"-"+uuid.NewString(), "high", "x", "user:a")
+	e.MITRE = mitre
+	return e
 }

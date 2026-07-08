@@ -70,6 +70,9 @@ func (s *ClickHouseStore) migrate(ctx context.Context) error {
 		target_ref   String,
 		action       String,
 		outcome      String,
+		mitre        Array(String),
+		vendor       LowCardinality(String),
+		product      LowCardinality(String),
 		raw_pointer  String,
 		checksum     String,
 		data         String
@@ -78,8 +81,17 @@ func (s *ClickHouseStore) migrate(ctx context.Context) error {
 		return err
 	}
 	// Additive: bring a pre-existing table up to the current schema (ADR-0006).
-	return s.conn.Exec(ctx,
-		`ALTER TABLE events ADD COLUMN IF NOT EXISTS schema_version LowCardinality(String) DEFAULT '1.0'`)
+	for _, alter := range []string{
+		`ALTER TABLE events ADD COLUMN IF NOT EXISTS schema_version LowCardinality(String) DEFAULT '1.0'`,
+		`ALTER TABLE events ADD COLUMN IF NOT EXISTS mitre Array(String)`,
+		`ALTER TABLE events ADD COLUMN IF NOT EXISTS vendor LowCardinality(String)`,
+		`ALTER TABLE events ADD COLUMN IF NOT EXISTS product LowCardinality(String)`,
+	} {
+		if err := s.conn.Exec(ctx, alter); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Append inserts events for a tenant, idempotent on dedupe_key, returning the
@@ -117,7 +129,7 @@ func (s *ClickHouseStore) Append(ctx context.Context, tenantID uuid.UUID, events
 	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO events
 		(id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
 		 class_name, activity_name, severity, confidence, actor_ref, target_ref, action, outcome,
-		 raw_pointer, checksum, data)`)
+		 mitre, vendor, product, raw_pointer, checksum, data)`)
 	if err != nil {
 		return 0, fmt.Errorf("eventstore: prepare batch: %w", err)
 	}
@@ -143,10 +155,14 @@ func (s *ClickHouseStore) Append(ctx context.Context, tenantID uuid.UUID, events
 		if sv == "" {
 			sv = CanonicalSchemaVersion
 		}
+		mitre := e.MITRE
+		if mitre == nil {
+			mitre = []string{}
+		}
 		if err := batch.Append(
 			id, tenantID, sv, e.DedupeKey, e.Source, e.ConnectorID, e.CollectedAt, e.ObservedAt,
 			e.ClassName, e.ActivityName, e.Severity, int32(e.Confidence),
-			e.ActorRef, e.TargetRef, e.Action, e.Outcome, e.RawPointer, e.Checksum, string(data),
+			e.ActorRef, e.TargetRef, e.Action, e.Outcome, mitre, e.Vendor, e.Product, e.RawPointer, e.Checksum, string(data),
 		); err != nil {
 			_ = batch.Abort()
 			return 0, fmt.Errorf("eventstore: batch append: %w", err)
@@ -170,6 +186,34 @@ func (s *ClickHouseStore) CountSince(ctx context.Context, tenantID uuid.UUID, si
 	return int(n), nil
 }
 
+// TopMITRE aggregates ATT&CK technique frequency for a tenant since `since`,
+// array-joining the mitre column. The tenant_id predicate is mandatory (isolation).
+func (s *ClickHouseStore) TopMITRE(ctx context.Context, tenantID uuid.UUID, since time.Time, limit int) ([]MITRECount, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.conn.Query(ctx,
+		`SELECT technique, count() AS n
+		   FROM events ARRAY JOIN mitre AS technique
+		  WHERE tenant_id = ? AND observed_at >= ? AND technique != ''
+		  GROUP BY technique ORDER BY n DESC LIMIT ?`, tenantID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MITRECount
+	for rows.Next() {
+		var m MITRECount
+		var n uint64
+		if err := rows.Scan(&m.Technique, &n); err != nil {
+			return nil, err
+		}
+		m.Count = int(n)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // Query returns matching events for the tenant, newest first. The tenant_id
 // predicate is mandatory and always applied first (isolation, ADR-0002).
 func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) ([]NormalizedEvent, error) {
@@ -178,7 +222,7 @@ func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query
 	}
 	sql := `SELECT id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
 	               class_name, activity_name, severity, confidence,
-	               actor_ref, target_ref, action, outcome, raw_pointer, checksum, data
+	               actor_ref, target_ref, action, outcome, mitre, vendor, product, raw_pointer, checksum, data
 	          FROM events WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if !q.From.IsZero() {
@@ -213,7 +257,7 @@ func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query
 		var confidence int32
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.SchemaVersion, &e.DedupeKey, &e.Source, &e.ConnectorID,
 			&e.CollectedAt, &e.ObservedAt, &e.ClassName, &e.ActivityName, &e.Severity,
-			&confidence, &e.ActorRef, &e.TargetRef, &e.Action, &e.Outcome,
+			&confidence, &e.ActorRef, &e.TargetRef, &e.Action, &e.Outcome, &e.MITRE, &e.Vendor, &e.Product,
 			&e.RawPointer, &e.Checksum, &data); err != nil {
 			return nil, err
 		}

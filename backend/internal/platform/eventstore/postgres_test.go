@@ -39,7 +39,8 @@ func TestPostgresEventStoreRoundTrip(t *testing.T) {
 	e := eventstore.NormalizedEvent{
 		ID: uuid.New(), TenantID: tn.ID, DedupeKey: dk, Source: "itest",
 		CollectedAt: now, ObservedAt: now, ClassName: "MalwareRoundTrip", Severity: "high",
-		ActorRef: "user:a", Confidence: 42, Data: map[string]any{"k": "v"},
+		ActorRef: "user:a", Confidence: 42, MITRE: []string{"T1486"}, Vendor: "Microsoft", Product: "Defender",
+		Data: map[string]any{"k": "v"},
 		// SchemaVersion intentionally left empty -> Append must default it.
 	}
 	n, err := store.Append(ctx, tn.ID, []eventstore.NormalizedEvent{e})
@@ -63,5 +64,23 @@ func TestPostgresEventStoreRoundTrip(t *testing.T) {
 	}
 	if got[0].Confidence != 42 || got[0].ClassName != "MalwareRoundTrip" {
 		t.Fatalf("round-trip mismatch: %+v", got[0])
+	}
+	// v1.1 promoted columns round-trip.
+	if len(got[0].MITRE) != 1 || got[0].MITRE[0] != "T1486" || got[0].Vendor != "Microsoft" || got[0].Product != "Defender" {
+		t.Fatalf("v1.1 columns wrong: mitre=%v vendor=%q product=%q", got[0].MITRE, got[0].Vendor, got[0].Product)
+	}
+	// TopMITRE aggregates the promoted column.
+	top, err := store.TopMITRE(ctx, tn.ID, now.Add(-time.Hour), 10)
+	if err != nil {
+		t.Fatalf("TopMITRE: %v", err)
+	}
+	var sawT1486 bool
+	for _, m := range top {
+		if m.Technique == "T1486" && m.Count >= 1 {
+			sawT1486 = true
+		}
+	}
+	if !sawT1486 {
+		t.Fatalf("TopMITRE missing T1486: %+v", top)
 	}
 }

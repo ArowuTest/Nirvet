@@ -22,9 +22,10 @@ type Summary struct {
 	GeneratedAt      time.Time      `json:"generated_at"`
 	AlertsBySeverity map[string]int `json:"alerts_by_severity"`
 	OpenAlerts       int            `json:"open_alerts"`
-	IncidentsByStage map[string]int `json:"incidents_by_stage"`
-	OpenIncidents    int            `json:"open_incidents"`
-	EventsLast24h    int            `json:"events_last_24h"`
+	IncidentsByStage map[string]int          `json:"incidents_by_stage"`
+	OpenIncidents    int                     `json:"open_incidents"`
+	EventsLast24h    int                     `json:"events_last_24h"`
+	TopMITRE         []eventstore.MITRECount `json:"top_mitre"` // ATT&CK coverage (v1.1)
 }
 
 // Service computes reports. Alerts/incidents come from the Postgres system of
@@ -62,11 +63,18 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID) (*Summary, er
 	// Event volume comes from the EventStore (Postgres or ClickHouse), not a raw
 	// Postgres query — so dashboards are correct whichever telemetry backend is live.
 	if s.events != nil {
-		n, cerr := s.events.CountSince(ctx, tenantID, sum.GeneratedAt.Add(-24*time.Hour))
+		since := sum.GeneratedAt.Add(-24 * time.Hour)
+		n, cerr := s.events.CountSince(ctx, tenantID, since)
 		if cerr != nil {
 			return nil, cerr
 		}
 		sum.EventsLast24h = n
+		// ATT&CK coverage over the promoted mitre column (ADR-0006 v1.1).
+		top, terr := s.events.TopMITRE(ctx, tenantID, since, 10)
+		if terr != nil {
+			return nil, terr
+		}
+		sum.TopMITRE = top
 	}
 	return sum, nil
 }

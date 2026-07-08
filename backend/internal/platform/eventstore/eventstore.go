@@ -13,7 +13,8 @@ import (
 // CanonicalSchemaVersion is the current version of the canonical event schema
 // (ADR-0006). Every normalized event carries it so the schema can evolve without a
 // big-bang migration; consumers may branch on it and backfills can target a version.
-const CanonicalSchemaVersion = "1.0"
+// v1.1: promoted mitre/vendor/product from the data payload to first-class columns.
+const CanonicalSchemaVersion = "1.1"
 
 // NormalizedEvent is an OCSF-inspired security event (doc 02 §4, ADR-0006). Every
 // source normalizer emits this canonical shape. Structured key fields are
@@ -36,9 +37,18 @@ type NormalizedEvent struct {
 	TargetRef   string         `json:"target_ref"` // resource/account/host
 	Action      string         `json:"action"`
 	Outcome     string         `json:"outcome"`
+	MITRE       []string       `json:"mitre"`   // ATT&CK technique ids (v1.1, first-class)
+	Vendor      string         `json:"vendor"`  // e.g. CrowdStrike (v1.1, first-class)
+	Product     string         `json:"product"` // e.g. Falcon (v1.1, first-class)
 	RawPointer  string         `json:"raw_pointer"` // object-store key of the raw event
 	Checksum    string         `json:"checksum"`    // sha256 of raw
 	Data        map[string]any `json:"data"`        // full normalized payload
+}
+
+// MITRECount is an ATT&CK technique frequency (analytics over the mitre column).
+type MITRECount struct {
+	Technique string `json:"technique"`
+	Count     int    `json:"count"`
 }
 
 // Query filters a tenant's events.
@@ -61,4 +71,7 @@ type EventStore interface {
 	// CountSince returns the number of a tenant's events observed at or after
 	// `since` — used by reporting/dashboards so counts are correct on any backend.
 	CountSince(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error)
+	// TopMITRE returns the most frequent ATT&CK techniques for a tenant since
+	// `since` (analytics over the first-class mitre column, ADR-0006 v1.1).
+	TopMITRE(ctx context.Context, tenantID uuid.UUID, since time.Time, limit int) ([]MITRECount, error)
 }

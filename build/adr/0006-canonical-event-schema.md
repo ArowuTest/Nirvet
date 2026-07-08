@@ -64,10 +64,18 @@ explicit version + evolution policy. Some vendor richness is flattened into `dat
 those (e.g. `mitre`, `ip`, `hostname`) to dedicated indexed columns is a v1.1 increment when query patterns
 justify it.
 
+## v1.1 (Jul 2026) — hot fields promoted to columns
+
+`mitre` (array), `vendor` and `product` are now **first-class indexed columns** in both event stores (Postgres
+migration 0015 with a GIN index on `mitre`; ClickHouse `Array(String)` + `LowCardinality`), populated by the
+worker from the normalized payload. `EventStore.TopMITRE(tenant, since, limit)` aggregates ATT&CK technique
+frequency (Postgres `unnest`, ClickHouse `ARRAY JOIN`) and is surfaced in `reporting.Summary.top_mitre`. Verified
+round-trip + TopMITRE on both backends. `CanonicalSchemaVersion` bumped to `1.1`.
+
 ## Deferred (logged, not silently skipped)
 
-- Promote hot `data` fields (`mitre`, `ip`, `hostname`, `vendor`, `product`) to dedicated indexed columns in
-  both stores (schema **v1.1**) when analytics query patterns justify the column cost.
+- Promote `ip`/`hostname` to dedicated columns (currently carried as typed refs in `actor_ref`/`target_ref`) when
+  cross-entity IP/host analytics justify it.
 - A networked schema-registry service with Avro/Protobuf wire contracts + compatibility checks in CI (only if we
   ever expose the raw event bus to external producers; the in-process mapper registry covers current needs).
 - Entity-resolution/asset-graph (SRS §6.5) that links `actor_ref`/`target_ref` to a canonical asset/identity.

@@ -66,6 +66,25 @@ func (wk *Worker) RunOnce(ctx context.Context) (int, error) {
 	return len(jobs), nil
 }
 
+// mitreFromData extracts ATT&CK technique ids from data.mitre, which normalizers
+// set as either []string or []any (JSON-decoded).
+func mitreFromData(data map[string]any) []string {
+	switch v := data["mitre"].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 	var nj normalizeJob
 	if err := json.Unmarshal(j.Payload, &nj); err != nil {
@@ -95,6 +114,14 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 		RawPointer:   "raw_events:" + nj.RawID.String(),
 		Checksum:     nj.Checksum,
 		Data:         in.Data,
+	}
+	// Promote the canonical hot fields to first-class columns (ADR-0006 v1.1).
+	ev.MITRE = mitreFromData(in.Data)
+	if v, ok := in.Data["vendor"].(string); ok {
+		ev.Vendor = v
+	}
+	if p, ok := in.Data["product"].(string); ok {
+		ev.Product = p
 	}
 	// Enrichment: annotate the event with threat-intel watchlist hits before it is
 	// stored and evaluated by detection.

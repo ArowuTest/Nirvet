@@ -201,8 +201,10 @@ behind interfaces that already exist — not up front:
 - **Redis-backed distributed rate limiting** (scaling): **DONE** — `ratelimit.Allower` interface + `RedisLimiter`
   (atomic token-bucket Lua), selected by `NIRVET_REDIS_ADDR`; verified two instances share one global bucket.
   Remaining: extend Redis to a general cache seam (session/hot-lookup) at the same scale point.
-- **Schema v1.1 — promote hot fields to columns** (ADR-0006): `mitre`, `ip`, `hostname`, `vendor`, `product`
-  from `data` to indexed columns when analytics query patterns justify the column cost.
+- ~~**Schema v1.1 — promote hot fields to columns**~~ DONE (ADR-0006 v1.1): `mitre`/`vendor`/`product` promoted
+  to indexed columns in both stores (PG migration 0015 + GIN; CH Array/LowCardinality); `EventStore.TopMITRE`
+  ATT&CK analytics (PG unnest / CH ARRAY JOIN) surfaced in `reporting.top_mitre`; round-trip + TopMITRE verified
+  on both backends. Remaining: `ip`/`hostname` columns when cross-entity analytics justify it.
 - ~~**NATS queue backend**~~ DONE: `queue.NATSQueue` (JetStream durable stream + pull consumer, explicit ack,
   in-flight msg→ack bridge, NakWithDelay backoff, Term dead-letter after MaxAttempts), selected by
   `NIRVET_NATS_URL` (`queue.New`). Verified vs a real NATS: ack/no-redelivery, fail→redelivery-with-attempt,
