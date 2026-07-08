@@ -53,5 +53,9 @@ is still required **pre-go-live** (build-phase sign-off only — see memory
 - **notify** — logs the notification; real channels (email/Slack/webhook) are stubs.
 - **compliance** — static/reference responses, not a live control-status engine.
 - **reporting** — JSON aggregates only; no scheduled/exported report artifacts.
+- **evidence-pack export (§6.13)** — DONE (Jul 2026): GET /incidents/{id}/evidence-pack
+  bundles the case + timeline + linked alerts + underlying events + audit trail with a
+  SHA-256 checksum manifest (tamper-evident). Follow-on: signed/PDF export + object-store
+  archival of generated packs.
 
 See `MODULE_DEFINITION_OF_DONE.md` for the per-module test/RBAC/observability matrix.

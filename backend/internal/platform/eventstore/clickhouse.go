@@ -214,6 +214,39 @@ func (s *ClickHouseStore) TopMITRE(ctx context.Context, tenantID uuid.UUID, sinc
 	return out, rows.Err()
 }
 
+// GetByIDs returns the tenant's events with the given ids. The tenant_id predicate
+// is applied first (isolation, ADR-0002); ids are matched with IN.
+func (s *ClickHouseStore) GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]NormalizedEvent, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.conn.Query(ctx,
+		`SELECT id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
+		        class_name, activity_name, severity, confidence,
+		        actor_ref, target_ref, action, outcome, mitre, vendor, product, raw_pointer, checksum, data
+		   FROM events WHERE tenant_id = ? AND id IN (?) ORDER BY observed_at ASC`, tenantID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NormalizedEvent
+	for rows.Next() {
+		var e NormalizedEvent
+		var data string
+		var confidence int32
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.SchemaVersion, &e.DedupeKey, &e.Source, &e.ConnectorID,
+			&e.CollectedAt, &e.ObservedAt, &e.ClassName, &e.ActivityName, &e.Severity,
+			&confidence, &e.ActorRef, &e.TargetRef, &e.Action, &e.Outcome, &e.MITRE, &e.Vendor, &e.Product,
+			&e.RawPointer, &e.Checksum, &data); err != nil {
+			return nil, err
+		}
+		e.Confidence = int(confidence)
+		_ = json.Unmarshal([]byte(data), &e.Data)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // Query returns matching events for the tenant, newest first. The tenant_id
 // predicate is mandatory and always applied first (isolation, ADR-0002).
 func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) ([]NormalizedEvent, error) {

@@ -20,6 +20,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
+	"github.com/ArowuTest/nirvet/internal/evidence"
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
@@ -57,6 +58,7 @@ type harness struct {
 	repSvc   *reporting.Service
 	corrSvc  *correlation.Service
 	events   eventstore.EventStore
+	evidence *evidence.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -148,6 +150,7 @@ func newHarness(t *testing.T) *harness {
 		repSvc:   reporting.NewService(db, events),
 		corrSvc:  corrSvc,
 		events:   events,
+		evidence: evidence.NewService(incSvc, alertSvc, events, db),
 	}
 }
 
@@ -365,6 +368,67 @@ func TestIntegration(t *testing.T) {
 		tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
 		if len(tl) == 0 {
 			t.Fatal("incident should have a seed timeline entry")
+		}
+	})
+
+	t.Run("EvidencePackAssembly", func(t *testing.T) {
+		// SRS §6.13: an evidence pack bundles the case + its alerts + the underlying
+		// events + the audit trail, with a tamper-evident checksum manifest.
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "evi", ClassName: "Evidence probe", ActorRef: "user:e", TargetRef: "host:e"}
+		if _, err := h.events.Append(h.ctx, h.tenantID, []eventstore.NormalizedEvent{ev}); err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "evi-alert", Severity: "high", DedupeKey: ev.ID.String() + ":evi"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v ins=%v", err, ins)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		// Simulate the mutation-audit row the HTTP middleware would write on a close
+		// (its Action carries the incident id in the URL path).
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `INSERT INTO audit_log (actor_email, action, metadata, request_id) VALUES ($1,$2,'{}',$3)`,
+				h.email, "POST /incidents/"+inc.ID.String()+"/close", "req-evi")
+			return e
+		}); err != nil {
+			t.Fatalf("seed audit: %v", err)
+		}
+
+		pack, err := h.evidence.Build(h.ctx, h.principal, inc.ID, time.Now())
+		if err != nil {
+			t.Fatalf("build pack: %v", err)
+		}
+		if pack.Incident == nil || pack.Incident.ID != inc.ID {
+			t.Fatal("pack must contain the incident")
+		}
+		if len(pack.Alerts) == 0 || pack.Alerts[0].ID != a.ID {
+			t.Fatal("pack must contain the promoted alert")
+		}
+		foundEvent := false
+		for _, e := range pack.Events {
+			if e.ID == ev.ID {
+				foundEvent = true
+			}
+		}
+		if !foundEvent {
+			t.Fatal("pack must contain the underlying event")
+		}
+		foundAudit := false
+		for _, ae := range pack.Audit {
+			if strings.Contains(ae.Action, inc.ID.String()) {
+				foundAudit = true
+			}
+		}
+		if !foundAudit {
+			t.Fatal("pack must contain the incident's audit entry")
+		}
+		if pack.Manifest.PackChecksum == "" || pack.Manifest.SectionChecksum["events"] == "" {
+			t.Fatal("pack manifest checksums must be set")
+		}
+		if pack.Manifest.Counts["alerts"] != len(pack.Alerts) {
+			t.Fatalf("manifest alert count %d must match %d", pack.Manifest.Counts["alerts"], len(pack.Alerts))
 		}
 	})
 

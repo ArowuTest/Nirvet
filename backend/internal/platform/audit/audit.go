@@ -6,7 +6,9 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -39,4 +41,45 @@ func Record(ctx context.Context, tx pgx.Tx, e Entry) error {
 		actor, e.ActorEmail, e.Action, e.Target, meta, e.RequestID,
 	)
 	return err
+}
+
+// LogEntry is a stored, read-back audit record (with its timestamp).
+type LogEntry struct {
+	ActorEmail string    `json:"actor_email"`
+	Action     string    `json:"action"`
+	Target     string    `json:"target"`
+	RequestID  string    `json:"request_id"`
+	At         time.Time `json:"at"`
+}
+
+// FindByActionContains returns the tenant's audit rows whose action or target
+// contains needle, oldest first — used to assemble an incident's audit trail for an
+// evidence pack (the mutation middleware records the URL path, which carries the
+// incident id, in `action`). Tenant-scoped via RLS; reads are permitted on the
+// append-only log.
+func FindByActionContains(ctx context.Context, db *database.DB, tenantID uuid.UUID, needle string, limit int) ([]LogEntry, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	var out []LogEntry
+	err := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT actor_email, action, target, request_id, at
+			   FROM audit_log
+			  WHERE action ILIKE '%'||$1||'%' OR target ILIKE '%'||$1||'%'
+			  ORDER BY at ASC LIMIT $2`, needle, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e LogEntry
+			if err := rows.Scan(&e.ActorEmail, &e.Action, &e.Target, &e.RequestID, &e.At); err != nil {
+				return err
+			}
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	return out, err
 }

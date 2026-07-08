@@ -55,6 +55,11 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID, status string) (
 	return s.repo.List(ctx, tenantID, status, 0)
 }
 
+// ListByIncident returns the alerts promoted into an incident (for evidence packs).
+func (s *Service) ListByIncident(ctx context.Context, tenantID, incidentID uuid.UUID) ([]Alert, error) {
+	return s.repo.ListByIncident(ctx, tenantID, incidentID)
+}
+
 // Get returns one alert.
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, error) {
 	a, err := s.repo.Get(ctx, tenantID, id)

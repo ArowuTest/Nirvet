@@ -80,6 +80,29 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, status string
 	return out, err
 }
 
+// ListByIncident returns the alerts promoted into an incident (evidence assembly),
+// oldest first so the pack reads chronologically. Tenant-scoped via RLS.
+func (r *Repository) ListByIncident(ctx context.Context, tenantID, incidentID uuid.UUID) ([]Alert, error) {
+	var out []Alert
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT `+alertCols+` FROM alerts WHERE incident_id=$1 ORDER BY created_at ASC`, incidentID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a Alert
+			if err := scanAlert(rows, &a); err != nil {
+				return err
+			}
+			out = append(out, a)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // Get returns one alert.
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, error) {
 	var a Alert

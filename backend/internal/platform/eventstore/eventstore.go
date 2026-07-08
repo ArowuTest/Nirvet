@@ -21,28 +21,28 @@ const CanonicalSchemaVersion = "1.1"
 // first-class columns; the full normalized body lives in Data. The raw event is
 // preserved separately (RawPointer + Checksum) for evidence/defensibility.
 type NormalizedEvent struct {
-	ID            uuid.UUID    `json:"id"`
-	TenantID      uuid.UUID    `json:"tenant_id"`
-	SchemaVersion string       `json:"schema_version"` // ADR-0006 canonical schema version
-	DedupeKey     string       `json:"dedupe_key"`     // source + native id + payload hash
-	Source        string       `json:"source"`
-	ConnectorID *uuid.UUID     `json:"connector_id,omitempty"`
-	CollectedAt time.Time      `json:"collected_at"`
-	ObservedAt  time.Time      `json:"observed_at"`
-	ClassName   string         `json:"class_name"`
-	ActivityName string        `json:"activity_name"`
-	Severity    string         `json:"severity"`   // informational|low|medium|high|critical
-	Confidence  int            `json:"confidence"` // 0-100
-	ActorRef    string         `json:"actor_ref"`  // user/host/ip
-	TargetRef   string         `json:"target_ref"` // resource/account/host
-	Action      string         `json:"action"`
-	Outcome     string         `json:"outcome"`
-	MITRE       []string       `json:"mitre"`   // ATT&CK technique ids (v1.1, first-class)
-	Vendor      string         `json:"vendor"`  // e.g. CrowdStrike (v1.1, first-class)
-	Product     string         `json:"product"` // e.g. Falcon (v1.1, first-class)
-	RawPointer  string         `json:"raw_pointer"` // object-store key of the raw event
-	Checksum    string         `json:"checksum"`    // sha256 of raw
-	Data        map[string]any `json:"data"`        // full normalized payload
+	ID            uuid.UUID      `json:"id"`
+	TenantID      uuid.UUID      `json:"tenant_id"`
+	SchemaVersion string         `json:"schema_version"` // ADR-0006 canonical schema version
+	DedupeKey     string         `json:"dedupe_key"`     // source + native id + payload hash
+	Source        string         `json:"source"`
+	ConnectorID   *uuid.UUID     `json:"connector_id,omitempty"`
+	CollectedAt   time.Time      `json:"collected_at"`
+	ObservedAt    time.Time      `json:"observed_at"`
+	ClassName     string         `json:"class_name"`
+	ActivityName  string         `json:"activity_name"`
+	Severity      string         `json:"severity"`   // informational|low|medium|high|critical
+	Confidence    int            `json:"confidence"` // 0-100
+	ActorRef      string         `json:"actor_ref"`  // user/host/ip
+	TargetRef     string         `json:"target_ref"` // resource/account/host
+	Action        string         `json:"action"`
+	Outcome       string         `json:"outcome"`
+	MITRE         []string       `json:"mitre"`       // ATT&CK technique ids (v1.1, first-class)
+	Vendor        string         `json:"vendor"`      // e.g. CrowdStrike (v1.1, first-class)
+	Product       string         `json:"product"`     // e.g. Falcon (v1.1, first-class)
+	RawPointer    string         `json:"raw_pointer"` // object-store key of the raw event
+	Checksum      string         `json:"checksum"`    // sha256 of raw
+	Data          map[string]any `json:"data"`        // full normalized payload
 }
 
 // MITRECount is an ATT&CK technique frequency (analytics over the mitre column).
@@ -68,6 +68,9 @@ type EventStore interface {
 	Append(ctx context.Context, tenantID uuid.UUID, events []NormalizedEvent) (int, error)
 	// Query returns a tenant's events matching q.
 	Query(ctx context.Context, tenantID uuid.UUID, q Query) ([]NormalizedEvent, error)
+	// GetByIDs returns the tenant's events with the given ids (evidence-pack
+	// assembly). Missing ids are simply absent; order is not guaranteed.
+	GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]NormalizedEvent, error)
 	// CountSince returns the number of a tenant's events observed at or after
 	// `since` — used by reporting/dashboards so counts are correct on any backend.
 	CountSince(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error)

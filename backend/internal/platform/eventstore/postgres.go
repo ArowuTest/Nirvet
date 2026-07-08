@@ -111,6 +111,45 @@ func (s *PostgresStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) 
 	return out, err
 }
 
+// GetByIDs returns the tenant's events with the given ids (tenant-scoped via RLS).
+// Ids are cast text[]->uuid[] so the query binds portably regardless of the pgx
+// uuid array codec.
+func (s *PostgresStore) GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]NormalizedEvent, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = id.String()
+	}
+	var out []NormalizedEvent
+	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
+			        class_name, activity_name, severity, confidence,
+			        actor_ref, target_ref, action, outcome, mitre, vendor, product, raw_pointer, checksum, data
+			   FROM events WHERE id = ANY($1::uuid[]) ORDER BY observed_at ASC`, strs)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e NormalizedEvent
+			var data []byte
+			if err := rows.Scan(&e.ID, &e.TenantID, &e.SchemaVersion, &e.DedupeKey, &e.Source, &e.ConnectorID,
+				&e.CollectedAt, &e.ObservedAt, &e.ClassName, &e.ActivityName, &e.Severity,
+				&e.Confidence, &e.ActorRef, &e.TargetRef, &e.Action, &e.Outcome,
+				&e.MITRE, &e.Vendor, &e.Product, &e.RawPointer, &e.Checksum, &data); err != nil {
+				return err
+			}
+			_ = json.Unmarshal(data, &e.Data)
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // CountSince counts a tenant's events observed at or after `since` (tenant-scoped
 // via RLS).
 func (s *PostgresStore) CountSince(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error) {

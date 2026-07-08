@@ -21,6 +21,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
+	"github.com/ArowuTest/nirvet/internal/evidence"
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
@@ -146,6 +147,9 @@ func main() {
 	incidentH := incident.NewHandler(incidentSvc)
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	correlationSvc.WithIncidenter(incidentSvc)
+
+	// Evidence-pack export (§6.13): composes case + alert + event + audit read paths.
+	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, db))
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
 	billingH := billing.NewHandler(billingSvc)
@@ -305,6 +309,7 @@ func main() {
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
+	mux.Handle("GET /incidents/{id}/evidence-pack", provider(evidenceH.Pack))
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))
