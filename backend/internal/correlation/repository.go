@@ -15,30 +15,6 @@ type Repository struct{ db *database.DB }
 // NewRepository builds the repository.
 func NewRepository(db *database.DB) *Repository { return &Repository{db: db} }
 
-// FindActive returns the active (open OR already-promoted) correlation for an
-// entity whose last_seen is within the window, or (nil, nil) if none — the caller
-// then creates a new cluster. A promoted cluster keeps absorbing related alerts so
-// an ongoing campaign on one entity stays a single cluster/incident (it is NOT
-// re-promoted). A closed cluster is resolved and never re-opened.
-func (r *Repository) FindActive(ctx context.Context, tenantID uuid.UUID, entity string, since time.Time) (*Correlation, error) {
-	var c Correlation
-	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return scanOne(tx.QueryRow(ctx,
-			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
-			        incident_id, first_seen, last_seen, created_at
-			   FROM correlations
-			  WHERE entity=$1 AND status IN ('open','promoted') AND last_seen >= $2
-			  ORDER BY last_seen DESC LIMIT 1`, entity, since), &c)
-	})
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &c, nil
-}
-
 // Create inserts a new correlation.
 func (r *Repository) Create(ctx context.Context, c *Correlation) error {
 	return r.db.WithTenant(ctx, c.TenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -50,22 +26,66 @@ func (r *Repository) Create(ctx context.Context, c *Correlation) error {
 	})
 }
 
-// Update persists a cluster's recomputed aggregate.
-func (r *Repository) Update(ctx context.Context, c *Correlation) error {
-	return r.db.WithTenant(ctx, c.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+// UpdateActive locks the active (open/promoted, in-window) cluster for the entity
+// FOR UPDATE, applies mutate, and persists it in ONE transaction — so two alerts on the
+// same cluster cannot lose an alert_count / risk update (R2 M-C). Returns (nil, nil)
+// when no active cluster exists (the caller then creates one).
+func (r *Repository) UpdateActive(ctx context.Context, tenantID uuid.UUID, entity string, since time.Time, mutate func(*Correlation)) (*Correlation, error) {
+	var out *Correlation
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var c Correlation
+		err := scanOne(tx.QueryRow(ctx,
+			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
+			        incident_id, first_seen, last_seen, created_at
+			   FROM correlations
+			  WHERE entity=$1 AND status IN ('open','promoted') AND last_seen >= $2
+			  ORDER BY last_seen DESC LIMIT 1
+			  FOR UPDATE`, entity, since), &c)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil // no active cluster; caller creates
+			}
+			return err
+		}
+		mutate(&c)
 		ct, err := tx.Exec(ctx,
-			`UPDATE correlations
-			    SET alert_count=$2, max_severity=$3, risk_score=$4, techniques=$5,
-			        status=$6, incident_id=$7, last_seen=now()
+			`UPDATE correlations SET alert_count=$2, max_severity=$3, risk_score=$4, techniques=$5, last_seen=now()
 			  WHERE id=$1`,
-			c.ID, c.AlertCount, c.MaxSeverity, c.RiskScore, c.Techniques, c.Status, c.IncidentID)
+			c.ID, c.AlertCount, c.MaxSeverity, c.RiskScore, c.Techniques)
 		if err != nil {
 			return err
 		}
 		if ct.RowsAffected() == 0 {
 			return pgx.ErrNoRows
 		}
+		out = &c
 		return nil
+	})
+	return out, err
+}
+
+// ClaimForPromotion atomically transitions a cluster open->promoted, returning true
+// only for the single caller that wins the transition (R2 H-C: exactly-once promotion —
+// no duplicate incidents, no unbounded re-promotion). The incident is attached
+// afterwards via SetIncident.
+func (r *Repository) ClaimForPromotion(ctx context.Context, tenantID, id uuid.UUID) (bool, error) {
+	claimed := false
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx, `UPDATE correlations SET status='promoted' WHERE id=$1 AND status='open'`, id)
+		if err != nil {
+			return err
+		}
+		claimed = ct.RowsAffected() == 1
+		return nil
+	})
+	return claimed, err
+}
+
+// SetIncident attaches the opened incident to a promoted cluster.
+func (r *Repository) SetIncident(ctx context.Context, tenantID, id, incidentID uuid.UUID) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE correlations SET incident_id=$2 WHERE id=$1`, id, incidentID)
+		return err
 	})
 }
 

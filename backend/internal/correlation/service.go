@@ -31,30 +31,26 @@ func (s *Service) WithIncidenter(i Incidenter) *Service { s.incidenter = i; retu
 // risk, and returns the cluster id plus the alert's own individual risk. When the
 // alert has no entity to correlate on, it returns (uuid.Nil, individualRisk).
 //
-// Concurrency note: find-or-create has a small race under heavy parallel ingest
-// (two clusters for the same entity); it is benign (both are valid clusters) and
-// the shared entity index keeps lookups cheap. A future SELECT ... FOR UPDATE on a
-// per-entity lock row would make it strictly single-cluster.
+// Concurrency: the update to an existing cluster is atomic (UpdateActive locks the row
+// FOR UPDATE, so concurrent alerts can't lose an alert_count/risk update — R2 M-C). The
+// find-or-CREATE step still has a benign race (two clusters for one entity under heavy
+// parallel first-touch); both are valid clusters, resolved by the entity index.
 func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, severity string, mitre []string, confidence int) (uuid.UUID, int, error) {
 	individual := RiskScore(severity, 1, len(mitre), confidence)
 	if entity == "" {
 		return uuid.Nil, individual, nil
 	}
-	existing, err := s.repo.FindActive(ctx, tenantID, entity, time.Now().Add(-Window))
+	since := time.Now().Add(-Window)
+	c, err := s.repo.UpdateActive(ctx, tenantID, entity, since, func(c *Correlation) {
+		c.AlertCount++
+		c.MaxSeverity = worseSeverity(c.MaxSeverity, severity)
+		c.Techniques = mergeTechniques(c.Techniques, mitre)
+		c.RiskScore = RiskScore(c.MaxSeverity, c.AlertCount, len(c.Techniques), confidence)
+	})
 	if err != nil {
 		return uuid.Nil, individual, err
 	}
-	var c *Correlation
-	if existing != nil {
-		existing.AlertCount++
-		existing.MaxSeverity = worseSeverity(existing.MaxSeverity, severity)
-		existing.Techniques = mergeTechniques(existing.Techniques, mitre)
-		existing.RiskScore = RiskScore(existing.MaxSeverity, existing.AlertCount, len(existing.Techniques), confidence)
-		if err := s.repo.Update(ctx, existing); err != nil {
-			return uuid.Nil, individual, err
-		}
-		c = existing
-	} else {
+	if c == nil {
 		c = &Correlation{
 			ID: uuid.New(), TenantID: tenantID, Entity: entity, Status: StatusOpen,
 			AlertCount: 1, MaxSeverity: severity, Techniques: mergeTechniques(nil, mitre),
@@ -68,20 +64,28 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 	return c.ID, individual, nil
 }
 
-// maybePromote opens an incident for a cluster once its aggregate risk crosses the
-// promote threshold (once — an already-promoted cluster is skipped). Best-effort:
-// a promotion failure never breaks correlation, and the cluster still holds its risk.
+// maybePromote opens an incident once a cluster's aggregate risk crosses the promote
+// threshold — exactly once. It CLAIMS the cluster atomically (open->promoted) before
+// creating the incident, so under the multi-process topology two workers can never both
+// open an incident, and a cluster is never re-promoted (R2 H-C). Best-effort: a promotion
+// failure never breaks correlation; on incident-open failure the cluster stays 'promoted'
+// with no incident (it will not re-promote or spam) rather than looping forever.
 func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity string, c *Correlation) {
-	if s.incidenter == nil || c.Status != StatusOpen || c.IncidentID != nil || c.RiskScore < PromoteThreshold {
+	if s.incidenter == nil || c.RiskScore < PromoteThreshold {
+		return
+	}
+	// The in-memory status may be stale; the DB WHERE status='open' is authoritative.
+	claimed, err := s.repo.ClaimForPromotion(ctx, tenantID, c.ID)
+	if err != nil || !claimed {
 		return
 	}
 	incID, err := s.incidenter.OpenFromCorrelation(ctx, tenantID, entity, c.MaxSeverity, c.RiskScore, c.Techniques)
 	if err != nil {
 		return
 	}
+	_ = s.repo.SetIncident(ctx, tenantID, c.ID, incID)
 	c.IncidentID = &incID
 	c.Status = StatusPromoted
-	_ = s.repo.Update(ctx, c)
 }
 
 // List returns a tenant's correlations (highest risk first).

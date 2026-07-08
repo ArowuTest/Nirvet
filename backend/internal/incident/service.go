@@ -211,6 +211,13 @@ func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int
 	}
 	n := 0
 	for _, b := range breaches {
+		// Claim BEFORE notifying: the conditional marker UPDATE makes exactly one
+		// sweeper win each breach, so no duplicate emails/timeline entries even when the
+		// sweep runs in several processes (R2 M-B — exactly-once, not at-least-once).
+		claimed, err := s.repo.ClaimBreach(ctx, b.TenantID, b.ID, b.Kind)
+		if err != nil || !claimed {
+			continue
+		}
 		subject := fmt.Sprintf("SLA breach (%s): %s", b.Kind, b.Title)
 		body := fmt.Sprintf("Incident %s (%s severity) has breached its %s SLA deadline.", b.ID, b.Severity, b.Kind)
 		if s.notifier != nil {
@@ -221,10 +228,6 @@ func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int
 			Note: fmt.Sprintf("SLA %s deadline breached", b.Kind),
 		}
 		_ = s.repo.AddNote(ctx, b.TenantID, entry)
-		// Mark last: if this fails, the next sweep simply retries (at-least-once alert).
-		if err := s.repo.MarkBreachNotified(ctx, b.TenantID, b.ID, b.Kind); err != nil {
-			continue
-		}
 		n++
 	}
 	return n, nil

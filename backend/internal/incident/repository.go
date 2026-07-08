@@ -216,17 +216,25 @@ func (r *Repository) FindSLABreaches(ctx context.Context, now time.Time, limit i
 	return out, err
 }
 
-// MarkBreachNotified stamps the notified marker for a breach kind so the sweeper does
-// not re-alert on it. Idempotent; runs in the incident's tenant context.
-func (r *Repository) MarkBreachNotified(ctx context.Context, tenantID, id uuid.UUID, kind string) error {
+// ClaimBreach atomically stamps the notified marker for a breach kind, returning true
+// only for the single caller that wins the transition NULL->now(). Claim BEFORE
+// notifying so under the multi-process sweeper topology exactly one sweeper alerts each
+// breach — no duplicate emails/timeline entries (R2 M-B). Runs in the tenant context.
+func (r *Repository) ClaimBreach(ctx context.Context, tenantID, id uuid.UUID, kind string) (bool, error) {
 	col := "resolve_breach_notified_at"
 	if kind == "ack" {
 		col = "ack_breach_notified_at"
 	}
-	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE incidents SET `+col+` = now() WHERE id = $1`, id)
-		return err
+	claimed := false
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx, `UPDATE incidents SET `+col+` = now() WHERE id = $1 AND `+col+` IS NULL`, id)
+		if err != nil {
+			return err
+		}
+		claimed = ct.RowsAffected() == 1
+		return nil
 	})
+	return claimed, err
 }
 
 // CreateWithSeed atomically creates an incident and seeds its timeline. Used for
