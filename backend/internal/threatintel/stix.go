@@ -128,14 +128,17 @@ func (r *Repository) UpsertStix(ctx context.Context, tenantID uuid.UUID, o *Stix
 
 		var conflict string // the ON CONFLICT clause differs per idempotency mode
 		created, modified := o.Created, o.Modified
+		// Round-5 H3: conflict on the per-tenant composite (NULL tenant → sentinel), so each tenant
+		// upserts into ITS OWN copy of an id and can never collide with another tenant's row.
+		const conflictTarget = `(COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), id)`
 		if modified.IsZero() {
 			// Unversioned: never overwrite; stamp now() so the stored timestamps stay sane.
 			now := time.Now().UTC()
 			created, modified = now, now
-			conflict = `ON CONFLICT (id) DO NOTHING`
+			conflict = `ON CONFLICT ` + conflictTarget + ` DO NOTHING`
 		} else {
 			// Versioned: overwrite only a strictly-older stored version.
-			conflict = `ON CONFLICT (id) DO UPDATE SET
+			conflict = `ON CONFLICT ` + conflictTarget + ` DO UPDATE SET
 			   type=EXCLUDED.type, spec_version=EXCLUDED.spec_version, modified=EXCLUDED.modified,
 			   confidence=EXCLUDED.confidence, revoked=EXCLUDED.revoked, valid_from=EXCLUDED.valid_from,
 			   valid_until=EXCLUDED.valid_until, pattern=EXCLUDED.pattern, pattern_type=EXCLUDED.pattern_type,
@@ -205,11 +208,14 @@ func (r *Repository) ListStix(ctx context.Context, tenantID uuid.UUID, typeFilte
 func (r *Repository) GetStix(ctx context.Context, tenantID uuid.UUID, id string) (*StixObject, error) {
 	var o StixObject
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// With per-tenant copies (R5-H3) a tenant may see both its own row and a global row with the
+		// same id; prefer the tenant's own copy deterministically.
 		row := tx.QueryRow(ctx,
 			`SELECT id, tenant_id, type, spec_version, created, modified, confidence, revoked,
 			        valid_from, valid_until, pattern, pattern_type, labels, external_references,
 			        kill_chain_phases, tlp, source, value, raw
-			   FROM stix_objects WHERE id=$1`, id)
+			   FROM stix_objects WHERE id=$1
+			  ORDER BY (tenant_id IS NOT NULL) DESC LIMIT 1`, id)
 		var e error
 		o, e = scanStix(row)
 		return e

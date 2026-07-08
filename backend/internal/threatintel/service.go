@@ -11,6 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// maxBundleObjects caps objects accepted in one ImportBundle request (Round-5 M1).
+const maxBundleObjects = 5000
+
+// minObservableLen is the shortest observable value the enricher will match on, so trivially-short or
+// overly-generic indicators (".com", "a") cannot match nearly every event (Round-5 M2).
+const minObservableLen = 4
+
 // Match is a threat-intel hit against an event entity. A hit comes from either the flat manual watchlist
 // (Source "watchlist") or the STIX object store (Source "stix"); STIX hits additionally carry the
 // matched object id, confidence, labels, and kill-chain so downstream can explain WHY it matters (TI-004)
@@ -65,12 +72,14 @@ func (e *Enricher) Enrich(ctx context.Context, tenantID uuid.UUID, candidates []
 			lc = append(lc, strings.ToLower(c))
 		}
 	}
+	// Round-5 M2: match on a token boundary and require a minimum observable length, so an indicator
+	// like "8.8.8.8" does not match inside "18.8.8.80" and a generic ".com" does not match every host.
 	hit := func(needle string) bool {
-		if needle == "" {
+		if len(needle) < minObservableLen {
 			return false
 		}
 		for _, c := range lc {
-			if strings.Contains(c, needle) {
+			if tokenContains(c, needle) {
 				return true
 			}
 		}
@@ -116,6 +125,35 @@ func (e *Enricher) snapshot(ctx context.Context, tenantID uuid.UUID) (entry, err
 	e.cache[tenantID] = ent
 	e.mu.Unlock()
 	return ent, nil
+}
+
+// tokenContains reports whether needle occurs in haystack delimited by non-alphanumeric boundaries (or
+// string edges) — so "8.8.8.8" matches "src=8.8.8.8;" but not "18.8.8.80", and "evil.com" matches
+// "to evil.com/x" but ".com" does not match "evil.com". Both args are already lower-cased. Round-5 M2.
+func tokenContains(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	from := 0
+	for from <= len(haystack)-len(needle) {
+		i := strings.Index(haystack[from:], needle)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(needle)
+		beforeOK := start == 0 || !isAlnumByte(haystack[start-1])
+		afterOK := end == len(haystack) || !isAlnumByte(haystack[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		from = start + 1
+	}
+	return false
+}
+
+func isAlnumByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 func (e *Enricher) invalidate(tenantID uuid.UUID) {
@@ -241,6 +279,11 @@ func (s *Service) ImportBundle(ctx context.Context, tenantID uuid.UUID, raw json
 	}
 	if len(bundle.Objects) == 0 {
 		return nil, httpx.ErrBadRequest("bundle contains no objects")
+	}
+	// Round-5 M1: cap objects per bundle so a large upload can't fan out into an unbounded number of
+	// sequential transactions in one request (API4 resource-exhaustion). Larger feeds import in batches.
+	if len(bundle.Objects) > maxBundleObjects {
+		return nil, httpx.ErrBadRequest("bundle exceeds the per-request object limit; split into batches")
 	}
 	res := &BundleResult{}
 	for _, rawObj := range bundle.Objects {

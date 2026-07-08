@@ -34,6 +34,26 @@ func TestExtractObservable(t *testing.T) {
 	}
 }
 
+func TestTokenContains(t *testing.T) {
+	// True positives: delimited occurrence.
+	if !tokenContains("src=8.8.8.8;dst", "8.8.8.8") {
+		t.Fatal("delimited IP should match")
+	}
+	if !tokenContains("connect to evil.com/login", "evil.com") {
+		t.Fatal("delimited domain should match")
+	}
+	// False positives that plain Contains would wrongly flag:
+	if tokenContains("18.8.8.80", "8.8.8.8") {
+		t.Fatal("8.8.8.8 must NOT match inside 18.8.8.80")
+	}
+	if tokenContains("evil.com", ".com") {
+		t.Fatal(".com must not token-match evil.com (leading boundary is alphanumeric)")
+	}
+	if tokenContains("prefix", "pre") {
+		t.Fatal("substring without trailing boundary must not match")
+	}
+}
+
 func TestValidStixType(t *testing.T) {
 	if !validStixType("indicator") || !validStixType("attack-pattern") || !validStixType("ipv4-addr") {
 		t.Fatal("known STIX types must validate")

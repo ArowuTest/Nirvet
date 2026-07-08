@@ -147,6 +147,28 @@ func TestIntegration_StixStoreAndEnrichment(t *testing.T) {
 	if err != nil || got == nil || got.Confidence != 95 {
 		t.Fatalf("newer version should have overwritten confidence to 95: %+v err=%v", got, err)
 	}
+
+	// R5-H3: two tenants importing the SAME STIX id (as public feeds produce) must each get their own
+	// copy — no cross-tenant collision, suppression, or existence oracle.
+	sharedID := "indicator--" + uuid.NewString()
+	sharedBundle := func(ip string) json.RawMessage {
+		return json.RawMessage(`{"type":"bundle","objects":[{"type":"indicator","id":"` + sharedID + `",` +
+			`"spec_version":"2.1","pattern":"[ipv4-addr:value = '` + ip + `']","confidence":70}]}`)
+	}
+	ra, err := svc.ImportBundle(ctx, tnA.ID, sharedBundle("198.51.100.7"))
+	if err != nil || ra.Imported != 1 {
+		t.Fatalf("tenant A import of shared id: %+v err=%v", ra, err)
+	}
+	rb, err := svc.ImportBundle(ctx, tnB.ID, sharedBundle("198.51.100.8"))
+	if err != nil || rb.Imported != 1 {
+		t.Fatalf("tenant B must import the SAME id into its own copy (H3): %+v err=%v", rb, err)
+	}
+	// Each tenant sees its own copy with its own value.
+	ga, _ := repo.GetStix(ctx, tnA.ID, sharedID)
+	gb, _ := repo.GetStix(ctx, tnB.ID, sharedID)
+	if ga == nil || gb == nil || ga.Value != "198.51.100.7" || gb.Value != "198.51.100.8" {
+		t.Fatalf("each tenant must hold its own copy: A=%+v B=%+v", ga, gb)
+	}
 }
 
 // itoa avoids pulling strconv into the test for a single conversion.
