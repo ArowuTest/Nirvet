@@ -461,3 +461,28 @@ reviewer's order, each gated + tested + green on both backends.
 - **Deferred (tracked tasks)**: instant cross-token revocation (JWT is stateless — bounded by short TTL, standard
   mitigation), scheduled auto-expiry sweep to flip status active→expired for reporting (derived at read-time now).
   Invitations + access reviews + ABAC = §6.2 slice C.
+
+## Gate — §6.2 IAM slice C: invitation links + access-review report — IAM-001/008/009
+
+- **SRS section / requirement**: §6.2 IAM-001 (temporary invitation links), IAM-008 (user lifecycle:
+  invite → activate), IAM-009 (access-review reports for customer admins + compliance).
+- **Contract / interfaces**: `user_invitations` (tenant-RLS). Admin creates an invite (email + role, bounded
+  duration) → a one-time `nvi_…` token returned ONCE (only sha256 stored). The invitee self-serves at a PUBLIC
+  `POST /auth/invitations/accept {token, password}` → creates + activates the user in the invite's tenant, marks
+  the invite accepted. Admin endpoints under `/admin/tenants/{id}/invitations` (create/list/revoke, platform_admin
+  any / customer_admin own). Access review: `GET /admin/tenants/{id}/access-review` composes users (role/status/
+  MFA/last-login derived from audit_log) + service accounts + pending invitations + active elevations.
+- **Invariants**: (1) token secret never stored/logged — sha256 only; shown once. (2) invited role is a known role,
+  never platform_admin, and stays in the inviter's domain (a customer_admin can't invite a SOC role). (3) accept is
+  one-time + expiry-bounded (accepted/expired invites fail closed) via a SECURITY DEFINER lookup (pre-auth, mirrors
+  API-key/login). (4) accept creates the user atomically with marking the invite accepted; a duplicate email is a
+  conflict. (5) every create/revoke/accept audited. (6) access review is read-only, tenant-scoped (RLS), and last-
+  login is derived from the immutable audit trail (no new tracking column).
+- **Data model**: migration `0032` — user_invitations (tenant-RLS FORCE) + SECURITY DEFINER
+  auth_find_invitation_by_hash.
+- **End-to-end fit**: admin invites analyst@x → sends the nvi_ link → analyst accepts with a password → active user
+  → logs in (session policy TTL applies). Access-review surfaces the new user with MFA=false + first login. Additive;
+  heartbeat unaffected.
+- **Deferred (tracked tasks)**: ABAC attribute constraints (IAM-002) — cross-cutting enforcement, its own slice D;
+  scheduled expiry sweep for invitations (derived at read time now); email auto-send of the invite (the token is
+  returned to the admin; notify-channel delivery is §6.16).

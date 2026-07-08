@@ -260,6 +260,12 @@ paths:
   /admin/elevations/{id}/approve: { post: { tags: [admin], summary: Approve a PAM elevation (four-eyes; requester != approver), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: active }, '403': { description: four-eyes violation }, '409': { description: not pending } } } }
   /admin/elevations/{id}/reject: { post: { tags: [admin], summary: Reject a PAM elevation, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: rejected } } } }
   /admin/elevations/{id}/review: { post: { tags: [admin], summary: Record post-use review of a break-glass elevation (IAM-006), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: reviewed } } } }
+  /auth/invitations/accept: { post: { tags: [auth], summary: Accept an invitation and set a password (public, one-time, IAM-001/008), responses: { '201': { description: user activated }, '401': { description: invalid token }, '409': { description: expired/accepted/duplicate } } } }
+  /admin/tenants/{id}/invitations:
+    get: { tags: [admin], summary: List pending invitations, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: invitations } } }
+    post: { tags: [admin], summary: Create a one-time invitation (token returned ONCE; role != platform_admin), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created with one-time token } } }
+  /admin/tenants/{id}/invitations/{iid}: { delete: { tags: [admin], summary: Revoke a pending invitation, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: iid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: revoked } } } }
+  /admin/tenants/{id}/access-review: { get: { tags: [admin], summary: Access-review report — users/MFA/last-login + service accounts + invites + active elevations (IAM-009), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: report } } } }
   /admin/users: { post: { tags: [admin], summary: Create user (platform_admin), responses: { '201': { description: created } } } }
   /ingest:
     post:

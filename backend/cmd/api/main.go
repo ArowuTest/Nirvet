@@ -314,6 +314,9 @@ func main() {
 	mux.Handle("GET /docs", api.DocsHandler())
 	// auth + self
 	mux.Handle("POST /auth/login", httpx.Chain(http.HandlerFunc(iamH.Login), loginLimit))
+	// Invitation acceptance (public, §6.2 IAM-001/008): the invitee sets a password. Rate-
+	// limited like login since it provisions a user.
+	mux.Handle("POST /auth/invitations/accept", httpx.Chain(http.HandlerFunc(iamH.AcceptInvitation), loginLimit))
 	// SSO (OIDC) — public login start/callback (rate-limited like login).
 	mux.Handle("GET /auth/sso/start", httpx.Chain(http.HandlerFunc(ssoH.Start), loginLimit))
 	mux.Handle("GET /auth/sso/callback", httpx.Chain(http.HandlerFunc(ssoH.Callback), loginLimit))
@@ -372,6 +375,11 @@ func main() {
 	// Session & access policy (§6.2 IAM-007): configurable TTL + IP allow-list + anomaly log.
 	mux.Handle("GET /admin/tenants/{id}/session-policy", ssoAdmin(iamH.GetSessionPolicy))
 	mux.Handle("PUT /admin/tenants/{id}/session-policy", ssoAdmin(iamH.UpdateSessionPolicy))
+	// Invitations + access review (§6.2 IAM-001/008/009).
+	mux.Handle("POST /admin/tenants/{id}/invitations", ssoAdmin(iamH.CreateInvitation))
+	mux.Handle("GET /admin/tenants/{id}/invitations", ssoAdmin(iamH.ListInvitations))
+	mux.Handle("DELETE /admin/tenants/{id}/invitations/{iid}", ssoAdmin(iamH.RevokeInvitation))
+	mux.Handle("GET /admin/tenants/{id}/access-review", ssoAdmin(iamH.AccessReview))
 	mux.Handle("POST /admin/users", padmin(iamH.Create))
 	// ingestion (any authenticated principal for the scaffold)
 	mux.Handle("POST /ingest", authed(ingestH.Ingest))

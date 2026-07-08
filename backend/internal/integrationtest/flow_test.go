@@ -789,6 +789,52 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("InvitationsAndAccessReview", func(t *testing.T) {
+		// §6.2 IAM-001/008/009: one-time expiring invite → self-serve activation; access review.
+		if _, _, err := h.iamSvc.CreateInvitation(h.ctx, h.principal, h.tenantID, iam.InviteInput{
+			Email: "x@acme.test", Role: auth.RolePlatformAdmin}); err == nil {
+			t.Fatal("inviting a platform_admin must be rejected")
+		}
+		inv, token, err := h.iamSvc.CreateInvitation(h.ctx, h.principal, h.tenantID, iam.InviteInput{
+			Email: "invitee@acme.test", Role: auth.RoleAnalystT1, ExpiresInHours: 24})
+		if err != nil || token == "" || inv.Email != "invitee@acme.test" {
+			t.Fatalf("create invitation: %v (%+v)", err, inv)
+		}
+		// Wrong token fails; short password rejected.
+		if _, err := h.iamSvc.AcceptInvitation(h.ctx, token+"x", "password123"); err == nil {
+			t.Fatal("a tampered invite token must not be accepted")
+		}
+		if _, err := h.iamSvc.AcceptInvitation(h.ctx, token, "short"); err == nil {
+			t.Fatal("a short password must be rejected")
+		}
+		// Accept → user activated with the invited role.
+		u, err := h.iamSvc.AcceptInvitation(h.ctx, token, "password123")
+		if err != nil || u.Email != "invitee@acme.test" || u.Role != auth.RoleAnalystT1 {
+			t.Fatalf("accept invitation: %v (%+v)", err, u)
+		}
+		// One-time: a second accept fails.
+		if _, err := h.iamSvc.AcceptInvitation(h.ctx, token, "password123"); err == nil {
+			t.Fatal("an invitation must be single-use")
+		}
+		// Access review surfaces the new user (MFA off, no login yet).
+		rep, err := h.iamSvc.BuildAccessReview(h.ctx, h.tenantID)
+		if err != nil {
+			t.Fatalf("access review: %v", err)
+		}
+		found := false
+		for _, ua := range rep.Users {
+			if ua.Email == "invitee@acme.test" {
+				found = true
+				if ua.MFAEnabled || ua.LastLoginAt != nil {
+					t.Fatalf("new user should have MFA off and no last login: %+v", ua)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("access review must include the newly invited user")
+		}
+	})
+
 	t.Run("ElevationAndBreakGlass", func(t *testing.T) {
 		// §6.2 IAM-004/006: PAM elevation (request→four-eyes approve→mint short-lived elevated
 		// token) and break-glass (immediate active + review). Boundary + four-eyes enforced.
