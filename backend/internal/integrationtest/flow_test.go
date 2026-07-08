@@ -275,6 +275,37 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("EvidenceTablesAreAppendOnly", func(t *testing.T) {
+		// R2 H-Res: raw_events + events are evidentiary. The app role must not DELETE
+		// either, must not UPDATE events, and may change ONLY enqueued_at on raw_events.
+		if _, err := h.ingest.Ingest(h.ctx, h.tenantID, ingestion.IngestInput{Source: "immut", NativeID: "immut-" + uuid.NewString(), Severity: "low"}); err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("worker: %v", err)
+		}
+		mustFail := func(label, sql string) {
+			err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+				_, e := tx.Exec(ctx, sql)
+				return e
+			})
+			if err == nil {
+				t.Fatalf("%s must be rejected", label)
+			}
+		}
+		mustFail("DELETE raw_events", `DELETE FROM raw_events`)
+		mustFail("DELETE events", `DELETE FROM events`)
+		mustFail("UPDATE events", `UPDATE events SET severity='tamper'`)
+		mustFail("UPDATE raw_events non-enqueued column", `UPDATE raw_events SET source='tamper'`)
+		// The durability marker IS allowed to change.
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE raw_events SET enqueued_at=now()`)
+			return e
+		}); err != nil {
+			t.Fatalf("updating enqueued_at (the durability marker) must be allowed: %v", err)
+		}
+	})
+
 	t.Run("IngestReconcilesOrphanedRawEvent", func(t *testing.T) {
 		// SEC Critical #4: a crash between StoreRaw and Enqueue leaves the raw event +
 		// its blob durably persisted but with no normalize job (enqueued_at NULL). The
