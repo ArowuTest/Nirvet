@@ -129,6 +129,21 @@ type CreateInput struct {
 	Confidence  int       `json:"confidence"`
 	MITRE       []string  `json:"mitre"`
 	Condition   Condition `json:"condition"`
+	Stage       string    `json:"stage"` // optional: "draft" to author into the lifecycle; default "production"
+}
+
+// createStage validates the requested creation stage. Only draft (enter the §9.4 lifecycle) or
+// production (default, immediately active — backward-compatible) may be set at creation; other stages
+// are reached via Transition. Returns the resolved stage or an error.
+func createStage(s string) (string, error) {
+	switch s {
+	case "", StageProduction:
+		return StageProduction, nil
+	case StageDraft:
+		return StageDraft, nil
+	default:
+		return "", httpx.ErrBadRequest("rules may only be created in draft or production; use transitions for other stages")
+	}
 }
 
 // Create validates and stores a tenant rule.
@@ -147,10 +162,14 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 	if err := validateCondition(in.Condition); err != nil {
 		return nil, httpx.ErrBadRequest(err.Error())
 	}
+	stage, err := createStage(in.Stage)
+	if err != nil {
+		return nil, err
+	}
 	rule := &Rule{
 		ID: uuid.New(), Name: in.Name, Description: in.Description,
 		Severity: in.Severity, Confidence: in.Confidence, MITRE: in.MITRE,
-		Condition: in.Condition, Enabled: true,
+		Condition: in.Condition, Enabled: true, Stage: stage,
 	}
 	if err := s.repo.Create(ctx, tenantID, rule); err != nil {
 		return nil, httpx.ErrInternal("could not create rule")
@@ -167,6 +186,7 @@ type CELRuleInput struct {
 	Confidence  int      `json:"confidence"`
 	MITRE       []string `json:"mitre"`
 	Expression  string   `json:"expression"`
+	Stage       string   `json:"stage"` // optional: "draft" or "production" (default)
 }
 
 // CreateCELRule validates that the CEL expression compiles (and yields a bool),
@@ -185,10 +205,14 @@ func (s *Service) CreateCELRule(ctx context.Context, tenantID uuid.UUID, in CELR
 	if in.MITRE == nil {
 		in.MITRE = []string{}
 	}
+	stage, err := createStage(in.Stage)
+	if err != nil {
+		return nil, err
+	}
 	rule := &Rule{
 		ID: uuid.New(), Name: in.Name, Description: in.Description,
 		Severity: in.Severity, Confidence: in.Confidence, MITRE: in.MITRE,
-		Expression: in.Expression, Enabled: true,
+		Expression: in.Expression, Enabled: true, Stage: stage,
 	}
 	if err := s.repo.Create(ctx, tenantID, rule); err != nil {
 		return nil, httpx.ErrInternal("could not create rule")

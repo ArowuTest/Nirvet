@@ -53,7 +53,26 @@ type Rule struct {
 	Expression  string     `json:"expression,omitempty"` // CEL; when set, takes precedence over Condition
 	Enabled     bool       `json:"enabled"`
 	CreatedAt   time.Time  `json:"created_at"`
+
+	// Detection-as-code lifecycle (SRS §9.4; DET-001/006). Stage gates whether the rule fires (only
+	// pilot/production/tuned are active). Version increments on each promotion; OwnerID + declared
+	// SourceDependencies are metadata.
+	Stage              string     `json:"stage"`
+	Version            int        `json:"version"`
+	OwnerID            *uuid.UUID `json:"owner_id,omitempty"`
+	SourceDependencies []string   `json:"source_dependencies"`
 }
+
+// Detection lifecycle stages (SRS §9.4).
+const (
+	StageDraft      = "draft"
+	StagePeerReview = "peer_review"
+	StageQA         = "qa"
+	StagePilot      = "pilot"
+	StageProduction = "production"
+	StageTuned      = "tuned"
+	StageRetired    = "retired"
+)
 
 // Match is a rule firing against an event.
 type Match struct {

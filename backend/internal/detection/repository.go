@@ -22,7 +22,8 @@ func scanRules(rows pgx.Rows) ([]Rule, error) {
 		var r Rule
 		var cond []byte
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Description, &r.Severity,
-			&r.Confidence, &r.MITRE, &cond, &r.Expression, &r.Enabled, &r.CreatedAt); err != nil {
+			&r.Confidence, &r.MITRE, &cond, &r.Expression, &r.Enabled, &r.CreatedAt,
+			&r.Stage, &r.Version, &r.OwnerID, &r.SourceDependencies); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(cond, &r.Condition)
@@ -31,13 +32,17 @@ func scanRules(rows pgx.Rows) ([]Rule, error) {
 	return out, rows.Err()
 }
 
-const ruleCols = `id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, created_at`
+const ruleCols = `id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, created_at, stage, version, owner_id, source_dependencies`
 
-// ListActive returns enabled rules applicable to the tenant (global + own).
+// activeStages are the lifecycle stages whose rules the engine evaluates (SRS §9.4): pilot, production,
+// and tuned. draft/peer_review/qa/retired do not fire.
+const activeStages = `('pilot','production','tuned')`
+
+// ListActive returns enabled, lifecycle-active rules applicable to the tenant (global + own).
 func (r *Repository) ListActive(ctx context.Context, tenantID uuid.UUID) ([]Rule, error) {
 	var out []Rule
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT `+ruleCols+` FROM detection_rules WHERE enabled = true`)
+		rows, err := tx.Query(ctx, `SELECT `+ruleCols+` FROM detection_rules WHERE enabled = true AND stage IN `+activeStages)
 		if err != nil {
 			return err
 		}
@@ -67,11 +72,14 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID) ([]Rule, erro
 func (r *Repository) Create(ctx context.Context, tenantID uuid.UUID, rule *Rule) error {
 	cond, _ := json.Marshal(rule.Condition)
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if rule.Stage == "" {
+			rule.Stage = StageProduction
+		}
 		return tx.QueryRow(ctx,
-			`INSERT INTO detection_rules (id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING created_at`,
-			rule.ID, tenantID, rule.Name, rule.Description, rule.Severity, rule.Confidence, rule.MITRE, cond, rule.Expression, rule.Enabled,
-		).Scan(&rule.CreatedAt)
+			`INSERT INTO detection_rules (id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, stage)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING created_at, version`,
+			rule.ID, tenantID, rule.Name, rule.Description, rule.Severity, rule.Confidence, rule.MITRE, cond, rule.Expression, rule.Enabled, rule.Stage,
+		).Scan(&rule.CreatedAt, &rule.Version)
 	})
 }
 

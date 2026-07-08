@@ -95,3 +95,107 @@ func (h *Handler) SetEnabled(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]bool{"enabled": in.Enabled})
 }
+
+// Transition handles POST /detections/{id}/transition with {"stage":"...","note":"...","emergency":bool}
+// (DET-006/010 §9.4 lifecycle).
+func (h *Handler) Transition(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid rule id"))
+		return
+	}
+	var in struct {
+		Stage     string `json:"stage"`
+		Note      string `json:"note"`
+		Emergency bool   `json:"emergency"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Emergency deploy (bypass to production) is restricted to senior roles.
+	if in.Emergency && !auth.IsSenior(p.Role) {
+		httpx.Error(w, httpx.ErrForbidden("emergency deploy requires a senior role"))
+		return
+	}
+	to := in.Stage
+	if in.Emergency {
+		to = StageProduction
+	}
+	if err := h.svc.Transition(r.Context(), p.TenantID, id, to, in.Note, p.UserID, in.Emergency); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"stage": to, "emergency": in.Emergency})
+}
+
+// SetMetadata handles PUT /detections/{id}/metadata with {"owner_id":"...","source_dependencies":[...]}.
+func (h *Handler) SetMetadata(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid rule id"))
+		return
+	}
+	var in struct {
+		OwnerID            string   `json:"owner_id"`
+		SourceDependencies []string `json:"source_dependencies"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	var owner *uuid.UUID
+	if in.OwnerID != "" {
+		o, perr := uuid.Parse(in.OwnerID)
+		if perr != nil {
+			httpx.Error(w, httpx.ErrBadRequest("invalid owner_id"))
+			return
+		}
+		owner = &o
+	}
+	if err := h.svc.SetMetadata(r.Context(), p.TenantID, id, owner, in.SourceDependencies); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// Versions handles GET /detections/{id}/versions (DET-001 history).
+func (h *Handler) Versions(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid rule id"))
+		return
+	}
+	vs, err := h.svc.Versions(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list versions"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"versions": vs})
+}
+
+// Rollback handles POST /detections/{id}/rollback with {"version":N} (DET-001).
+func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid rule id"))
+		return
+	}
+	var in struct {
+		Version int `json:"version"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Rollback(r.Context(), p.TenantID, id, in.Version, p.UserID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "rolled_back"})
+}

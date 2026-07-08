@@ -424,6 +424,11 @@ func main() {
 	mux.Handle("POST /detections/import/sigma", detEng(detectionH.ImportSigma))
 	mux.Handle("POST /detections/cel", detEng(detectionH.CreateCEL))
 	mux.Handle("POST /detections/{id}/enabled", detEng(detectionH.SetEnabled))
+	// §6.6 detection-as-code lifecycle (DET-001/006/010 §9.4): promotion, metadata, versions, rollback.
+	mux.Handle("POST /detections/{id}/transition", detEng(detectionH.Transition))
+	mux.Handle("PUT /detections/{id}/metadata", detEng(detectionH.SetMetadata))
+	mux.Handle("GET /detections/{id}/versions", provider(detectionH.Versions))
+	mux.Handle("POST /detections/{id}/rollback", detEng(detectionH.Rollback))
 	// connectors
 	mux.Handle("GET /connectors/catalogue", provider(connectorH.Catalogue))
 	mux.Handle("GET /connectors", provider(connectorH.List))
