@@ -316,7 +316,9 @@ func main() {
 		go wk.Start(workerCtx, time.Second)
 		poller := connector.NewPoller(connector.NewRepository(db), vault, ingestSvc, log)
 		go poller.Start(workerCtx, time.Minute)
-		log.Info("inline ingest worker + connector poller started")
+		// Re-enqueue raw events orphaned between StoreRaw and Enqueue (SEC Critical #4).
+		go ingestSvc.StartReconciler(workerCtx, log, 30*time.Second, 60*time.Second, 100)
+		log.Info("inline ingest worker + connector poller + reconciler started")
 	}
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}

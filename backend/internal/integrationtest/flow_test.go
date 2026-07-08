@@ -223,6 +223,53 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("IngestReconcilesOrphanedRawEvent", func(t *testing.T) {
+		// SEC Critical #4: a crash between StoreRaw and Enqueue leaves the raw event +
+		// its blob durably persisted but with no normalize job (enqueued_at NULL). The
+		// reconciler must re-enqueue it from the blob so the event is never lost.
+		in := ingestion.IngestInput{Source: "recon", NativeID: "orphan-1", ClassName: "Malware recon-orphan", Severity: "high", TargetRef: "host:recon-1"}
+		if _, err := h.ingest.Ingest(h.ctx, h.tenantID, in); err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		// Orphan it: drop the queued normalize job and clear the durability marker.
+		if _, err := h.db.Pool.Exec(h.ctx,
+			`DELETE FROM ingest_jobs WHERE state='queued' AND convert_from(payload,'UTF8') LIKE '%orphan-1%'`); err != nil {
+			t.Fatalf("delete job: %v", err)
+		}
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE raw_events SET enqueued_at=NULL WHERE dedupe_key=$1`, "recon:orphan-1")
+			return e
+		}); err != nil {
+			t.Fatalf("clear marker: %v", err)
+		}
+		// With no job, draining the worker must NOT produce the event.
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("drain(pre): %v", err)
+		}
+		if pre, _ := h.events.Query(h.ctx, h.tenantID, eventstore.Query{Search: "recon-orphan", Limit: 10}); len(pre) != 0 {
+			t.Fatalf("event must not exist before reconciliation, got %d", len(pre))
+		}
+		// Reconcile (grace 0 = every unenqueued row) re-enqueues from the blob store.
+		n, err := h.ingest.Reconcile(h.ctx, 0, 100)
+		if err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if n < 1 {
+			t.Fatalf("reconcile should re-enqueue at least one orphan, got %d", n)
+		}
+		// Drain again: the recovered event is now normalized and stored.
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("drain(post): %v", err)
+		}
+		post, _ := h.events.Query(h.ctx, h.tenantID, eventstore.Query{Search: "recon-orphan", Limit: 10})
+		if len(post) == 0 {
+			t.Fatal("event must be recovered and stored after reconciliation")
+		}
+		if post[0].Severity != "high" {
+			t.Fatalf("recovered event severity = %q, want high", post[0].Severity)
+		}
+	})
+
 	t.Run("IngestDedupeAndDetect", func(t *testing.T) {
 		in := ingestion.IngestInput{Source: "itest", NativeID: "e1", ClassName: "Malware xyz", Severity: "critical", ActorRef: "user:x", TargetRef: "host:h1"}
 		dk, err := h.ingest.Ingest(h.ctx, h.tenantID, in)

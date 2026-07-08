@@ -16,14 +16,14 @@ import (
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
-	"github.com/ArowuTest/nirvet/internal/platform/crypto"
-	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/ArowuTest/nirvet/internal/platform/config"
+	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
+	"github.com/ArowuTest/nirvet/internal/threatintel"
 )
 
 func main() {
@@ -89,8 +89,11 @@ func main() {
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), jobs, nil, blobs)
 	poller := connector.NewPoller(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc, log)
 	go poller.Start(ctx, time.Minute)
+	// Ingestion durability: re-enqueue any raw event orphaned by a crash between
+	// StoreRaw and Enqueue (SEC Critical #4). The worker process owns this sweep.
+	go ingestSvc.StartReconciler(ctx, log, 30*time.Second, 60*time.Second, 100)
 
-	log.Info("nirvet worker running (ingest + connector poller)")
+	log.Info("nirvet worker running (ingest + connector poller + reconciler)")
 	wk.Start(ctx, time.Second)
 	log.Info("nirvet worker stopped")
 }

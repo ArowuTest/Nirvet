@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -101,8 +103,69 @@ func (s *Service) Ingest(ctx context.Context, tenantID uuid.UUID, in IngestInput
 	job := normalizeJob{RawID: raw.ID, DedupeKey: dedupeKey, Checksum: checksum, Input: in}
 	jb, _ := json.Marshal(job)
 	if err := s.q.Enqueue(ctx, tenantID, "normalize", jb); err != nil {
+		// The raw event is durably persisted; the reconciler will re-enqueue it
+		// (enqueued_at is still NULL), so nothing is lost even though we 500 here.
 		return "", httpx.ErrInternal("could not enqueue normalization")
 	}
+	// Close the durability marker: the normalize job exists, so the reconciler will
+	// not re-enqueue this event. Best-effort — a lost marker only costs one idempotent
+	// re-enqueue on the next sweep.
+	_ = s.repo.MarkEnqueued(ctx, tenantID, raw.ID)
 	metrics.EventsIngested.Inc()
 	return dedupeKey, nil
+}
+
+// Reconcile re-enqueues raw events whose normalize job was never enqueued — the
+// durability backstop for the non-atomic StoreRaw→Enqueue sequence (SEC Critical #4).
+// It runs at the system level (spans tenants) and is at-least-once: the payload is
+// re-read from the blob store and a fresh normalize job is enqueued; a raw event that
+// WAS actually processed but whose marker was lost is re-normalized harmlessly (the
+// event Append dedupes on dedupe_key). Returns the number re-enqueued.
+func (s *Service) Reconcile(ctx context.Context, olderThan time.Duration, limit int) (int, error) {
+	cutoff := time.Now().Add(-olderThan)
+	pending, err := s.repo.FindUnenqueued(ctx, cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, u := range pending {
+		payload, gerr := s.blobs.Get(ctx, u.BlobURI)
+		if gerr != nil {
+			// Evidence temporarily unreadable — leave the marker unset so the next
+			// sweep retries rather than dropping the event.
+			continue
+		}
+		var in IngestInput
+		if uerr := json.Unmarshal(payload, &in); uerr != nil {
+			continue
+		}
+		job := normalizeJob{RawID: u.ID, DedupeKey: u.DedupeKey, Checksum: u.Checksum, Input: in}
+		jb, _ := json.Marshal(job)
+		if eerr := s.q.Enqueue(ctx, u.TenantID, "normalize", jb); eerr != nil {
+			continue
+		}
+		_ = s.repo.MarkEnqueued(ctx, u.TenantID, u.ID)
+		n++
+	}
+	return n, nil
+}
+
+// StartReconciler runs Reconcile on a ticker until ctx is cancelled. grace is how long
+// a raw event may sit unenqueued before it is considered orphaned (kept above the
+// worker tick so an in-flight enqueue is not raced). Runs in exactly one process.
+func (s *Service) StartReconciler(ctx context.Context, log *slog.Logger, interval, grace time.Duration, limit int) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := s.Reconcile(ctx, grace, limit); err != nil {
+				log.Warn("ingest reconcile failed", "err", err)
+			} else if n > 0 {
+				log.Warn("ingest reconcile re-enqueued orphaned raw events", "count", n)
+			}
+		}
+	}
 }
