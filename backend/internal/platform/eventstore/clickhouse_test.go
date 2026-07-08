@@ -104,6 +104,10 @@ func TestClickHouseEventStore(t *testing.T) {
 			if r.Severity != "critical" {
 				t.Fatalf("severity filter leaked a %q event", r.Severity)
 			}
+			// ADR-0006: every event is stamped with the canonical schema version.
+			if r.SchemaVersion != eventstore.CanonicalSchemaVersion {
+				t.Fatalf("schema_version = %q, want %q", r.SchemaVersion, eventstore.CanonicalSchemaVersion)
+			}
 		}
 	})
 }

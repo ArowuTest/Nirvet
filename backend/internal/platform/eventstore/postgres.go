@@ -41,14 +41,17 @@ func (s *PostgresStore) Append(ctx context.Context, tenantID uuid.UUID, events [
 			if e.CollectedAt.IsZero() {
 				e.CollectedAt = time.Now()
 			}
+			if e.SchemaVersion == "" {
+				e.SchemaVersion = CanonicalSchemaVersion
+			}
 			ct, err := tx.Exec(ctx,
 				`INSERT INTO events
-				  (id, dedupe_key, source, connector_id, collected_at, observed_at,
+				  (id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
 				   class_name, activity_name, severity, confidence,
 				   actor_ref, target_ref, action, outcome, raw_pointer, checksum, data)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 				 ON CONFLICT (tenant_id, dedupe_key) DO NOTHING`,
-				id, e.DedupeKey, e.Source, e.ConnectorID, e.CollectedAt, e.ObservedAt,
+				id, e.SchemaVersion, e.DedupeKey, e.Source, e.ConnectorID, e.CollectedAt, e.ObservedAt,
 				e.ClassName, e.ActivityName, e.Severity, e.Confidence,
 				e.ActorRef, e.TargetRef, e.Action, e.Outcome, e.RawPointer, e.Checksum, data,
 			)
@@ -70,7 +73,7 @@ func (s *PostgresStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) 
 	var out []NormalizedEvent
 	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, tenant_id, dedupe_key, source, connector_id, collected_at, observed_at,
+			`SELECT id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
 			        class_name, activity_name, severity, confidence,
 			        actor_ref, target_ref, action, outcome, raw_pointer, checksum, data
 			   FROM events
@@ -90,7 +93,7 @@ func (s *PostgresStore) Query(ctx context.Context, tenantID uuid.UUID, q Query) 
 		for rows.Next() {
 			var e NormalizedEvent
 			var data []byte
-			if err := rows.Scan(&e.ID, &e.TenantID, &e.DedupeKey, &e.Source, &e.ConnectorID,
+			if err := rows.Scan(&e.ID, &e.TenantID, &e.SchemaVersion, &e.DedupeKey, &e.Source, &e.ConnectorID,
 				&e.CollectedAt, &e.ObservedAt, &e.ClassName, &e.ActivityName, &e.Severity,
 				&e.Confidence, &e.ActorRef, &e.TargetRef, &e.Action, &e.Outcome,
 				&e.RawPointer, &e.Checksum, &data); err != nil {

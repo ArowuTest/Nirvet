@@ -33,9 +33,26 @@ func init() {
 	RegisterMapper("guardduty", normalizeGuardDuty)
 }
 
-// Normalize applies the registered source mapper (identity fallback) then
-// canonicalises severity. This is the "Normalization" stage of the end-to-end flow;
-// everything downstream depends only on the canonical fields it produces.
+// sourceMeta records the vendor + product a source belongs to, stamped into the
+// canonical event (ADR-0006) so analytics can group by vendor/product without
+// re-parsing the source key. Sources not listed are stamped from the source key.
+var sourceMeta = map[string][2]string{
+	"microsoft-defender": {"Microsoft", "Defender"},
+	"defender":           {"Microsoft", "Defender"},
+	"microsoft-365":      {"Microsoft", "365"},
+	"m365":               {"Microsoft", "365"},
+	"crowdstrike":        {"CrowdStrike", "Falcon"},
+	"crowdstrike-falcon": {"CrowdStrike", "Falcon"},
+	"okta":               {"Okta", "Identity Cloud"},
+	"palo-alto":          {"Palo Alto Networks", "NGFW"},
+	"panw":               {"Palo Alto Networks", "NGFW"},
+	"aws-guardduty":      {"AWS", "GuardDuty"},
+	"guardduty":          {"AWS", "GuardDuty"},
+}
+
+// Normalize applies the registered source mapper (identity fallback), canonicalises
+// severity, and stamps vendor/product (ADR-0006). This is the "Normalization" stage
+// of the end-to-end flow; everything downstream depends only on the canonical fields.
 func Normalize(in IngestInput) IngestInput {
 	if in.Data == nil {
 		in.Data = map[string]any{}
@@ -44,6 +61,18 @@ func Normalize(in IngestInput) IngestInput {
 		m(&in) // may set a vendor severity (incl. numeric bands) into in.Severity
 	}
 	in.Severity = normalizeSeverity(in.Severity)
+	// Canonical vendor/product (ADR-0006). Known sources get a friendly vendor +
+	// product; unknown sources fall back to the source key so the fields are always
+	// present for analytics.
+	if _, ok := in.Data["vendor"]; !ok {
+		if meta, known := sourceMeta[strings.ToLower(in.Source)]; known {
+			in.Data["vendor"] = meta[0]
+			in.Data["product"] = meta[1]
+		} else if in.Source != "" {
+			in.Data["vendor"] = in.Source
+			in.Data["product"] = in.Source
+		}
+	}
 	return in
 }
 

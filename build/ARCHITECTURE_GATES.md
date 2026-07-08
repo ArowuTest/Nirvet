@@ -4,6 +4,26 @@
 work), do a short **design review against the SRS** — it's far cheaper to correct a design before the code than
 after. A gate is a few paragraphs, not a document; it lives here.
 
+## Periodic platform review (every 2-3 weeks) — reviewer-recommended Jul 2026
+
+Beyond the per-module gate below, review the whole platform on a cadence against these questions. The goal is to
+catch architectural drift early, while it's still cheap to correct.
+
+1. Does this design still support **500 customers** (and the target event volume)?
+2. Can it deploy in **Ghana / Nigeria / Kenya / the UK** (and sovereign/on-prem) without a redesign?
+3. Is it still **cloud-portable** (Render / small GCP → large GCP / sovereign DC), no provider lock-in?
+4. Does it still preserve **tenant isolation** end-to-end (RLS + mandatory tenant predicates + vault AAD)?
+5. Can we **replace an underlying implementation without changing business logic** (interfaces intact)?
+
+**Scaling sequence (decided Jul 2026, reviewer-aligned).** Heavy infra is introduced *when scale demands it*,
+behind interfaces that already exist — not up front:
+- **Redis before NATS.** Introduce Redis (~20 customers / first horizontal API scale-out) for distributed
+  rate-limit counters + cache — with N API replicas, per-instance in-memory limits diverge. The `ratelimit`
+  package is the seam; add a Redis backend behind it.
+- **NATS/Kafka** once event volume approaches **>500M/day** or multiple worker pools are needed (the `queue`
+  interface, ADR-0003, is Postgres-backed today and swaps with no business-logic change).
+- **ClickHouse** — already promoted to a real backend (ADR-0002) behind `EventStore`; Postgres stays default.
+
 ## Gate checklist (per module)
 
 1. **SRS section** it implements (e.g. §6.6 Detection) — re-read it.
@@ -143,8 +163,15 @@ after. A gate is a few paragraphs, not a document; it lives here.
 
 ## Next gates (before starting)
 - **Reporting event-count via EventStore** (small): make reporting read the 24h event count from the EventStore
-  so it is correct under both backends.
+  so it is correct under both backends (reviewer's dashboards-on-ClickHouse point).
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 - **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
+- **Pluggable detection DSLs** (§6.6, reviewer): the detection engine is already an interface over a condition
+  evaluator; add Sigma import → the condition model, and (later) YARA/CEL/custom-DSL evaluators behind the same
+  `Engine` seam so customers can bring their own rules. Don't hardcode one rule language.
+- **Redis-backed distributed rate limiting** (scaling): Redis backend behind the `ratelimit` seam for N-replica
+  API (see scaling sequence above) — pull forward to the first horizontal scale-out.
+- **Schema v1.1 — promote hot fields to columns** (ADR-0006): `mitre`, `ip`, `hostname`, `vendor`, `product`
+  from `data` to indexed columns when analytics query patterns justify the column cost.
 - **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
 - **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).

@@ -77,10 +77,11 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 		observed = time.Now()
 	}
 	ev := eventstore.NormalizedEvent{
-		ID:           uuid.New(),
-		TenantID:     j.TenantID,
-		DedupeKey:    nj.DedupeKey,
-		Source:       in.Source,
+		ID:            uuid.New(),
+		TenantID:      j.TenantID,
+		SchemaVersion: eventstore.CanonicalSchemaVersion, // ADR-0006
+		DedupeKey:     nj.DedupeKey,
+		Source:        in.Source,
 		CollectedAt:  time.Now(),
 		ObservedAt:   observed,
 		ClassName:    in.ClassName,

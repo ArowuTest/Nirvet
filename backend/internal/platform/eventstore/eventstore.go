@@ -10,14 +10,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// NormalizedEvent is an OCSF-inspired security event (doc 02 §4). Structured key
-// fields are first-class columns; the full normalized body lives in Data. The raw
-// event is preserved separately (RawPointer + Checksum) for evidence/defensibility.
+// CanonicalSchemaVersion is the current version of the canonical event schema
+// (ADR-0006). Every normalized event carries it so the schema can evolve without a
+// big-bang migration; consumers may branch on it and backfills can target a version.
+const CanonicalSchemaVersion = "1.0"
+
+// NormalizedEvent is an OCSF-inspired security event (doc 02 §4, ADR-0006). Every
+// source normalizer emits this canonical shape. Structured key fields are
+// first-class columns; the full normalized body lives in Data. The raw event is
+// preserved separately (RawPointer + Checksum) for evidence/defensibility.
 type NormalizedEvent struct {
-	ID          uuid.UUID      `json:"id"`
-	TenantID    uuid.UUID      `json:"tenant_id"`
-	DedupeKey   string         `json:"dedupe_key"` // source + native id + payload hash
-	Source      string         `json:"source"`
+	ID            uuid.UUID    `json:"id"`
+	TenantID      uuid.UUID    `json:"tenant_id"`
+	SchemaVersion string       `json:"schema_version"` // ADR-0006 canonical schema version
+	DedupeKey     string       `json:"dedupe_key"`     // source + native id + payload hash
+	Source        string       `json:"source"`
 	ConnectorID *uuid.UUID     `json:"connector_id,omitempty"`
 	CollectedAt time.Time      `json:"collected_at"`
 	ObservedAt  time.Time      `json:"observed_at"`

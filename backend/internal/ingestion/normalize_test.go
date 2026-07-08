@@ -137,11 +137,31 @@ func TestSeverityBands(t *testing.T) {
 }
 
 // TestUnknownSourceIsIdentity verifies an unregistered source passes through
-// unchanged (except canonical severity) — the pipeline still accepts it.
+// (except canonical severity) and still gets vendor/product stamped (ADR-0006).
 func TestUnknownSourceIsIdentity(t *testing.T) {
 	out := Normalize(IngestInput{Source: "some-new-siem", Severity: "High", ClassName: "raw"})
 	if out.ClassName != "raw" || out.Severity != "high" {
 		t.Errorf("unknown source should pass through: %+v", out)
+	}
+	if out.Data["vendor"] != "some-new-siem" {
+		t.Errorf("unknown source should fall back vendor to the source key: %v", out.Data["vendor"])
+	}
+}
+
+// TestNormalizeStampsVendorProduct verifies known sources get a friendly
+// vendor/product stamped into the canonical event (ADR-0006).
+func TestNormalizeStampsVendorProduct(t *testing.T) {
+	cases := map[string][2]string{
+		"crowdstrike-falcon": {"CrowdStrike", "Falcon"},
+		"okta":               {"Okta", "Identity Cloud"},
+		"aws-guardduty":      {"AWS", "GuardDuty"},
+		"microsoft-defender": {"Microsoft", "Defender"},
+	}
+	for src, want := range cases {
+		out := Normalize(IngestInput{Source: src})
+		if out.Data["vendor"] != want[0] || out.Data["product"] != want[1] {
+			t.Errorf("%s: vendor/product = %v/%v, want %s/%s", src, out.Data["vendor"], out.Data["product"], want[0], want[1])
+		}
 	}
 }
 

@@ -53,9 +53,10 @@ func NewClickHouse(ctx context.Context, dsn string) (*ClickHouseStore, error) {
 func (s *ClickHouseStore) Close() error { return s.conn.Close() }
 
 func (s *ClickHouseStore) migrate(ctx context.Context) error {
-	return s.conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS events (
-		id           UUID,
-		tenant_id    UUID,
+	if err := s.conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS events (
+		id            UUID,
+		tenant_id     UUID,
+		schema_version LowCardinality(String) DEFAULT '1.0',
 		dedupe_key   String,
 		source       String,
 		connector_id Nullable(UUID),
@@ -73,7 +74,12 @@ func (s *ClickHouseStore) migrate(ctx context.Context) error {
 		checksum     String,
 		data         String
 	) ENGINE = ReplacingMergeTree(collected_at)
-	  ORDER BY (tenant_id, dedupe_key)`)
+	  ORDER BY (tenant_id, dedupe_key)`); err != nil {
+		return err
+	}
+	// Additive: bring a pre-existing table up to the current schema (ADR-0006).
+	return s.conn.Exec(ctx,
+		`ALTER TABLE events ADD COLUMN IF NOT EXISTS schema_version LowCardinality(String) DEFAULT '1.0'`)
 }
 
 // Append inserts events for a tenant, idempotent on dedupe_key, returning the
@@ -106,7 +112,12 @@ func (s *ClickHouseStore) Append(ctx context.Context, tenantID uuid.UUID, events
 		rows.Close()
 	}
 
-	batch, err := s.conn.PrepareBatch(ctx, "INSERT INTO events")
+	// Explicit column list so inserts are independent of physical column order
+	// (ALTER ADD COLUMN appends at the end; a fresh CREATE has it inline).
+	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO events
+		(id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
+		 class_name, activity_name, severity, confidence, actor_ref, target_ref, action, outcome,
+		 raw_pointer, checksum, data)`)
 	if err != nil {
 		return 0, fmt.Errorf("eventstore: prepare batch: %w", err)
 	}
@@ -128,8 +139,12 @@ func (s *ClickHouseStore) Append(ctx context.Context, tenantID uuid.UUID, events
 		if err != nil {
 			data = []byte("{}")
 		}
+		sv := e.SchemaVersion
+		if sv == "" {
+			sv = CanonicalSchemaVersion
+		}
 		if err := batch.Append(
-			id, tenantID, e.DedupeKey, e.Source, e.ConnectorID, e.CollectedAt, e.ObservedAt,
+			id, tenantID, sv, e.DedupeKey, e.Source, e.ConnectorID, e.CollectedAt, e.ObservedAt,
 			e.ClassName, e.ActivityName, e.Severity, int32(e.Confidence),
 			e.ActorRef, e.TargetRef, e.Action, e.Outcome, e.RawPointer, e.Checksum, string(data),
 		); err != nil {
@@ -150,7 +165,7 @@ func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query
 	if q.Limit <= 0 || q.Limit > 1000 {
 		q.Limit = 200
 	}
-	sql := `SELECT id, tenant_id, dedupe_key, source, connector_id, collected_at, observed_at,
+	sql := `SELECT id, tenant_id, schema_version, dedupe_key, source, connector_id, collected_at, observed_at,
 	               class_name, activity_name, severity, confidence,
 	               actor_ref, target_ref, action, outcome, raw_pointer, checksum, data
 	          FROM events WHERE tenant_id = ?`
@@ -185,7 +200,7 @@ func (s *ClickHouseStore) Query(ctx context.Context, tenantID uuid.UUID, q Query
 		var e NormalizedEvent
 		var data string
 		var confidence int32
-		if err := rows.Scan(&e.ID, &e.TenantID, &e.DedupeKey, &e.Source, &e.ConnectorID,
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.SchemaVersion, &e.DedupeKey, &e.Source, &e.ConnectorID,
 			&e.CollectedAt, &e.ObservedAt, &e.ClassName, &e.ActivityName, &e.Severity,
 			&confidence, &e.ActorRef, &e.TargetRef, &e.Action, &e.Outcome,
 			&e.RawPointer, &e.Checksum, &data); err != nil {
