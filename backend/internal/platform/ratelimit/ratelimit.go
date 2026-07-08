@@ -1,7 +1,8 @@
-// Package ratelimit provides in-memory token-bucket rate limiting keyed by an
-// arbitrary string (client IP for login brute-force protection, principal id for
-// general API limits). This is per-instance; a multi-instance deployment should
-// back it with Redis (noted for the GCP move) so limits are global.
+// Package ratelimit provides token-bucket rate limiting keyed by an arbitrary
+// string (client IP for login brute-force protection, principal id for general API
+// limits). Two backends satisfy the Allower interface: an in-memory limiter
+// (per-instance, the default) and a Redis limiter (global across API replicas —
+// select it once the API scales horizontally; see ADR-0005 / ARCHITECTURE_GATES).
 package ratelimit
 
 import (
@@ -15,6 +16,12 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"golang.org/x/time/rate"
 )
+
+// Allower reports whether a key may proceed now. Implemented by the in-memory
+// Limiter and the RedisLimiter — the middleware depends only on this.
+type Allower interface {
+	Allow(key string) bool
+}
 
 // Limiter holds a token bucket per key with idle eviction.
 type Limiter struct {
@@ -89,7 +96,7 @@ func ByPrincipal(r *http.Request) string {
 }
 
 // Middleware returns a 429 when the key exceeds its bucket.
-func Middleware(l *Limiter, key KeyFunc) httpx.Middleware {
+func Middleware(l Allower, key KeyFunc) httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !l.Allow(key(r)) {

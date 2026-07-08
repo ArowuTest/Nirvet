@@ -24,11 +24,6 @@ import (
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/notify"
-	"github.com/ArowuTest/nirvet/internal/reporting"
-	"github.com/ArowuTest/nirvet/internal/soar"
-	"github.com/ArowuTest/nirvet/internal/sso"
-	"github.com/ArowuTest/nirvet/internal/threatintel"
-	"github.com/ArowuTest/nirvet/internal/ticketing"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
@@ -40,9 +35,15 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
-	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 	"github.com/ArowuTest/nirvet/internal/platform/ratelimit"
+	"github.com/ArowuTest/nirvet/internal/platform/tracing"
+	"github.com/ArowuTest/nirvet/internal/reporting"
+	"github.com/ArowuTest/nirvet/internal/soar"
+	"github.com/ArowuTest/nirvet/internal/sso"
 	"github.com/ArowuTest/nirvet/internal/tenant"
+	"github.com/ArowuTest/nirvet/internal/threatintel"
+	"github.com/ArowuTest/nirvet/internal/ticketing"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -154,13 +155,28 @@ func main() {
 		auth.RolePlatformAdmin, auth.RoleSOCManager,
 		auth.RoleAnalystT1, auth.RoleAnalystT2, auth.RoleAnalystT3, auth.RoleDetectionEng,
 	}
-	// Rate limits (ADR: per-instance; back with Redis on multi-instance GCP).
-	loginLimit := ratelimit.Middleware(ratelimit.New(0.2, 8), ratelimit.ByIP)          // ~1 login / 5s / IP, burst 8
-	apiLimit := ratelimit.Middleware(ratelimit.New(50, 100), ratelimit.ByPrincipal)    // 50 rps / principal
-	auditMut := audit.Mutations(db)                                                    // record successful mutations (NFR-003)
+	// Rate limits. In-memory (per-instance) by default; global across replicas when
+	// NIRVET_REDIS_ADDR is set (reviewer: introduce Redis at first horizontal scale-out).
+	var redisClient *redis.Client
+	if cfg.RedisAddr != "" {
+		redisClient = redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			log.Error("redis ping failed", "err", err)
+			os.Exit(1)
+		}
+		defer func() { _ = redisClient.Close() }()
+		log.Info("rate limiting backend", "backend", "redis", "addr", cfg.RedisAddr)
+	}
+	loginLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.2, 8, "login"), ratelimit.ByIP)     // ~1 login / 5s / IP, burst 8
+	apiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "api"), ratelimit.ByPrincipal) // 50 rps / principal
+	auditMut := audit.Mutations(db)                                                                       // record successful mutations (NFR-003)
 	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut) }
-	provider := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(providerRoles...)) }
-	padmin := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin)) }
+	provider := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(providerRoles...))
+	}
+	padmin := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin))
+	}
 	detEng := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng))
 	}
@@ -228,7 +244,7 @@ func main() {
 	mux.Handle("POST /connectors", provider(connectorH.Create))
 	mux.Handle("DELETE /connectors/{id}", provider(connectorH.Delete))
 	// public webhook ingestion (source-key authenticated, per-IP rate limited)
-	webhookLimit := ratelimit.Middleware(ratelimit.New(50, 100), ratelimit.ByIP)
+	webhookLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "webhook"), ratelimit.ByIP)
 	mux.Handle("POST /ingest/webhook/{id}", httpx.Chain(http.HandlerFunc(connectorH.Webhook), webhookLimit))
 	// SOAR (playbooks, runs, approvals, authority-to-act)
 	mux.Handle("GET /playbooks", provider(soarH.ListPlaybooks))
