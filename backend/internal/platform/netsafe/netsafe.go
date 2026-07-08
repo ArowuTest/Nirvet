@@ -38,11 +38,36 @@ func IsInternalHost(host string) bool {
 	return isInternalIP(ip)
 }
 
+// extraBlockedCIDRs are ranges the stdlib helpers do not classify as private/link-local but which are
+// still SSRF-sensitive: CGNAT (100.64.0.0/10, used by some cloud/VPN fabrics), and the well-known cloud
+// metadata endpoints outside 169.254/16 — Oracle Cloud (192.0.0.192/32) and Alibaba (100.100.100.200/32).
+var extraBlockedCIDRs = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range []string{"100.64.0.0/10", "192.0.0.192/32", "100.100.100.200/32"} {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
 // isInternalIP reports whether a resolved IP is in a blocked range. IsLinkLocalUnicast covers
-// 169.254.0.0/16 incl. the 169.254.169.254 cloud metadata endpoint.
+// 169.254.0.0/16 incl. the 169.254.169.254 cloud metadata endpoint; extraBlockedCIDRs adds CGNAT +
+// provider-specific metadata endpoints; the IPv4 broadcast is also refused.
 func isInternalIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 255 && ip4[1] == 255 && ip4[2] == 255 && ip4[3] == 255 {
+		return true // 255.255.255.255 broadcast
+	}
+	for _, n := range extraBlockedCIDRs {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // isNumericHost reports whether a host is an all-digit (decimal integer) or hex (0x…) form that some

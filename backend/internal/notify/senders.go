@@ -7,15 +7,28 @@ import (
 	"fmt"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// hasHeaderInjection reports whether s carries a CR/LF or other control char that could inject SMTP
+// headers when placed in an email Subject/To/From line (CWE-93). Round-5 H2.
+func hasHeaderInjection(s string) bool {
+	for _, r := range s {
+		if r == '\r' || r == '\n' || (r < 0x20 && r != '\t') {
+			return true
+		}
+	}
+	return false
+}
 
 // Sender is a tenant's per-channel sender configuration (COMM-001). The secret (SMTP password / SMS API
 // key) is stored vault-encrypted and never populated on reads returned to callers.
@@ -131,6 +144,12 @@ func (c *emailChannel) Send(ctx context.Context, m Message) error {
 	if m.To == "" {
 		return fmt.Errorf("email has no recipient")
 	}
+	// Round-5 H2: the Subject/To/From flow into the SMTP DATA header block; a CR/LF in any of them
+	// (the Subject derives from untrusted event telemetry via the SLA-breach producer) would inject
+	// arbitrary MIME headers (CWE-93). Reject rather than deliver a header-spoofed message.
+	if hasHeaderInjection(m.Subject) || hasHeaderInjection(m.To) || hasHeaderInjection(s.FromAddress) {
+		return fmt.Errorf("email subject/recipient/from contains illegal control characters")
+	}
 	addr := s.SMTPHost + ":" + strconv.Itoa(s.SMTPPort)
 	var auth smtp.Auth
 	if s.SMTPUsername != "" {
@@ -197,6 +216,9 @@ func (c *smsChannel) Send(ctx context.Context, m Message) error {
 func (s *Service) WithSenders(repo *SenderRepo, cipher crypto.SecretCipher, smsClient *http.Client) *Service {
 	s.senders = repo
 	s.cipher = cipher
+	if smsClient == nil {
+		smsClient = DefaultSMSClient() // never leave the SMS channel with an unguarded client (R5-H1)
+	}
 	s.register(&emailChannel{repo: repo, cipher: cipher})
 	s.register(&smsChannel{repo: repo, cipher: cipher, client: smsClient})
 	return s
@@ -239,6 +261,17 @@ func (s *Service) ConfigureSender(ctx context.Context, tenantID uuid.UUID, in Se
 		if in.ProviderURL == "" {
 			return httpx.ErrBadRequest("sms sender requires provider_url")
 		}
+		// Round-5 H1: validate the provider URL at write time (https + non-internal host) so a
+		// manager cannot point SMS delivery at cloud metadata / an internal host. The SafeClient's
+		// dial-time resolved-IP check is the DNS-rebinding-proof backstop; this rejects the obvious
+		// cases up front with a clear error.
+		u, perr := url.Parse(in.ProviderURL)
+		if perr != nil || u.Scheme != "https" || u.Host == "" {
+			return httpx.ErrBadRequest("sms provider_url must be an absolute https URL")
+		}
+		if netsafe.IsInternalHost(u.Hostname()) {
+			return httpx.ErrBadRequest("sms provider_url must not target an internal or metadata address")
+		}
 	}
 	var ciphertext []byte
 	if in.Secret != "" {
@@ -262,5 +295,8 @@ func (s *Service) ListSenders(ctx context.Context, tenantID uuid.UUID) ([]Sender
 	return s.senders.List(ctx, tenantID)
 }
 
-// DefaultSMSClient is the outbound client for SMS providers (10s timeout).
-func DefaultSMSClient() *http.Client { return &http.Client{Timeout: 10 * time.Second} }
+// DefaultSMSClient is the outbound client for SMS providers. It is SSRF-safe by construction (Round-5
+// H1): the same netsafe.SafeClient the webhook/Teams/Slack channels use — a dial-time resolved-IP block
+// (DNS-rebinding-proof) plus redirect refusal — so an SMS provider_url can never reach an internal or
+// metadata address even if write-time validation is bypassed.
+func DefaultSMSClient() *http.Client { return netsafe.SafeClient(10 * time.Second) }

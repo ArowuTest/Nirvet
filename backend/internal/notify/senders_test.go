@@ -62,4 +62,23 @@ func TestConfigureSender_Validation(t *testing.T) {
 	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "sms", FromAddress: "X"}); err == nil {
 		t.Fatal("sms without provider_url must be rejected")
 	}
+	// R5-H1: sms provider_url must be https and non-internal.
+	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "sms", ProviderURL: "http://sms.example/send"}); err == nil {
+		t.Fatal("non-https sms provider_url must be rejected")
+	}
+	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "sms", ProviderURL: "https://169.254.169.254/latest"}); err == nil {
+		t.Fatal("internal/metadata sms provider_url must be rejected")
+	}
+	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "sms", ProviderURL: "https://100.100.100.200/x"}); err == nil {
+		t.Fatal("alibaba metadata sms provider_url must be rejected")
+	}
+}
+
+func TestHasHeaderInjection(t *testing.T) {
+	if !hasHeaderInjection("Subject\r\nBcc: evil@x") || !hasHeaderInjection("a\nb") || !hasHeaderInjection("a\x00b") {
+		t.Fatal("CR/LF/NUL must be flagged as header injection")
+	}
+	if hasHeaderInjection("Normal subject line") || hasHeaderInjection("tab\tok") {
+		t.Fatal("clean subject (tabs allowed) must not be flagged")
+	}
 }
