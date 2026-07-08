@@ -24,6 +24,11 @@ type Config struct {
 	// CORS: allowed browser origin for the frontend (dev).
 	CORSOrigin string
 
+	// TrustedProxyDepth is the number of upstream proxies whose X-Forwarded-For
+	// entries are trusted when deriving the client IP for rate limiting (1 = a single
+	// platform load balancer). Prevents X-Forwarded-For spoofing of per-IP limits.
+	TrustedProxyDepth int
+
 	// Crypto / connector credential vault (ADR-0004)
 	// SecretMasterKey is a base64 32-byte key used by the LOCAL AES-GCM cipher for dev.
 	// In production this is replaced by GCP KMS (KMSKeyName), and the master key is unused.
@@ -74,6 +79,7 @@ func Load() (*Config, error) {
 		JWTSecret:         env("NIRVET_JWT_SECRET", "dev-insecure-change-me"),
 		JWTIssuer:         env("NIRVET_JWT_ISSUER", "nirvet"),
 		CORSOrigin:        env("NIRVET_CORS_ORIGIN", "http://localhost:3000"),
+		TrustedProxyDepth: envInt("NIRVET_TRUSTED_PROXY_DEPTH", 1),
 		AccessTTL:         envDuration("NIRVET_ACCESS_TTL", 15*time.Minute),
 		RefreshTTL:        envDuration("NIRVET_REFRESH_TTL", 720*time.Hour),
 		SecretMasterKey:   env("NIRVET_SECRET_MASTER_KEY", ""),

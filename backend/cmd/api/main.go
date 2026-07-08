@@ -184,9 +184,12 @@ func main() {
 		defer func() { _ = redisClient.Close() }()
 		log.Info("rate limiting backend", "backend", "redis", "addr", cfg.RedisAddr)
 	}
-	loginLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.2, 8, "login"), ratelimit.ByIP)     // ~1 login / 5s / IP, burst 8
-	apiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "api"), ratelimit.ByPrincipal) // 50 rps / principal
-	auditMut := audit.Mutations(db)                                                                       // record successful mutations (NFR-003)
+	// Login is throttled per client IP (X-Forwarded-For spoof-resistant via trusted-proxy
+	// depth). The IP limiter fails OPEN on a Redis outage (availability); the durable,
+	// fail-closed brute-force control is the DB-backed per-account lockout in iam.Login.
+	loginLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.2, 8, "login"), ratelimit.ByIPTrusting(cfg.TrustedProxyDepth)) // ~1 login / 5s / IP, burst 8
+	apiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "api"), ratelimit.ByPrincipal)                            // 50 rps / principal
+	auditMut := audit.Mutations(db)                                                                                                  // record successful mutations (NFR-003)
 	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut) }
 	provider := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(providerRoles...))

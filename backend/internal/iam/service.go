@@ -106,19 +106,43 @@ type LoginResult struct {
 	User      *User          `json:"user"`
 }
 
-// Login authenticates by email+password (and TOTP MFA when enabled) and issues
-// an access token.
+// Brute-force lockout policy (SEC). After maxFailedLogins consecutive failed attempts
+// the account is locked for loginLockWindow. This is the durable, instance-independent
+// control that catches distributed attacks (many IPs, one account) which per-IP rate
+// limiting misses.
+const (
+	maxFailedLogins = 5
+	loginLockWindow = 15 * time.Minute
+)
+
+// Login authenticates by email+password (and TOTP MFA when enabled) and issues an
+// access token. Repeated failures lock the account for a cool-off window.
 func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID string) (*LoginResult, error) {
 	u, err := s.repo.FindForAuth(ctx, email)
-	if err != nil || u.Status != UserActive || !auth.ComparePassword(u.PasswordHash, password) {
+	if err != nil || u.Status != UserActive {
+		// No such (active) user — generic error, no account enumeration and no lock.
+		return nil, httpx.ErrUnauthorized("invalid credentials")
+	}
+	// If the account is locked, reject WITHOUT checking the password (so an attacker
+	// cannot keep probing) until the cool-off elapses.
+	if u.LockedUntil != nil && u.LockedUntil.After(time.Now()) {
+		return nil, httpx.ErrTooManyRequests("account temporarily locked due to repeated failed logins; try again later")
+	}
+	if !auth.ComparePassword(u.PasswordHash, password) {
+		_ = s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow)
 		return nil, httpx.ErrUnauthorized("invalid credentials")
 	}
 	if u.MFAEnabled {
 		secret, derr := s.cipher.Decrypt(u.TenantID, u.MFASecret)
 		if derr != nil || !totp.Validate(string(secret), mfaCode, time.Now()) {
+			// A wrong/absent MFA code counts toward lockout — brute-forcing the 6-digit
+			// code is a login failure just like a wrong password.
+			_ = s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow)
 			return nil, httpx.ErrUnauthorized("invalid or missing MFA code")
 		}
 	}
+	// Success: clear any accumulated failures and the lock.
+	_ = s.repo.ResetLoginFailures(ctx, u.TenantID, u.ID)
 	p := auth.Principal{UserID: u.ID, TenantID: u.TenantID, Role: u.Role, Email: u.Email}
 	token, err := s.tokens.Issue(p)
 	if err != nil {

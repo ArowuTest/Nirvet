@@ -180,6 +180,40 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("LoginLockoutAfterRepeatedFailures", func(t *testing.T) {
+		// Provision a throwaway user so the lockout doesn't affect the shared principal.
+		email := "lock-" + uuid.NewString() + "@t"
+		if _, err := h.iamSvc.Create(h.ctx, h.tenantID, iam.CreateInput{Email: email, Password: "password123", Role: auth.RoleAnalystT1}); err != nil {
+			t.Fatalf("create user: %v", err)
+		}
+		// Five wrong-password attempts trip the lockout (maxFailedLogins).
+		for i := 0; i < 5; i++ {
+			if _, err := h.iamSvc.Login(h.ctx, email, "wrong", "", "req-lock"); err == nil {
+				t.Fatalf("attempt %d with wrong password must fail", i+1)
+			}
+		}
+		// Now even the CORRECT password is refused while the account is locked.
+		if _, err := h.iamSvc.Login(h.ctx, email, "password123", "", "req-lock"); err == nil {
+			t.Fatal("correct password must be refused while the account is locked out")
+		}
+		// Confirm the lock is recorded in the durable store.
+		var locked bool
+		_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT locked_until IS NOT NULL AND locked_until > now() FROM users WHERE email=$1`, email).Scan(&locked)
+		})
+		if !locked {
+			t.Fatal("expected locked_until to be set in the future after repeated failures")
+		}
+		// Simulate the cool-off elapsing: clearing the lock lets the correct password in.
+		_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE users SET locked_until=NULL, failed_login_attempts=0 WHERE email=$1`, email)
+			return e
+		})
+		if _, err := h.iamSvc.Login(h.ctx, email, "password123", "", "req-lock"); err != nil {
+			t.Fatalf("correct password must succeed once the lock has cleared: %v", err)
+		}
+	})
+
 	t.Run("ChangePasswordRoundTrip", func(t *testing.T) {
 		// A user can rotate their own password off the seed credential: the old one
 		// stops working and the new one logs in. Wrong current password is rejected.

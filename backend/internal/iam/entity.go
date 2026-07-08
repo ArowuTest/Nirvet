@@ -29,4 +29,8 @@ type User struct {
 	MFAEnabled   bool       `json:"mfa_enabled"`
 	MFASecret    []byte     `json:"-"` // vault-encrypted TOTP secret; never serialised
 	CreatedAt    time.Time  `json:"created_at"`
+
+	// Brute-force lockout state (migration 0019). Populated by FindForAuth only.
+	FailedLoginAttempts int        `json:"-"`
+	LockedUntil         *time.Time `json:"-"`
 }

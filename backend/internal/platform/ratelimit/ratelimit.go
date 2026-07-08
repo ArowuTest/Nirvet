@@ -75,16 +75,42 @@ func (l *Limiter) sweep() {
 // KeyFunc derives the limit key from a request.
 type KeyFunc func(*http.Request) string
 
-// ByIP keys on the client IP (honours X-Forwarded-For behind a proxy).
-func ByIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
+// defaultTrustedProxies is the number of upstream proxies whose X-Forwarded-For
+// entries we trust by default (the platform load balancer). Deployments behind a
+// deeper chain (CDN -> LB) should use ByIPTrusting with the real depth.
+const defaultTrustedProxies = 1
+
+// clientIP returns the client address, trusting ONLY the rightmost trustedProxies
+// entries of X-Forwarded-For — those are appended by infrastructure we control. The
+// leftmost entries are client-supplied and spoofable; taking them (as the old code
+// did) let an attacker mint a fresh rate-limit bucket per request by setting a random
+// X-Forwarded-For, defeating per-IP login throttling. We take the entry trustedProxies
+// from the right (the hop just before our outermost trusted proxy).
+func clientIP(r *http.Request, trustedProxies int) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && trustedProxies > 0 {
+		parts := strings.Split(xff, ",")
+		idx := len(parts) - trustedProxies
+		if idx < 0 {
+			idx = 0
+		}
+		if ip := strings.TrimSpace(parts[idx]); ip != "" {
+			return ip
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// ByIP keys on the client IP, trusting a single upstream proxy (the platform LB).
+func ByIP(r *http.Request) string { return clientIP(r, defaultTrustedProxies) }
+
+// ByIPTrusting returns a KeyFunc that trusts trustedProxies upstream hops when parsing
+// X-Forwarded-For. Use when the deployment sits behind a known proxy depth > 1.
+func ByIPTrusting(trustedProxies int) KeyFunc {
+	return func(r *http.Request) string { return clientIP(r, trustedProxies) }
 }
 
 // ByPrincipal keys on the authenticated user id, falling back to IP.
