@@ -3,6 +3,7 @@ package incident
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -163,6 +164,56 @@ func (s *Service) OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, e
 			fmt.Sprintf("A %s incident was auto-opened from a correlated cluster (risk %d) on %s.", severity, risk, entity))
 	}
 	return inc.ID, nil
+}
+
+// SweepSLABreaches finds open incidents that have breached their ack or resolve SLA
+// deadline and have not yet been alerted, notifies the customer (best-effort) and
+// records the breach on the incident timeline, then marks it notified so it fires
+// exactly once per breach kind. Runs at the system level (spans tenants); the marker
+// makes it safe to run on every tick and in multiple processes. Returns the number of
+// breaches alerted.
+func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int) (int, error) {
+	breaches, err := s.repo.FindSLABreaches(ctx, now, limit)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, b := range breaches {
+		subject := fmt.Sprintf("SLA breach (%s): %s", b.Kind, b.Title)
+		body := fmt.Sprintf("Incident %s (%s severity) has breached its %s SLA deadline.", b.ID, b.Severity, b.Kind)
+		if s.notifier != nil {
+			_ = s.notifier.NotifyIncident(ctx, b.TenantID, subject, body)
+		}
+		entry := &TimelineEntry{
+			ID: uuid.New(), IncidentID: b.ID, Author: "system", Kind: "status",
+			Note: fmt.Sprintf("SLA %s deadline breached", b.Kind),
+		}
+		_ = s.repo.AddNote(ctx, b.TenantID, entry)
+		// Mark last: if this fails, the next sweep simply retries (at-least-once alert).
+		if err := s.repo.MarkBreachNotified(ctx, b.TenantID, b.ID, b.Kind); err != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// StartSLASweeper runs SweepSLABreaches on a ticker until ctx is cancelled.
+func (s *Service) StartSLASweeper(ctx context.Context, log *slog.Logger, interval time.Duration, limit int) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if n, err := s.SweepSLABreaches(ctx, time.Now(), limit); err != nil {
+				log.Warn("sla breach sweep failed", "err", err)
+			} else if n > 0 {
+				log.Info("sla breach sweep alerted incidents", "count", n)
+			}
+		}
+	}
 }
 
 // List returns incidents with their SLA-breach status computed as of now.

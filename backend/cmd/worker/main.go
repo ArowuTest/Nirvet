@@ -15,6 +15,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/notify"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
 	"github.com/ArowuTest/nirvet/internal/platform/config"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
@@ -71,8 +72,8 @@ func main() {
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	detEngine := detection.NewEngine(detection.NewRepository(db))
 	enricher := threatintel.NewEnricher(threatintel.NewRepository(db))
-	correlationSvc := correlation.NewService(correlation.NewRepository(db)).
-		WithIncidenter(incident.NewService(incident.NewRepository(db), alertSvc, nil))
+	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notify.NewService(log))
+	correlationSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incidentSvc)
 	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc)
 
 	// Connector poller: pulls Microsoft Graph/Defender alerts through ingestion.
@@ -92,8 +93,10 @@ func main() {
 	// Ingestion durability: re-enqueue any raw event orphaned by a crash between
 	// StoreRaw and Enqueue (SEC Critical #4). The worker process owns this sweep.
 	go ingestSvc.StartReconciler(ctx, log, 30*time.Second, 60*time.Second, 100)
+	// SLA breach alerting (§6.8): notify + timeline once per breached deadline.
+	go incidentSvc.StartSLASweeper(ctx, log, time.Minute, 200)
 
-	log.Info("nirvet worker running (ingest + connector poller + reconciler)")
+	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper)")
 	wk.Start(ctx, time.Second)
 	log.Info("nirvet worker stopped")
 }

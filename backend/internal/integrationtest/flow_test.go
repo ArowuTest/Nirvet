@@ -475,6 +475,52 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("SLABreachSweepAlertsOnce", func(t *testing.T) {
+		// §6.8 follow-on: the sweeper alerts on a breached deadline exactly once
+		// (idempotent via the notified marker) and records it on the timeline.
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "slabr"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "slabr-alert", Severity: "high", DedupeKey: ev.ID.String() + ":slabr"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		// Back-date both deadlines and clear acknowledgement so ack AND resolve breach.
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE incidents SET acknowledged_at=NULL, ack_due_at=now()-interval '2 hours', resolve_due_at=now()-interval '1 hour' WHERE id=$1`, inc.ID)
+			return e
+		}); err != nil {
+			t.Fatalf("backdate: %v", err)
+		}
+		countNotes := func() (ack, res int) {
+			tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
+			for _, e := range tl {
+				if strings.Contains(e.Note, "SLA ack deadline breached") {
+					ack++
+				}
+				if strings.Contains(e.Note, "SLA resolve deadline breached") {
+					res++
+				}
+			}
+			return
+		}
+		if _, err := h.incSvc.SweepSLABreaches(h.ctx, time.Now(), 500); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if ack, res := countNotes(); ack != 1 || res != 1 {
+			t.Fatalf("expected one ack + one resolve breach note, got ack=%d resolve=%d", ack, res)
+		}
+		// Idempotent: a second sweep must not re-alert (markers were set).
+		if _, err := h.incSvc.SweepSLABreaches(h.ctx, time.Now(), 500); err != nil {
+			t.Fatalf("sweep2: %v", err)
+		}
+		if ack, res := countNotes(); ack != 1 || res != 1 {
+			t.Fatalf("SLA breach must alert exactly once, got ack=%d resolve=%d after re-sweep", ack, res)
+		}
+	})
+
 	t.Run("ConnectorWebhookAuth", func(t *testing.T) {
 		res, err := h.connSvc.Create(h.ctx, h.tenantID, connector.CreateInput{Kind: connector.KindWebhook, Name: "wh"})
 		if err != nil {

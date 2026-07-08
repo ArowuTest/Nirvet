@@ -45,8 +45,10 @@ is still required **pre-go-live** (build-phase sign-off only — see memory
   enforced across all GET endpoints.
 - **SLA timers** — DONE (Jul 2026): per-severity ack/resolve targets, due-times stamped
   at creation, acknowledged_at on first ownership, derived ack/resolve breach flags
-  (`internal/incident/sla.go`, migration 0020). Not yet surfaced: proactive breach
-  alerting / an at-risk dashboard (breach is computed on read).
+  (`internal/incident/sla.go`, migration 0020). Proactive **breach alerting** is now
+  also done: a background sweeper (StartSLASweeper, migration 0021 + SECURITY DEFINER
+  incidents_sla_breaches) notifies + records on the timeline exactly once per breached
+  deadline. Remaining: an at-risk/breach dashboard view.
 - **MFA login UI** — TOTP enroll/activate/verify exist in the API and are enforced at
   login; the front-end MFA prompt is deferred pending the designer HTML.
 - **threatintel** — watchlist enrichment only; no STIX/TAXII ingest (§6.10 deferred).

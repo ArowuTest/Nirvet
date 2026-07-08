@@ -2,6 +2,7 @@ package incident
 
 import (
 	"context"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
@@ -140,6 +141,56 @@ func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID, e *Timel
 			return pgx.ErrNoRows
 		}
 		return r.AddTimelineTx(ctx, tx, e)
+	})
+}
+
+// SLABreach is an un-notified SLA deadline breach (ack or resolve) surfaced by the
+// cross-tenant sweeper.
+type SLABreach struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+	Title    string
+	Severity string
+	Kind     string // "ack" | "resolve"
+}
+
+// FindSLABreaches returns un-notified ack/resolve breaches across tenants as of now.
+// It runs at the system level via the SECURITY DEFINER incidents_sla_breaches
+// function because incidents has RLS FORCEd and the provider sweeper spans tenants.
+func (r *Repository) FindSLABreaches(ctx context.Context, now time.Time, limit int) ([]SLABreach, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	var out []SLABreach
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, tenant_id, title, severity, breach_kind FROM incidents_sla_breaches($1, $2)`, now, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var b SLABreach
+			if err := rows.Scan(&b.ID, &b.TenantID, &b.Title, &b.Severity, &b.Kind); err != nil {
+				return err
+			}
+			out = append(out, b)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// MarkBreachNotified stamps the notified marker for a breach kind so the sweeper does
+// not re-alert on it. Idempotent; runs in the incident's tenant context.
+func (r *Repository) MarkBreachNotified(ctx context.Context, tenantID, id uuid.UUID, kind string) error {
+	col := "resolve_breach_notified_at"
+	if kind == "ack" {
+		col = "ack_breach_notified_at"
+	}
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE incidents SET `+col+` = now() WHERE id = $1`, id)
+		return err
 	})
 }
 

@@ -326,7 +326,9 @@ func main() {
 		go poller.Start(workerCtx, time.Minute)
 		// Re-enqueue raw events orphaned between StoreRaw and Enqueue (SEC Critical #4).
 		go ingestSvc.StartReconciler(workerCtx, log, 30*time.Second, 60*time.Second, 100)
-		log.Info("inline ingest worker + connector poller + reconciler started")
+		// SLA breach alerting (§6.8): notify + timeline once per breached deadline.
+		go incidentSvc.StartSLASweeper(workerCtx, log, time.Minute, 200)
+		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper started")
 	}
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
