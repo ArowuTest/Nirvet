@@ -154,3 +154,16 @@ func IsProviderRole(r Role) bool {
 		return false
 	}
 }
+
+// roleRank orders roles by privilege tier (higher = more privileged) for floor/cap comparisons —
+// SOAR approver floors (§6.11) and break-glass one-tier caps (§6.2). Single source of truth so those
+// callers don't each keep a divergent rank map. Provider seniors outrank customer roles; an unknown
+// role ranks 0.
+var roleRank = map[Role]int{
+	RoleCustomerViewer: 0, RoleCustomerAdmin: 1,
+	RoleAnalystT1: 1, RoleAnalystT2: 2, RoleDetectionEng: 2,
+	RoleAnalystT3: 3, RoleSOCManager: 4, RolePlatformAdmin: 5,
+}
+
+// RoleRank returns a role's privilege tier (unknown roles rank 0).
+func RoleRank(r Role) int { return roleRank[r] }

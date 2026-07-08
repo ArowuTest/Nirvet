@@ -36,3 +36,11 @@ func validateGrantableRole(actor, target auth.Role) error {
 	}
 	return nil
 }
+
+// breakGlassEligible reports whether a base role may invoke break-glass (self-elevate WITHOUT prior
+// approval, Round-4 M5). Only operationally-trusted roles qualify: any provider (SOC) role, or a
+// customer_admin. A read-only customer_viewer (and any unknown role) is excluded, so a stolen
+// low-privilege token cannot bootstrap emergency authority.
+func breakGlassEligible(base auth.Role) bool {
+	return auth.IsProviderRole(base) || base == auth.RoleCustomerAdmin
+}

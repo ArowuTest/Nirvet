@@ -31,3 +31,26 @@ func TestValidateGrantableRole(t *testing.T) {
 		}
 	}
 }
+
+// TestBreakGlassEligible locks the Round-4 M5 eligibility floor: provider roles and customer_admin
+// may invoke break-glass; a read-only customer_viewer (and unknown roles) may not.
+func TestBreakGlassEligible(t *testing.T) {
+	for _, r := range []auth.Role{auth.RoleAnalystT1, auth.RoleSOCManager, auth.RoleDetectionEng, auth.RoleCustomerAdmin} {
+		if !breakGlassEligible(r) {
+			t.Errorf("%s should be break-glass eligible", r)
+		}
+	}
+	for _, r := range []auth.Role{auth.RoleCustomerViewer, auth.Role("wizard")} {
+		if breakGlassEligible(r) {
+			t.Errorf("%s must NOT be break-glass eligible", r)
+		}
+	}
+	// The one-tier cap (enforced in BreakGlass) rests on the canonical rank: analyst_t1 → soc_manager
+	// is a 3-tier jump and must be rejected; analyst_t1 → analyst_t2 is one tier and allowed.
+	if auth.RoleRank(auth.RoleSOCManager) <= auth.RoleRank(auth.RoleAnalystT1)+1 {
+		t.Fatal("analyst_t1 → soc_manager must exceed the one-tier break-glass cap")
+	}
+	if auth.RoleRank(auth.RoleAnalystT2) > auth.RoleRank(auth.RoleAnalystT1)+1 {
+		t.Fatal("analyst_t1 → analyst_t2 should be within the one-tier cap")
+	}
+}

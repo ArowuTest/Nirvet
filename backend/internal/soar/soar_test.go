@@ -139,21 +139,21 @@ func TestExecutorDispatch(t *testing.T) {
 func TestApproverFloor(t *testing.T) {
 	// A high-risk step requires soc_manager; analyst_t3 is insufficient, soc_manager suffices.
 	highFloor := requiredApproverRank(RiskHigh, "")
-	if approverRank[auth.RoleAnalystT3] >= highFloor {
+	if auth.RoleRank(auth.RoleAnalystT3) >= highFloor {
 		t.Fatal("analyst_t3 must NOT be able to approve a high-risk action")
 	}
-	if approverRank[auth.RoleSOCManager] < highFloor {
+	if auth.RoleRank(auth.RoleSOCManager) < highFloor {
 		t.Fatal("soc_manager must be able to approve a high-risk action")
 	}
 	// Medium needs analyst_t3; low/informational have no default floor.
-	if requiredApproverRank(RiskMedium, "") != approverRank[auth.RoleAnalystT3] {
+	if requiredApproverRank(RiskMedium, "") != auth.RoleRank(auth.RoleAnalystT3) {
 		t.Fatal("medium floor should be analyst_t3")
 	}
 	if requiredApproverRank(RiskLow, "") != 0 {
 		t.Fatal("low should have no default floor")
 	}
 	// A configured approver_role can only RAISE the floor, never lower it.
-	if requiredApproverRank(RiskLow, string(auth.RoleSOCManager)) != approverRank[auth.RoleSOCManager] {
+	if requiredApproverRank(RiskLow, string(auth.RoleSOCManager)) != auth.RoleRank(auth.RoleSOCManager) {
 		t.Fatal("configured approver_role must raise a low-risk floor to soc_manager")
 	}
 	if requiredApproverRank(RiskHigh, string(auth.RoleAnalystT1)) != highFloor {

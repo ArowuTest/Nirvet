@@ -110,8 +110,17 @@ func (s *Service) BreakGlass(ctx context.Context, p auth.Principal, in Elevation
 	if strings.TrimSpace(in.Reason) == "" {
 		return nil, httpx.ErrBadRequest("an emergency reason is required")
 	}
+	// Round-4 M5: only an operationally-trusted base role may self-elevate without approval, and the
+	// jump is capped to ONE tier above the base — so a stolen analyst_t1 token cannot break-glass
+	// straight to soc_manager (SOAR-approver authority). validateTarget still enforces domain + no-admin.
+	if !breakGlassEligible(p.Role) {
+		return nil, httpx.ErrForbidden("your role is not eligible to invoke break-glass")
+	}
 	if err := validateTarget(p.Role, in.ElevatedRole); err != nil {
 		return nil, err
+	}
+	if auth.RoleRank(in.ElevatedRole) > auth.RoleRank(p.Role)+1 {
+		return nil, httpx.ErrForbidden("break-glass may elevate at most one tier above your base role")
 	}
 	now := time.Now()
 	exp := now.Add(time.Duration(clampDuration(in.DurationSeconds)) * time.Second)
@@ -122,11 +131,19 @@ func (s *Service) BreakGlass(ctx context.Context, p auth.Principal, in Elevation
 	if err := s.insertElevation(ctx, p, e, "iam.break_glass"); err != nil {
 		return nil, err
 	}
-	// Automatic alert (IAM-006). Best-effort: the record + audit are the durable trail.
+	// Automatic alert (IAM-006). Round-4 M5: a send failure must NOT be silently swallowed — the alert
+	// is the primary detective control for a self-elevation. We don't fail the emergency grant on it,
+	// but we record the miss to the immutable audit trail so a suppressed alert is itself visible.
 	if s.alerter != nil {
-		_ = s.alerter.NotifyIncident(ctx, p.TenantID, "BREAK-GLASS access invoked",
+		if aerr := s.alerter.NotifyIncident(ctx, p.TenantID, "BREAK-GLASS access invoked",
 			fmt.Sprintf("%s self-elevated to %s (emergency). Reason: %s. Post-use review required.",
-				p.Email, in.ElevatedRole, in.Reason))
+				p.Email, in.ElevatedRole, in.Reason)); aerr != nil {
+			_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+				return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email,
+					Action: "iam.break_glass_alert_failed", Target: "elevation:" + e.ID.String(),
+					Metadata: map[string]any{"error": aerr.Error()}})
+			})
+		}
 	}
 	return e, nil
 }
@@ -254,7 +271,9 @@ func (s *Service) MintElevatedToken(ctx context.Context, p auth.Principal, id uu
 	if sess := s.sessionTTL(ctx, p.TenantID); sess > 0 && sess < remaining {
 		remaining = sess
 	}
-	elevated := auth.Principal{UserID: p.UserID, TenantID: p.TenantID, Role: e.ElevatedRole, Email: p.Email}
+	// Carry the elevation id in the token (Round-4 M6) so every request re-checks the grant is still
+	// active — a RevokeElevation takes effect on the next request, not only at the token's exp.
+	elevated := auth.Principal{UserID: p.UserID, TenantID: p.TenantID, Role: e.ElevatedRole, Email: p.Email, ElevationID: id.String()}
 	token, terr := s.tokens.IssueWithTTL(elevated, remaining)
 	if terr != nil {
 		return "", nil, httpx.ErrInternal("could not issue elevated token")
@@ -276,6 +295,25 @@ func scanElevation(row pgx.Row, e *Elevation) error {
 	return row.Scan(&e.ID, &e.TenantID, &e.UserID, &e.UserEmail, &e.BaseRole, &e.ElevatedRole,
 		&e.Kind, &e.Reason, &e.DurationSeconds, &e.Status, &e.ApproverEmail, &e.GrantedAt,
 		&e.ExpiresAt, &e.ReviewRequired, &e.ReviewedBy, &e.CreatedAt)
+}
+
+// checkElevationActive re-validates an elevated token's grant on each request (Round-4 M6): the
+// grant must exist, belong to the caller, and still be effective-status 'active'. A revoked/expired
+// grant makes the elevated token unauthorized immediately, closing the "revoke doesn't kill the
+// minted token" gap. Called from CheckSession only when the principal carries an ElevationID.
+func (s *Service) checkElevationActive(ctx context.Context, p auth.Principal) error {
+	id, err := uuid.Parse(p.ElevationID)
+	if err != nil {
+		return httpx.ErrUnauthorized("invalid elevation reference")
+	}
+	e, err := s.getElevation(ctx, p.TenantID, id)
+	if err != nil {
+		return httpx.ErrUnauthorized("elevation not found")
+	}
+	if e.UserID != p.UserID || e.effectiveStatus(time.Now()) != "active" {
+		return httpx.ErrUnauthorized("elevation is no longer active")
+	}
+	return nil
 }
 
 func (s *Service) getElevation(ctx context.Context, tenantID, id uuid.UUID) (*Elevation, error) {

@@ -120,16 +120,24 @@ func (s *Service) UpdateSessionPolicy(ctx context.Context, p auth.Principal, ten
 	return cur, nil
 }
 
-// cachedPolicy returns the tenant's policy from the short-TTL cache, loading it on a miss.
+// cachedPolicy returns the tenant's policy from the short-TTL cache, loading it on a miss. On a load
+// error it serves the LAST-KNOWN-GOOD value (stale-while-error, Round-4 M7) so a transient DB blip
+// cannot silently drop a tenant's configured IP allow-list — the error-path collapse to an open
+// policy was the fail-open bug. Only when the tenant has never been cached (cold cache + load error)
+// does it fall back to the open default, since we then genuinely cannot know whether a list exists.
 func (s *Service) cachedPolicy(ctx context.Context, tenantID uuid.UUID) SessionPolicy {
-	if v, ok := sessionPolicyCache.Load(tenantID); ok {
-		if c := v.(cachedSessionPolicy); time.Now().Before(c.expires) {
+	cached, hasCached := sessionPolicyCache.Load(tenantID)
+	if hasCached {
+		if c := cached.(cachedSessionPolicy); time.Now().Before(c.expires) {
 			return c.pol
 		}
 	}
 	p, err := s.GetSessionPolicy(ctx, tenantID)
 	if err != nil || p == nil {
-		return SessionPolicy{TenantID: tenantID} // fail-open on load error: empty allow-list = no restriction
+		if hasCached {
+			return cached.(cachedSessionPolicy).pol // stale-while-error: keep enforcing the known policy
+		}
+		return SessionPolicy{TenantID: tenantID}
 	}
 	sessionPolicyCache.Store(tenantID, cachedSessionPolicy{pol: *p, expires: time.Now().Add(sessionPolicyCacheTTL)})
 	return *p
@@ -151,10 +159,19 @@ func (s *Service) sessionTTL(ctx context.Context, tenantID uuid.UUID) time.Durat
 	return time.Duration(p.AccessTTLSeconds) * time.Second
 }
 
-// CheckSession enforces the tenant IP allow-list on a resolved Principal (implements
-// auth.SessionChecker). An empty allow-list means no restriction. Access from outside the
-// allow-list is denied and, when geo_anomaly_logging is on, recorded to the audit trail.
+// CheckSession is the per-request principal-validity hook (implements auth.SessionChecker). It (1)
+// re-checks an elevated token's grant is still active (Round-4 M6 — immediate revocation), and (2)
+// enforces the tenant IP allow-list (§6.2 IAM-007). An empty allow-list means no restriction; access
+// from outside it is denied and, when geo_anomaly_logging is on, recorded to the audit trail.
 func (s *Service) CheckSession(ctx context.Context, p auth.Principal, clientIP string) error {
+	// Revocable elevated tokens: a token minted for a PAM/break-glass grant carries the grant id; if
+	// that grant is no longer active (revoked/expired/foreign), reject NOW rather than honouring the
+	// elevated role until the token's ≤8h exp.
+	if p.ElevationID != "" {
+		if err := s.checkElevationActive(ctx, p); err != nil {
+			return err
+		}
+	}
 	pol := s.cachedPolicy(ctx, p.TenantID)
 	if len(pol.IPAllowlist) == 0 {
 		return nil

@@ -28,19 +28,23 @@ const (
 	RoleCustomerViewer Role = "customer_viewer"
 )
 
-// Principal is the authenticated actor for a request.
+// Principal is the authenticated actor for a request. ElevationID is set only on ELEVATED tokens
+// (minted for an active PAM/break-glass grant); it carries the grant's id so a per-request checker
+// can confirm the grant is still active and reject a revoked one immediately (Round-4 M6).
 type Principal struct {
-	UserID   uuid.UUID
-	TenantID uuid.UUID
-	Role     Role
-	Email    string
+	UserID      uuid.UUID
+	TenantID    uuid.UUID
+	Role        Role
+	Email       string
+	ElevationID string // "" for ordinary tokens; the elevation id for elevated tokens
 }
 
 // Claims is the JWT payload.
 type Claims struct {
-	TenantID string `json:"tid"`
-	Role     string `json:"role"`
-	Email    string `json:"email"`
+	TenantID    string `json:"tid"`
+	Role        string `json:"role"`
+	Email       string `json:"email"`
+	ElevationID string `json:"eid,omitempty"` // elevated tokens only (Round-4 M6)
 	jwt.RegisteredClaims
 }
 
@@ -68,9 +72,10 @@ func (m *Manager) IssueWithTTL(p Principal, ttl time.Duration) (string, error) {
 	}
 	now := time.Now()
 	claims := Claims{
-		TenantID: p.TenantID.String(),
-		Role:     string(p.Role),
-		Email:    p.Email,
+		TenantID:    p.TenantID.String(),
+		Role:        string(p.Role),
+		Email:       p.Email,
+		ElevationID: p.ElevationID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   p.UserID.String(),
@@ -101,7 +106,7 @@ func (m *Manager) Verify(token string) (Principal, error) {
 	if err != nil {
 		return Principal{}, errors.New("invalid tenant")
 	}
-	return Principal{UserID: uid, TenantID: tid, Role: Role(claims.Role), Email: claims.Email}, nil
+	return Principal{UserID: uid, TenantID: tid, Role: Role(claims.Role), Email: claims.Email, ElevationID: claims.ElevationID}, nil
 }
 
 // HashPassword returns a bcrypt hash.

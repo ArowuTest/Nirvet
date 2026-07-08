@@ -23,6 +23,44 @@ func TestJWTRoundTrip(t *testing.T) {
 	}
 }
 
+// TestElevationIDRoundtrip locks the Round-4 M6 plumbing: an elevated token carries its elevation id
+// (eid claim) through Issue→Verify so the per-request checker can re-validate the grant; an ordinary
+// token carries none.
+func TestElevationIDRoundtrip(t *testing.T) {
+	m := NewManager("secret", "nirvet", 15*time.Minute)
+	eid := uuid.New().String()
+	elevated := Principal{UserID: uuid.New(), TenantID: uuid.New(), Role: RoleSOCManager, Email: "e@b.c", ElevationID: eid}
+	tok, err := m.IssueWithTTL(elevated, time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	got, err := m.Verify(tok)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if got.ElevationID != eid {
+		t.Fatalf("elevation id not carried: got %q want %q", got.ElevationID, eid)
+	}
+	// An ordinary token has no elevation id.
+	ord, _ := m.Issue(Principal{UserID: uuid.New(), TenantID: uuid.New(), Role: RoleAnalystT1})
+	if g, _ := m.Verify(ord); g.ElevationID != "" {
+		t.Fatalf("ordinary token must not carry an elevation id, got %q", g.ElevationID)
+	}
+}
+
+// TestRoleRank locks the canonical ordering used by the SOAR approver floor + break-glass tier cap.
+func TestRoleRank(t *testing.T) {
+	if RoleRank(RoleAnalystT1) >= RoleRank(RoleSOCManager) {
+		t.Fatal("analyst_t1 must rank below soc_manager")
+	}
+	if RoleRank(RoleSOCManager) >= RoleRank(RolePlatformAdmin) {
+		t.Fatal("soc_manager must rank below platform_admin")
+	}
+	if RoleRank(RoleCustomerViewer) != 0 || RoleRank(Role("wizard")) != 0 {
+		t.Fatal("viewer and unknown roles must rank 0")
+	}
+}
+
 func TestVerifyWrongSecret(t *testing.T) {
 	issuer := NewManager("secret-A", "nirvet", 15*time.Minute)
 	verifier := NewManager("secret-B", "nirvet", 15*time.Minute)

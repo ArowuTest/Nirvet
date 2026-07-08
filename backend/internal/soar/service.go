@@ -74,28 +74,21 @@ func (s *Service) resolveDecision(ctx context.Context, tenantID uuid.UUID, actio
 	return m, "", false, e
 }
 
-// approverRank ranks the roles relevant to SOAR approval (higher = more senior). Customer roles sit
-// below provider seniors; only provider seniors can clear higher-risk steps (Round-4 H2 floor).
-var approverRank = map[auth.Role]int{
-	auth.RoleCustomerViewer: 0, auth.RoleCustomerAdmin: 1,
-	auth.RoleAnalystT1: 1, auth.RoleAnalystT2: 2, auth.RoleDetectionEng: 2,
-	auth.RoleAnalystT3: 3, auth.RoleSOCManager: 4, auth.RolePlatformAdmin: 5,
-}
-
-// requiredApproverRank is the minimum approver seniority to clear a step of the given §9.5 risk
-// class: the HIGHER of a risk-scaled default (medium→analyst_t3, high→soc_manager) and the tenant-
-// configured approver_role floor (H2 — the stored control is now enforced). business_critical is
-// handled separately (never cleared by standard approval in this slice).
+// requiredApproverRank is the minimum approver seniority (auth.RoleRank) to clear a step of the given
+// §9.5 risk class: the HIGHER of a risk-scaled default (medium→analyst_t3, high→soc_manager) and the
+// tenant-configured approver_role floor (H2 — the stored control is now enforced). business_critical
+// is handled separately (never cleared by standard approval in this slice). Uses the canonical role
+// rank in auth so this floor and the break-glass tier-cap share one ordering.
 func requiredApproverRank(risk RiskClass, configuredApproverRole string) int {
 	base := 0
 	switch risk {
 	case RiskMedium:
-		base = approverRank[auth.RoleAnalystT3]
+		base = auth.RoleRank(auth.RoleAnalystT3)
 	case RiskHigh:
-		base = approverRank[auth.RoleSOCManager]
+		base = auth.RoleRank(auth.RoleSOCManager)
 	}
 	if configuredApproverRole != "" {
-		if r, ok := approverRank[auth.Role(configuredApproverRole)]; ok && r > base {
+		if r := auth.RoleRank(auth.Role(configuredApproverRole)); r > base {
 			base = r
 		}
 	}
@@ -292,7 +285,7 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 		if derr != nil {
 			return nil, httpx.ErrInternal("could not read authority-to-act")
 		}
-		if approverRank[p.Role] < requiredApproverRank(act.RiskClass, approverRole) {
+		if auth.RoleRank(p.Role) < requiredApproverRank(act.RiskClass, approverRole) {
 			return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", p.Role, act.RiskClass))
 		}
 		steps = append(steps, approvedStep{idx: i, act: act})
