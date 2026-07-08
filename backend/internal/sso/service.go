@@ -21,6 +21,9 @@ type Directory interface {
 	LookupForSSO(ctx context.Context, email string) (id, tenantID uuid.UUID, role string, ok bool, err error)
 	// ProvisionForSSO creates an SSO user in the tenant with the given role (no password login).
 	ProvisionForSSO(ctx context.Context, tenantID uuid.UUID, email, role string) (id uuid.UUID, err error)
+	// SessionTTL returns the tenant's configured access-token lifetime (0 => manager default),
+	// so SSO logins honour the same §6.2 IAM-007 session policy as password logins.
+	SessionTTL(ctx context.Context, tenantID uuid.UUID) time.Duration
 }
 
 // Service orchestrates the OIDC login flow and connection management.

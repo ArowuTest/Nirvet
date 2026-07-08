@@ -135,6 +135,13 @@ func (s *Service) cachedPolicy(ctx context.Context, tenantID uuid.UUID) SessionP
 	return *p
 }
 
+// SessionTTL is the exported form of sessionTTL — the SSO login tail resolves the tenant's
+// configured token lifetime through this (implements sso.Directory.SessionTTL), so SSO and
+// password logins honour the same §6.2 IAM-007 session policy.
+func (s *Service) SessionTTL(ctx context.Context, tenantID uuid.UUID) time.Duration {
+	return s.sessionTTL(ctx, tenantID)
+}
+
 // sessionTTL returns the tenant's configured access-token lifetime (0 => manager default).
 func (s *Service) sessionTTL(ctx context.Context, tenantID uuid.UUID) time.Duration {
 	p := s.cachedPolicy(ctx, tenantID)

@@ -63,7 +63,9 @@ func completeSSO(ctx context.Context, dir Directory, tokens *auth.Manager, db *d
 	}
 
 	p := auth.Principal{UserID: uid, TenantID: tid, Role: auth.Role(role), Email: email}
-	token, terr := tokens.Issue(p)
+	// Honour the tenant's configured session TTL (§6.2 IAM-007), same as password login —
+	// not the manager default. sessionTTL returns 0 (=> default) if unconfigured.
+	token, terr := tokens.IssueWithTTL(p, dir.SessionTTL(ctx, tenantID))
 	if terr != nil {
 		return nil, httpx.ErrInternal("could not issue session")
 	}
