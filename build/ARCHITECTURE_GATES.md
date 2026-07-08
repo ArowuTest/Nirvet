@@ -325,3 +325,30 @@ reviewer's order, each gated + tested + green on both backends.
   dead-letter after MaxAttempts, AND the full heartbeat runs on NATS (ADR-0003 swap proven). Postgres default
   unchanged. Remaining: GCP Pub/Sub adapter (same seam), per-connector DLQ stream + replay UI.
 - **Dashboards** (UI): the API contracts already exist (designer supplies HTML).
+
+## Gate — R3 reliability: SLA-notify durable outbox (SRS §6.8/§6.16)
+
+- **SRS section / requirement**: §6.8 (SLA management, breach alerting) + §6.16 (notifications). Round-3 review §4/§6.5
+  reliability residual: `SweepSLABreaches` claimed the breach marker BEFORE notifying and discarded the notifier
+  error, so a transient delivery failure silently dropped the notification (exactly-once-or-**zero**). Owner
+  directive: no deferrals — close for a clean pass.
+- **Contract / interfaces**: `incident.Enqueuer` seam (`EnqueueTx(ctx, tx, tenantID, channel, subject, body)`) —
+  keeps incident decoupled from notify, mirrors the existing `Notifier`/`Ticketer` seams. `notify.OutboxRepository`
+  satisfies it. New `incident.Repository.ClaimBreachTx(...)` folds claim + timeline + enqueue into ONE tenant tx.
+  `notify.Service.Drain`/`StartDispatcher` deliver + retry.
+- **Invariants**: (1) exactly-once dedupe preserved — the conditional marker UPDATE still elects a single winner,
+  and the outbox INSERT rides the SAME tx, so exactly one outbox row per breach kind even under the multi-process
+  sweeper. (2) at-least-once delivery — a failed send leaves the row `pending` for retry; only after `maxAttempts`
+  does it dead-letter to `failed` (observable), never silently lost. (3) tenant isolation — outbox has RLS
+  ENABLE+FORCE + tenant_isolation; the cross-tenant dispatcher reads via a SECURITY DEFINER function
+  `notification_outbox_pending` (mirrors `incidents_sla_breaches`, since `WithSystem` sees nothing through FORCEd
+  RLS), and marks sent/failed under `WithTenant(row.tenant_id)`.
+- **Data model**: migration `0027_notification_outbox.sql` — `notification_outbox` (id, tenant_id, channel,
+  subject, body, status pending|sent|failed, attempts, last_error, created_at, sent_at); partial index on
+  `(created_at) WHERE status='pending'`; SECURITY DEFINER drain fn granted to nirvet_app only.
+- **End-to-end fit**: SLA sweeper → atomic claim+timeline+enqueue → dispatcher loop (inline worker, `safe.Do`
+  guarded) → notify channel. Integration test drives a real breach and asserts an outbox row is enqueued then
+  delivered (pending→sent).
+- **Deferred**: routing the immediate create/assign notifications (best-effort, user present) through the outbox
+  too — out of scope; only the unattended SLA-sweep drop was the finding. Real email/Teams/Slack channels remain
+  TODO in notify (log channel ships).

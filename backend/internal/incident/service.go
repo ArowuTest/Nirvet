@@ -21,6 +21,15 @@ type Notifier interface {
 	NotifyIncident(ctx context.Context, tenantID uuid.UUID, subject, body string) error
 }
 
+// Enqueuer durably enqueues a notification INSIDE an existing tenant transaction, so it
+// commits atomically with the state change that produced it (implemented by
+// notify.OutboxRepository). Used by the SLA sweeper so a breach notification is never
+// silently dropped on a transient delivery failure — the outbox dispatcher retries it
+// (R3 §6.5). Kept narrow so incident does not depend on the notify package.
+type Enqueuer interface {
+	EnqueueTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, channel, subject, body string) error
+}
+
 // Assignees resolves a candidate analyst within a tenant, returning their email.
 // It keeps incident decoupled from the iam package (implemented by iam.Service).
 // A membership miss (user in another tenant / not found) returns an error so an
@@ -53,6 +62,7 @@ type Service struct {
 	repo      *Repository
 	alertSvc  *alert.Service
 	notifier  Notifier
+	enqueuer  Enqueuer
 	assignees Assignees
 	ticketer  Ticketer
 	assets    AssetContext
@@ -65,6 +75,9 @@ func NewService(repo *Repository, alertSvc *alert.Service, notifier Notifier) *S
 
 // WithAssignees wires the analyst resolver (used to validate incident assignment).
 func (s *Service) WithAssignees(a Assignees) *Service { s.assignees = a; return s }
+
+// WithEnqueuer wires the durable notification outbox used by the SLA sweeper (R3 §6.5).
+func (s *Service) WithEnqueuer(e Enqueuer) *Service { s.enqueuer = e; return s }
 
 // WithTicketer wires outbound ITSM mirroring (best-effort on incident open).
 func (s *Service) WithTicketer(t Ticketer) *Service { s.ticketer = t; return s }
@@ -211,26 +224,43 @@ func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int
 	}
 	n := 0
 	for _, b := range breaches {
-		// Claim BEFORE notifying: the conditional marker UPDATE makes exactly one
-		// sweeper win each breach, so no duplicate emails/timeline entries even when the
-		// sweep runs in several processes (R2 M-B — exactly-once, not at-least-once).
-		claimed, err := s.repo.ClaimBreach(ctx, b.TenantID, b.ID, b.Kind)
-		if err != nil || !claimed {
-			continue
-		}
+		// Claim + record + enqueue ATOMICALLY: the conditional marker elects exactly one
+		// winning sweeper per breach (R2 M-B dedupe), and the timeline entry + the durable
+		// notification outbox row commit in the SAME tx as the claim. So the notification
+		// can never be silently dropped on a transient notifier failure — the outbox
+		// dispatcher delivers it with retry (R3 §6.5, delivery guarantee).
 		subject := fmt.Sprintf("SLA breach (%s): %s", b.Kind, b.Title)
 		body := fmt.Sprintf("Incident %s (%s severity) has breached its %s SLA deadline.", b.ID, b.Severity, b.Kind)
-		if s.notifier != nil {
-			_ = s.notifier.NotifyIncident(ctx, b.TenantID, subject, body)
-		}
 		entry := &TimelineEntry{
 			ID: uuid.New(), IncidentID: b.ID, Author: "system", Kind: "status",
 			Note: fmt.Sprintf("SLA %s deadline breached", b.Kind),
 		}
-		_ = s.repo.AddNote(ctx, b.TenantID, entry)
-		n++
+		tenantID, kind := b.TenantID, b.Kind
+		var onClaim func(ctx context.Context, tx pgx.Tx) error
+		if s.enqueuer != nil {
+			onClaim = func(ctx context.Context, tx pgx.Tx) error {
+				return s.enqueuer.EnqueueTx(ctx, tx, tenantID, "log", subject, body)
+			}
+		}
+		claimed, err := s.repo.ClaimBreachTx(ctx, tenantID, b.ID, kind, entry, onClaim)
+		if err != nil {
+			// A real error (not a lost claim) — log and move on; the marker rolls back with
+			// the tx, so this breach is retried on the next sweep.
+			s.logBreachError(b.ID, err)
+			continue
+		}
+		if claimed {
+			n++
+		}
 	}
 	return n, nil
+}
+
+// logBreachError records a transient SLA-sweep failure for one breach without a logger
+// dependency on the hot struct (the sweeper's StartSLASweeper already logs sweep-level
+// failures; this keeps per-breach errors observable during a partial sweep).
+func (s *Service) logBreachError(id uuid.UUID, err error) {
+	slog.Warn("sla breach claim/enqueue failed for one incident", "incident", id, "err", err)
 }
 
 // StartSLASweeper runs SweepSLABreaches on a ticker until ctx is cancelled.

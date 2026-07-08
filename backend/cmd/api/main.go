@@ -154,7 +154,10 @@ func main() {
 	detEngine := detection.NewEngine(detectionRepo)
 	detectionH := detection.NewHandler(detection.NewService(detectionRepo, detEngine))
 
-	notifySvc := notify.NewService(log)
+	// Durable notification outbox: notifications are enqueued transactionally and
+	// delivered by a background dispatcher with retry (R3 §6.5 — no silent drop).
+	outboxRepo := notify.NewOutboxRepository(db)
+	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
 	notifyH := notify.NewHandler(notifySvc)
 
 	// Outbound ticketing (ServiceNow/Jira) — mirrors incidents to the tenant's ITSM.
@@ -162,7 +165,7 @@ func main() {
 	ticketingH := ticketing.NewHandler(ticketingSvc)
 
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
-		WithAssignees(iamSvc).WithTicketer(ticketingSvc)
+		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo)
 	incidentH := incident.NewHandler(incidentSvc)
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	correlationSvc.WithIncidenter(incidentSvc)
@@ -413,9 +416,11 @@ func main() {
 		go poller.Start(workerCtx, time.Minute)
 		// Re-enqueue raw events orphaned between StoreRaw and Enqueue (SEC Critical #4).
 		go ingestSvc.StartReconciler(workerCtx, log, 30*time.Second, 60*time.Second, 100)
-		// SLA breach alerting (§6.8): notify + timeline once per breached deadline.
+		// SLA breach alerting (§6.8): claim + timeline + durably enqueue once per deadline.
 		go incidentSvc.StartSLASweeper(workerCtx, log, time.Minute, 200)
-		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper started")
+		// Notification dispatcher: drains the outbox and delivers with retry (§6.16, R3 §6.5).
+		go notifySvc.StartDispatcher(workerCtx, log, 15*time.Second, 200)
+		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper + notification dispatcher started")
 	}
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}

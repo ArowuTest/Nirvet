@@ -46,6 +46,9 @@ clean pass. Status:
 | M3 CEL expression could burn CPU on the hot path (no cost bound) | Med | `cel.CostLimit(100k)` per program; over-budget eval fails safe (no-match). Deterministic cost limit chosen over a wall-clock deadline so detection stays reproducible | _this batch_ |
 | AI copilot routes shared the 50-rps API bucket (LLM latency + token-spend abuse) | Med | dedicated tight per-principal `ai` bucket (~1 call/2s, burst 5) on /summarise + /triage | _this batch_ |
 | global detection-rule RLS: single policy let a tenant DELETE or re-home the shared global catalogue | Med | split into per-command policies (SELECT global+own; INSERT/UPDATE/DELETE own-only). Migration 0026; integration test proves a tenant can read but not delete/re-home a global rule | _this batch_ |
+| SLA-breach notification silently dropped on transient notifier failure (claim-before-notify + discarded error) | Low (reliability) | durable notification outbox: claim + timeline + enqueue commit in ONE tenant tx (keeps R2 exactly-once dedupe); background dispatcher delivers with retry, dead-letters after 5 attempts (observable), never drops. Migration 0027 + SECURITY DEFINER cross-tenant drain; two integration tests (deliver + dead-letter) | _this batch_ |
+| M-D asset criticality before/after audit (reliability residual) | Low | done in the correctness batch (`2599a2e`) | `2599a2e` |
+| maybePromote null-incident-on-claim-failure | Low | reviewer-accepted documented anti-spam tradeoff (cluster stays `promoted`, not retried) — left as-is by design | — |
 
 ## Fixed — Round 1 (committed, tested)
 

@@ -28,6 +28,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/notify"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
@@ -69,6 +70,7 @@ type harness struct {
 	vulnSvc        *vulnerability.Service
 	graphSvc       *entitygraph.Service
 	aiSvc          *ai.Service
+	notifySvc      *notify.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -143,7 +145,9 @@ func newHarness(t *testing.T) *harness {
 	detEng := detection.NewEngine(detection.NewRepository(db))
 	enr := threatintel.NewEnricher(threatintel.NewRepository(db))
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), q, nil, blobs)
-	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{})
+	outboxRepo := notify.NewOutboxRepository(db)
+	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
+	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}).WithEnqueuer(outboxRepo)
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 	assetSvc := asset.NewService(asset.NewRepository(db), db)
@@ -170,6 +174,7 @@ func newHarness(t *testing.T) *harness {
 		evidenceSigner: evidenceSigner,
 		graphSvc:       entitygraph.NewService(alertSvc, incSvc, corrSvc, assetSvc),
 		aiSvc:          ai.NewService(ai.NewGateway("", "test-model"), alertSvc, db).WithIncidentContext(incSvc, assetSvc),
+		notifySvc:      notifySvc,
 	}
 }
 
@@ -919,6 +924,61 @@ func TestIntegration(t *testing.T) {
 		}
 		if ack, res := countNotes(); ack != 1 || res != 1 {
 			t.Fatalf("SLA breach must alert exactly once, got ack=%d resolve=%d after re-sweep", ack, res)
+		}
+		// R3 §6.5: the breach notifications were durably ENQUEUED (not fired-and-forgotten
+		// with the error discarded), so a transient notifier failure can't drop them.
+		pendingForInc := func() int {
+			n := 0
+			_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+				return tx.QueryRow(ctx,
+					`SELECT count(*) FROM notification_outbox WHERE status='pending' AND body LIKE '%'||$1||'%'`,
+					inc.ID.String()).Scan(&n)
+			})
+			return n
+		}
+		if got := pendingForInc(); got != 2 {
+			t.Fatalf("expected 2 pending outbox notifications (ack+resolve), got %d", got)
+		}
+		// The dispatcher delivers them and flips pending->sent (at-least-once).
+		if n, err := h.notifySvc.Drain(h.ctx, 500); err != nil || n < 2 {
+			t.Fatalf("drain: delivered=%d err=%v (want >=2)", n, err)
+		}
+		if got := pendingForInc(); got != 0 {
+			t.Fatalf("after dispatch no pending notifications should remain for this incident, got %d", got)
+		}
+	})
+
+	t.Run("SLANotifyOutboxRetryAndDeadLetter", func(t *testing.T) {
+		// A delivery that keeps failing is retried across sweeps and finally dead-lettered
+		// to 'failed' (observable), never silently lost — the property the R3 finding was
+		// about. An unknown channel makes Dispatch fail every time.
+		marker := "deadletter-" + uuid.NewString()
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return notify.NewOutboxRepository(h.db).EnqueueTx(ctx, tx, h.tenantID, "no-such-channel", marker, marker)
+		}); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		statusOf := func() (string, int) {
+			var st string
+			var att int
+			_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+				return tx.QueryRow(ctx, `SELECT status, attempts FROM notification_outbox WHERE subject=$1`, marker).Scan(&st, &att)
+			})
+			return st, att
+		}
+		// One failed delivery: still pending, attempt counted (not dropped).
+		if _, err := h.notifySvc.Drain(h.ctx, 500); err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if st, att := statusOf(); st != "pending" || att != 1 {
+			t.Fatalf("after 1 failed delivery want pending/1, got %s/%d", st, att)
+		}
+		// Exhaust the retry budget; it must dead-letter to 'failed', never vanish.
+		for i := 0; i < 6; i++ {
+			_, _ = h.notifySvc.Drain(h.ctx, 500)
+		}
+		if st, _ := statusOf(); st != "failed" {
+			t.Fatalf("a persistently-failing notification must dead-letter to 'failed', got %s", st)
 		}
 	})
 

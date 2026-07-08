@@ -41,6 +41,7 @@ func (c *logChannel) Send(_ context.Context, m Message) error {
 type Service struct {
 	channels map[string]Channel
 	log      *slog.Logger
+	outbox   *OutboxRepository // durable delivery queue (nil = direct dispatch only)
 }
 
 // NewService builds the dispatcher with the default log channel.
@@ -50,6 +51,10 @@ func NewService(log *slog.Logger) *Service {
 	// TODO: register email(SMTP)/teams/slack channels when their creds are set.
 	return s
 }
+
+// WithOutbox wires the durable notification outbox, enabling Drain/StartDispatcher
+// (at-least-once delivery for enqueued notifications; SRS §6.8/§6.16, R3).
+func (s *Service) WithOutbox(repo *OutboxRepository) *Service { s.outbox = repo; return s }
 
 func (s *Service) register(c Channel) { s.channels[c.Key()] = c }
 

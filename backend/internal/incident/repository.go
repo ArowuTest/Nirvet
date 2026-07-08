@@ -250,11 +250,13 @@ func (r *Repository) FindSLABreaches(ctx context.Context, now time.Time, limit i
 	return out, err
 }
 
-// ClaimBreach atomically stamps the notified marker for a breach kind, returning true
-// only for the single caller that wins the transition NULL->now(). Claim BEFORE
-// notifying so under the multi-process sweeper topology exactly one sweeper alerts each
-// breach — no duplicate emails/timeline entries (R2 M-B). Runs in the tenant context.
-func (r *Repository) ClaimBreach(ctx context.Context, tenantID, id uuid.UUID, kind string) (bool, error) {
+// ClaimBreachTx atomically claims a breach and, ONLY for the winning caller, records the
+// timeline entry and runs onClaim (durably enqueues the notification) in the SAME tenant
+// transaction. This keeps the R2 exactly-once dedupe (the conditional marker elects one
+// winner) while making delivery durable: the outbox row commits with the claim, so a
+// transient notifier failure can never drop the notification — the dispatcher retries it
+// (R3 §6.5). A lost claim returns (false, nil); onClaim may be nil (no enqueuer wired).
+func (r *Repository) ClaimBreachTx(ctx context.Context, tenantID, id uuid.UUID, kind string, note *TimelineEntry, onClaim func(ctx context.Context, tx pgx.Tx) error) (bool, error) {
 	col := "resolve_breach_notified_at"
 	if kind == "ack" {
 		col = "ack_breach_notified_at"
@@ -265,10 +267,22 @@ func (r *Repository) ClaimBreach(ctx context.Context, tenantID, id uuid.UUID, ki
 		if err != nil {
 			return err
 		}
-		claimed = ct.RowsAffected() == 1
+		if ct.RowsAffected() != 1 {
+			return nil // another sweeper won the claim; not an error
+		}
+		claimed = true
+		if err := r.AddTimelineTx(ctx, tx, note); err != nil {
+			return err
+		}
+		if onClaim != nil {
+			return onClaim(ctx, tx)
+		}
 		return nil
 	})
-	return claimed, err
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
 }
 
 // CreateWithSeed atomically creates an incident and seeds its timeline. Used for
