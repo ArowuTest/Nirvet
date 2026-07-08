@@ -37,7 +37,8 @@ func (r *Repository) UpdateActive(ctx context.Context, tenantID uuid.UUID, entit
 		err := scanOne(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
 			        incident_id, first_seen, last_seen, created_at, max_confidence,
-			        severity_override, risk_override, override_reason, overridden_by, overridden_at
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at,
+			        suppressed, suppression_reason
 			   FROM correlations
 			  WHERE entity=$1 AND status IN ('open','promoted') AND last_seen >= $2
 			  ORDER BY last_seen DESC LIMIT 1
@@ -115,7 +116,8 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, status string
 		rows, err := tx.Query(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
 			        incident_id, first_seen, last_seen, created_at, max_confidence,
-			        severity_override, risk_override, override_reason, overridden_by, overridden_at
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at,
+			        suppressed, suppression_reason
 			   FROM correlations
 			  WHERE ($1='' OR status=$1)
 			  ORDER BY COALESCE(risk_override, risk_score) DESC, last_seen DESC LIMIT 200`, status)
@@ -143,7 +145,8 @@ func (r *Repository) ListByEntity(ctx context.Context, tenantID uuid.UUID, entit
 		rows, err := tx.Query(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
 			        incident_id, first_seen, last_seen, created_at, max_confidence,
-			        severity_override, risk_override, override_reason, overridden_by, overridden_at
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at,
+			        suppressed, suppression_reason
 			   FROM correlations WHERE entity=$1 ORDER BY last_seen DESC LIMIT 100`, entity)
 		if err != nil {
 			return err
@@ -168,7 +171,8 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Correlat
 		return scanOne(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
 			        incident_id, first_seen, last_seen, created_at, max_confidence,
-			        severity_override, risk_override, override_reason, overridden_by, overridden_at
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at,
+			        suppressed, suppression_reason
 			   FROM correlations WHERE id=$1`, id), &c)
 	})
 	if err != nil {
@@ -182,7 +186,8 @@ type scanner interface{ Scan(dest ...any) error }
 func scanOne(row scanner, c *Correlation) error {
 	return row.Scan(&c.ID, &c.TenantID, &c.Entity, &c.Status, &c.AlertCount, &c.MaxSeverity,
 		&c.RiskScore, &c.Techniques, &c.IncidentID, &c.FirstSeen, &c.LastSeen, &c.CreatedAt,
-		&c.MaxConfidence, &c.SeverityOverride, &c.RiskOverride, &c.OverrideReason, &c.OverriddenBy, &c.OverriddenAt)
+		&c.MaxConfidence, &c.SeverityOverride, &c.RiskOverride, &c.OverrideReason, &c.OverriddenBy, &c.OverriddenAt,
+		&c.Suppressed, &c.SuppressionReason)
 }
 
 func scanRow(rows pgx.Rows, c *Correlation) error { return scanOne(rows, c) }

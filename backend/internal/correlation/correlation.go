@@ -60,6 +60,11 @@ type Correlation struct {
 	OverrideReason   string     `json:"override_reason,omitempty"`
 	OverriddenBy     *uuid.UUID `json:"overridden_by,omitempty"`
 	OverriddenAt     *time.Time `json:"overridden_at,omitempty"`
+
+	// Suppression state (COR-007): a cluster under an active maintenance window / suppression is still
+	// formed but not auto-promoted.
+	Suppressed        bool   `json:"suppressed"`
+	SuppressionReason string `json:"suppression_reason,omitempty"`
 }
 
 // EffectiveSeverity returns the analyst-overridden severity when set, else the computed max severity.

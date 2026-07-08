@@ -11,6 +11,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestCorrelation_ClustersByEntity(t *testing.T) {
@@ -175,5 +176,95 @@ func TestCorrelation_AutoPromotesHighRisk(t *testing.T) {
 	}
 	if inc.opened != 1 {
 		t.Fatalf("a low-risk cluster must not promote, opened=%d", inc.opened)
+	}
+}
+
+// TestCorrelation_SuppressionStormMetrics covers §6.7 slice C: suppression withholds auto-promotion
+// (COR-007), storm status trips at the configured threshold (COR-008), and over-correlation metrics
+// compute (COR-010).
+func TestCorrelation_SuppressionStormMetrics(t *testing.T) {
+	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NIRVET_TEST_DATABASE_URL to run correlation integration tests")
+	}
+	ctx := context.Background()
+	db, err := database.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(db.Close)
+	tn, _ := tenant.NewService(tenant.NewRepository(db)).Create(ctx, tenant.CreateInput{Name: "corr-sup-" + uuid.NewString()})
+
+	inc := &stubIncidenter{}
+	svc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(inc)
+
+	// COR-007: suppress a specific entity, then send a corroborated high-risk cluster on it → the
+	// cluster is formed and flagged suppressed, but NO incident is auto-opened.
+	suppressed := "host:" + uuid.NewString()
+	if _, err := svc.CreateSuppression(ctx, tn.ID, uuid.New(), correlation.SuppressionInput{
+		MatchType: "entity", MatchValue: suppressed, Reason: "planned maintenance",
+	}); err != nil {
+		t.Fatalf("create suppression: %v", err)
+	}
+	cid, _, _ := svc.Correlate(ctx, tn.ID, suppressed, "critical", []string{"T1486", "T1490"}, 95)
+	if _, _, err := svc.Correlate(ctx, tn.ID, suppressed, "critical", []string{"T1059"}, 95); err != nil {
+		t.Fatalf("correlate suppressed: %v", err)
+	}
+	if inc.opened != 0 {
+		t.Fatalf("a suppressed entity must not auto-open an incident, opened=%d", inc.opened)
+	}
+	sc, _ := svc.Get(ctx, tn.ID, cid)
+	if !sc.Suppressed || sc.SuppressionReason == "" {
+		t.Fatalf("cluster should be flagged suppressed with a reason: %+v", sc)
+	}
+
+	// Control: a non-suppressed entity DOES auto-open (proves suppression, not a broken promoter).
+	other := "host:" + uuid.NewString()
+	svc.Correlate(ctx, tn.ID, other, "critical", []string{"T1486", "T1490"}, 95)
+	svc.Correlate(ctx, tn.ID, other, "critical", []string{"T1059"}, 95)
+	if inc.opened != 1 {
+		t.Fatalf("a non-suppressed corroborated cluster should promote, opened=%d", inc.opened)
+	}
+
+	// Delete the suppression.
+	sups, _ := svc.ListSuppressions(ctx, tn.ID)
+	if len(sups) != 1 {
+		t.Fatalf("expected 1 suppression, got %d", len(sups))
+	}
+	if err := svc.DeleteSuppression(ctx, tn.ID, sups[0].ID); err != nil {
+		t.Fatalf("delete suppression: %v", err)
+	}
+
+	// COR-008: lower the storm threshold for this tenant, then confirm InStorm trips.
+	if err := db.WithTenant(ctx, tn.ID, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO correlation_policies (tenant_id, storm_cluster_threshold) VALUES ($1, 5)
+			 ON CONFLICT (tenant_id) DO UPDATE SET storm_cluster_threshold = 5`, tn.ID)
+		return e
+	}); err != nil {
+		t.Fatalf("set storm threshold: %v", err)
+	}
+	// Open several more distinct-entity clusters so the last-hour count clears the threshold of 5.
+	for i := 0; i < 5; i++ {
+		svc.Correlate(ctx, tn.ID, "host:"+uuid.NewString(), "low", nil, 10)
+	}
+	st, err := svc.Storm(ctx, tn.ID)
+	if err != nil {
+		t.Fatalf("storm: %v", err)
+	}
+	if st.Threshold != 5 {
+		t.Fatalf("storm threshold should be 5, got %d", st.Threshold)
+	}
+	if !st.InStorm {
+		t.Fatalf("expected storm mode with %d clusters >= threshold %d", st.ClustersLastHour, st.Threshold)
+	}
+
+	// COR-010: over-correlation metrics are populated.
+	m, err := svc.OverCorrelation(ctx, tn.ID)
+	if err != nil {
+		t.Fatalf("metrics: %v", err)
+	}
+	if m.Clusters == 0 || m.TotalAlerts == 0 || m.AlertsPerCluster <= 0 || m.LargestCluster < 2 {
+		t.Fatalf("over-correlation metrics look wrong: %+v", m)
 	}
 }

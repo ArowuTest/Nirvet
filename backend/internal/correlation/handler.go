@@ -81,3 +81,67 @@ func (h *Handler) Override(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "overridden"})
 }
+
+// Storm handles GET /correlations/storm — the tenant's alert-storm status (COR-008).
+func (h *Handler) Storm(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	st, err := h.svc.Storm(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, st)
+}
+
+// Metrics handles GET /correlations/metrics — over-correlation measurement (COR-010).
+func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	m, err := h.svc.OverCorrelation(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, m)
+}
+
+// ListSuppressions handles GET /correlation-suppressions (COR-007).
+func (h *Handler) ListSuppressions(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	xs, err := h.svc.ListSuppressions(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list suppressions"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"suppressions": xs})
+}
+
+// CreateSuppression handles POST /correlation-suppressions.
+func (h *Handler) CreateSuppression(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in SuppressionInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	sup, err := h.svc.CreateSuppression(r.Context(), p.TenantID, p.UserID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, sup)
+}
+
+// DeleteSuppression handles DELETE /correlation-suppressions/{id}.
+func (h *Handler) DeleteSuppression(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid suppression id"))
+		return
+	}
+	if err := h.svc.DeleteSuppression(r.Context(), p.TenantID, id); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}

@@ -118,6 +118,19 @@ func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity s
 	if s.incidenter == nil || c.RiskScore < promoteThreshold || c.AlertCount < minAlerts {
 		return
 	}
+	// COR-007 suppression / maintenance windows: if an active suppression matches this entity or one of
+	// its techniques, the cluster is still tracked but auto-promotion is withheld (flagged suppressed).
+	if reason, err := s.repo.activeSuppressionFor(ctx, tenantID, entity, c.Techniques); err == nil && reason != "" {
+		_ = s.repo.markSuppressed(ctx, tenantID, c.ID, reason)
+		c.Suppressed, c.SuppressionReason = true, reason
+		return
+	}
+	// COR-008 alert-storm / incident-command mode: during a storm the platform stops auto-opening an
+	// incident per cluster (the SOC works the storm as one incident-command effort). Best-effort: a
+	// storm-check error does not block promotion.
+	if st, err := s.Storm(ctx, tenantID); err == nil && st.InStorm {
+		return
+	}
 	// The in-memory status may be stale; the DB WHERE status='open' is authoritative.
 	claimed, err := s.repo.ClaimForPromotion(ctx, tenantID, c.ID)
 	if err != nil || !claimed {
