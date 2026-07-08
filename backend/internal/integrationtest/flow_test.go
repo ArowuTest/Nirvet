@@ -789,6 +789,62 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("ElevationAndBreakGlass", func(t *testing.T) {
+		// §6.2 IAM-004/006: PAM elevation (request→four-eyes approve→mint short-lived elevated
+		// token) and break-glass (immediate active + review). Boundary + four-eyes enforced.
+		verifier := auth.NewManager("test-secret", "nirvet", 15*time.Minute)
+
+		// Boundary: never platform_admin; never cross provider/customer.
+		if _, err := h.iamSvc.RequestElevation(h.ctx, h.principal, iam.ElevationInput{ElevatedRole: auth.RolePlatformAdmin, Reason: "x"}); err == nil {
+			t.Fatal("elevation to platform_admin must be rejected")
+		}
+		if _, err := h.iamSvc.RequestElevation(h.ctx, h.principal, iam.ElevationInput{ElevatedRole: auth.RoleCustomerAdmin, Reason: "x"}); err == nil {
+			t.Fatal("provider->customer elevation must be rejected")
+		}
+		// PAM request (analyst_t2 -> analyst_t3).
+		e, err := h.iamSvc.RequestElevation(h.ctx, h.principal, iam.ElevationInput{
+			ElevatedRole: auth.RoleAnalystT3, Reason: "investigate incident", DurationSeconds: 3600})
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		if _, err := h.iamSvc.ApproveElevation(h.ctx, h.principal, h.tenantID, e.ID); err == nil {
+			t.Fatal("four-eyes: requester must not approve their own elevation")
+		}
+		if _, _, err := h.iamSvc.MintElevatedToken(h.ctx, h.principal, e.ID); err == nil {
+			t.Fatal("cannot mint an elevated token before approval")
+		}
+		if _, err := h.iamSvc.ApproveElevation(h.ctx, h.approver, h.tenantID, e.ID); err != nil {
+			t.Fatalf("approve: %v", err)
+		}
+		token, _, err := h.iamSvc.MintElevatedToken(h.ctx, h.principal, e.ID)
+		if err != nil || token == "" {
+			t.Fatalf("mint elevated token: %v", err)
+		}
+		pr, err := verifier.Verify(token)
+		if err != nil || pr.Role != auth.RoleAnalystT3 || pr.UserID != h.principal.UserID {
+			t.Fatalf("elevated token must carry analyst_t3 for the owner: %+v %v", pr, err)
+		}
+		// Revoke → minting stops.
+		if err := h.iamSvc.RevokeElevation(h.ctx, h.approver, h.tenantID, e.ID); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		if _, _, err := h.iamSvc.MintElevatedToken(h.ctx, h.principal, e.ID); err == nil {
+			t.Fatal("cannot mint after revoke")
+		}
+		// Break-glass: immediately active + review-required; review clears it.
+		bg, err := h.iamSvc.BreakGlass(h.ctx, h.principal, iam.ElevationInput{
+			ElevatedRole: auth.RoleAnalystT3, Reason: "emergency containment"})
+		if err != nil || bg.Status != "active" || !bg.ReviewRequired {
+			t.Fatalf("break-glass must be immediately active + review-required: %+v %v", bg, err)
+		}
+		if _, _, err := h.iamSvc.MintElevatedToken(h.ctx, h.principal, bg.ID); err != nil {
+			t.Fatalf("break-glass mint: %v", err)
+		}
+		if err := h.iamSvc.ReviewElevation(h.ctx, h.approver, h.tenantID, bg.ID, "reviewed, legitimate"); err != nil {
+			t.Fatalf("review: %v", err)
+		}
+	})
+
 	intPtr := func(i int) *int { return &i }
 	t.Run("SessionPolicy", func(t *testing.T) {
 		// §6.2 IAM-007: session policy is a seeded, admin-configurable record; the IP

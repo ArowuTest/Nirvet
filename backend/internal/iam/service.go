@@ -19,16 +19,26 @@ import (
 
 // Service holds IAM business logic.
 type Service struct {
-	repo   *Repository
-	db     *database.DB
-	tokens *auth.Manager
-	cipher crypto.SecretCipher
+	repo    *Repository
+	db      *database.DB
+	tokens  *auth.Manager
+	cipher  crypto.SecretCipher
+	alerter Alerter // optional: break-glass auto-alerting (§6.2 IAM-006)
 }
 
 // NewService builds the service. cipher encrypts TOTP secrets (per-tenant).
 func NewService(repo *Repository, db *database.DB, tokens *auth.Manager, cipher crypto.SecretCipher) *Service {
 	return &Service{repo: repo, db: db, tokens: tokens, cipher: cipher}
 }
+
+// Alerter fires an automatic alert (implemented by notify.Service). Kept narrow so iam does
+// not depend on the notify package.
+type Alerter interface {
+	NotifyIncident(ctx context.Context, tenantID uuid.UUID, subject, body string) error
+}
+
+// WithAlerter wires break-glass auto-alerting (§6.2 IAM-006).
+func (s *Service) WithAlerter(a Alerter) *Service { s.alerter = a; return s }
 
 // CreateInput creates a user.
 type CreateInput struct {

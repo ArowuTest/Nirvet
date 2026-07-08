@@ -434,3 +434,30 @@ reviewer's order, each gated + tested + green on both backends.
 - **Deferred (tracked tasks)**: idle/absolute session invalidation (needs server-side session store — JWT is
   stateless), device-trust indicators, true geo-IP lookup (no geo-IP DB dependency — current anomaly signal is
   "outside allow-list"). PAM elevation + break-glass = §6.2 slice B2 (next).
+
+## Gate — §6.2 IAM slice B2: PAM elevation + break-glass — IAM-004/006
+
+- **SRS section / requirement**: §6.2 IAM-004 (privileged access: justification, time-bounded elevation, approval
+  for high-risk, logging), IAM-006 (break-glass: emergency reason capture, automatic alerting, post-use review).
+- **Contract / interfaces**: `privileged_elevations` (tenant-RLS). PAM flow: request → four-eyes approve → active
+  (until expires) → expired/revoked, or rejected. Break-glass: immediately active on creation + review_required +
+  auto-alert. **Enforcement = AssumeRole/stateless**: an active elevation lets its owner mint a SHORT-LIVED
+  elevated JWT (role = elevated role, TTL = min(remaining elevation window, tenant session TTL) — reuses §6.2-B1
+  config, no new constant). Endpoints: `POST/GET /me/elevations`, `POST /me/elevations/{id}/token`,
+  `POST /me/elevations/break-glass`; `POST /admin/elevations/{id}/approve|reject|review`, `GET /admin/elevations`.
+- **Invariants**: (1) **four-eyes** — approver ≠ requester and approver ∈ {platform_admin, soc_manager}. (2)
+  **no boundary break** — elevated role may never be platform_admin, and must be the SAME domain as the base role
+  (provider↔provider, customer↔customer via auth.IsProviderRole) so a customer user can't cross into SOC. (3)
+  time-bounded — requested duration bounded (5 min–8 h); token TTL never exceeds the elevation window; expiry is
+  enforced at mint (an expired/revoked/rejected elevation mints nothing → base role returns). (4) **break-glass is
+  loud** — immediate active, review_required=true, a high-signal audit entry AND an automatic alert (Alerter seam →
+  notify). (5) post-use review closes review_required. (6) every state change audited; only the owner mints their
+  own token; approve/review are senior-gated.
+- **Data model**: migration `0031` — privileged_elevations (kind pam|break_glass; status requested|active|rejected|
+  expired|revoked; approver/granted/expires/review fields). Tenant-RLS FORCE.
+- **End-to-end fit**: analyst_t1 requests elevation to analyst_t3 for 1 h with justification → soc_manager approves
+  → analyst mints a ≤1 h elevated token → acts as t3 → token expires → base role. Break-glass mirrors without the
+  approval gate but alerts + flags for review. Heartbeat unaffected (additive).
+- **Deferred (tracked tasks)**: instant cross-token revocation (JWT is stateless — bounded by short TTL, standard
+  mitigation), scheduled auto-expiry sweep to flip status active→expired for reporting (derived at read-time now).
+  Invitations + access reviews + ABAC = §6.2 slice C.

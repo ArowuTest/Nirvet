@@ -159,6 +159,8 @@ func main() {
 	outboxRepo := notify.NewOutboxRepository(db)
 	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
 	notifyH := notify.NewHandler(notifySvc)
+	// Break-glass access fires an automatic alert (§6.2 IAM-006).
+	iamSvc.WithAlerter(notifySvc)
 
 	// Outbound ticketing (ServiceNow/Jira) — mirrors incidents to the tenant's ITSM.
 	ticketingSvc := ticketing.NewService(ticketing.NewRepository(db), cipher)
@@ -334,6 +336,16 @@ func main() {
 	mux.Handle("POST /mfa/enroll", authed(iamH.EnrollMFA))
 	mux.Handle("POST /mfa/activate", authed(iamH.ActivateMFA))
 	mux.Handle("POST /mfa/disable", authed(iamH.DisableMFA))
+	// Privileged elevation + break-glass (§6.2 IAM-004/006). Self-service request/break-glass/
+	// mint; approval/reject/review + full list are manager-gated (four-eyes in the service).
+	mux.Handle("POST /me/elevations", authed(iamH.RequestElevation))
+	mux.Handle("GET /me/elevations", authed(iamH.ListMyElevations))
+	mux.Handle("POST /me/elevations/break-glass", authed(iamH.BreakGlass))
+	mux.Handle("POST /me/elevations/{id}/token", authed(iamH.MintElevatedToken))
+	mux.Handle("GET /admin/elevations", manager(iamH.ListElevations))
+	mux.Handle("POST /admin/elevations/{id}/approve", manager(iamH.ApproveElevation))
+	mux.Handle("POST /admin/elevations/{id}/reject", manager(iamH.RejectElevation))
+	mux.Handle("POST /admin/elevations/{id}/review", manager(iamH.ReviewElevation))
 	// platform admin
 	mux.Handle("POST /admin/tenants", padmin(tenantH.Create))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))

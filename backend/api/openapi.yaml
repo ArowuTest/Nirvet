@@ -250,6 +250,16 @@ paths:
   /admin/tenants/{id}/session-policy:
     get: { tags: [admin], summary: Get session policy (TTL/IP allow-list/anomaly log, IAM-007), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policy } } }
     put: { tags: [admin], summary: Update session policy (validated TTL + IP/CIDR allow-list), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policy }, '400': { description: invalid TTL or allow-list entry } } }
+  /me/elevations:
+    get: { tags: [iam], summary: List my privileged elevations (IAM-004), responses: { '200': { description: elevations } } }
+    post: { tags: [iam], summary: Request a time-bounded privileged elevation (awaits four-eyes approval), responses: { '201': { description: requested }, '400': { description: invalid target/boundary } } }
+  /me/elevations/break-glass: { post: { tags: [iam], summary: Break-glass emergency elevation (immediate + alert + review-required, IAM-006), responses: { '201': { description: active } } } }
+  /me/elevations/{id}/token: { post: { tags: [iam], summary: Mint a short-lived elevated token for an active elevation, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: token }, '409': { description: not active } } } }
+  /admin/elevations:
+    get: { tags: [admin], summary: List all privileged elevations (manager), responses: { '200': { description: elevations } } }
+  /admin/elevations/{id}/approve: { post: { tags: [admin], summary: Approve a PAM elevation (four-eyes; requester != approver), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: active }, '403': { description: four-eyes violation }, '409': { description: not pending } } } }
+  /admin/elevations/{id}/reject: { post: { tags: [admin], summary: Reject a PAM elevation, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: rejected } } } }
+  /admin/elevations/{id}/review: { post: { tags: [admin], summary: Record post-use review of a break-glass elevation (IAM-006), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: reviewed } } } }
   /admin/users: { post: { tags: [admin], summary: Create user (platform_admin), responses: { '201': { description: created } } } }
   /ingest:
     post:
