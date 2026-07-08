@@ -230,8 +230,9 @@ func main() {
 
 	// --- routing ---
 	// Authn accepts a JWT or a service-account API key (nvt_…) — the resolved Principal is
-	// identical downstream, so RBAC + RLS + audit apply unchanged (§6.2 IAM-001).
-	authn := auth.AuthenticateWithAPIKeys(tokens, iamSvc)
+	// identical downstream, so RBAC + RLS + audit apply unchanged (§6.2 IAM-001) — and then
+	// enforces the tenant's session policy (IP allow-list, §6.2 IAM-007) on that Principal.
+	authn := auth.AuthenticateFull(tokens, iamSvc, iamSvc, cfg.TrustedProxyDepth)
 	// Rate limits. In-memory (per-instance) by default; global across replicas when
 	// NIRVET_REDIS_ADDR is set (reviewer: introduce Redis at first horizontal scale-out).
 	var redisClient *redis.Client
@@ -356,6 +357,9 @@ func main() {
 	mux.Handle("POST /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.CreateAPIKey))
 	mux.Handle("GET /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.ListAPIKeys))
 	mux.Handle("DELETE /admin/tenants/{id}/api-keys/{kid}", ssoAdmin(iamH.RevokeAPIKey))
+	// Session & access policy (§6.2 IAM-007): configurable TTL + IP allow-list + anomaly log.
+	mux.Handle("GET /admin/tenants/{id}/session-policy", ssoAdmin(iamH.GetSessionPolicy))
+	mux.Handle("PUT /admin/tenants/{id}/session-policy", ssoAdmin(iamH.UpdateSessionPolicy))
 	mux.Handle("POST /admin/users", padmin(iamH.Create))
 	// ingestion (any authenticated principal for the scaffold)
 	mux.Handle("POST /ingest", authed(ingestH.Ingest))

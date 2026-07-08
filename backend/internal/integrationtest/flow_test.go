@@ -491,7 +491,7 @@ func TestIntegration(t *testing.T) {
 		// §6.12: assistive-only triage grounded in the incident's own evidence, with the
 		// offline deterministic fallback (no LLM key). Guardrails: assistive flag,
 		// observed-only confidence, actions routed via approval, evidence-linked, audited.
-		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:triage", Name: "Triage Host", Kind: "host", Criticality: "critical"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal, asset.CreateInput{Ref: "host:triage", Name: "Triage Host", Kind: "host", Criticality: "critical"}); err != nil {
 			t.Fatalf("asset: %v", err)
 		}
 		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "ai", TargetRef: "host:triage"}
@@ -541,7 +541,7 @@ func TestIntegration(t *testing.T) {
 		// §6.9: the entity graph gathers everything touching a ref — alerts, the
 		// incidents they belong to, and the matched asset.
 		ref := "host:graph-target"
-		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: ref, Name: "Graph Target", Kind: "host", Criticality: "medium"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal, asset.CreateInput{Ref: ref, Name: "Graph Target", Kind: "host", Criticality: "medium"}); err != nil {
 			t.Fatalf("register asset: %v", err)
 		}
 		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "graph", TargetRef: ref}
@@ -577,7 +577,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("IncidentEscalatesForCriticalAsset", func(t *testing.T) {
 		// §6.8/§6.15: a high-severity alert on a CRITICAL asset promotes to a CRITICAL
 		// incident (severity raised, never lowered), with the escalation on the timeline.
-		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:crown-jewel", Name: "Crown Jewel DB", Kind: "host", Criticality: "critical"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal, asset.CreateInput{Ref: "host:crown-jewel", Name: "Crown Jewel DB", Kind: "host", Criticality: "critical"}); err != nil {
 			t.Fatalf("register critical asset: %v", err)
 		}
 		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "esc", TargetRef: "host:crown-jewel"}
@@ -670,7 +670,7 @@ func TestIntegration(t *testing.T) {
 		}
 		// Register the affected asset + an open vuln on it so the pack carries asset +
 		// exposure context (§6.15).
-		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:e", Name: "Evidence Host", Kind: "host", Criticality: "high"}); err != nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal, asset.CreateInput{Ref: "host:e", Name: "Evidence Host", Kind: "host", Criticality: "high"}); err != nil {
 			t.Fatalf("register asset: %v", err)
 		}
 		if _, err := h.vulnSvc.Create(h.ctx, h.tenantID, vulnerability.CreateInput{Ref: "host:e", CVE: "CVE-2026-2000", Title: "Evidence-host RCE", Severity: "critical", CVSS: 9.1, Exploited: true}); err != nil {
@@ -762,13 +762,13 @@ func TestIntegration(t *testing.T) {
 		// Registering the same ref twice updates in place (idempotent), and FindByRefs
 		// resolves it. Tenant-scoped.
 		in := asset.CreateInput{Ref: "user:jane@acme.com", Name: "Jane", Kind: "user", Criticality: "medium"}
-		a1, err := h.assetSvc.Create(h.ctx, h.principal,in)
+		a1, err := h.assetSvc.Create(h.ctx, h.principal, in)
 		if err != nil {
 			t.Fatalf("create asset: %v", err)
 		}
 		in.Criticality = "critical"
 		in.Name = "Jane Doe (VIP)"
-		a2, err := h.assetSvc.Create(h.ctx, h.principal,in)
+		a2, err := h.assetSvc.Create(h.ctx, h.principal, in)
 		if err != nil {
 			t.Fatalf("upsert asset: %v", err)
 		}
@@ -784,8 +784,48 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("FindByRefs should resolve exactly the known ref, got %d", len(found))
 		}
 		// Invalid criticality is rejected.
-		if _, err := h.assetSvc.Create(h.ctx, h.principal,asset.CreateInput{Ref: "host:x", Name: "x", Criticality: "bogus"}); err == nil {
+		if _, err := h.assetSvc.Create(h.ctx, h.principal, asset.CreateInput{Ref: "host:x", Name: "x", Criticality: "bogus"}); err == nil {
 			t.Fatal("invalid criticality must be rejected")
+		}
+	})
+
+	intPtr := func(i int) *int { return &i }
+	t.Run("SessionPolicy", func(t *testing.T) {
+		// §6.2 IAM-007: session policy is a seeded, admin-configurable record; the IP
+		// allow-list is validated at write time and enforced by CheckSession fail-closed.
+		pol, err := h.iamSvc.GetSessionPolicy(h.ctx, h.tenantID)
+		if err != nil || pol.AccessTTLSeconds != 900 || len(pol.IPAllowlist) != 0 {
+			t.Fatalf("default session policy expected (ttl 900, empty allow-list): %v %+v", err, pol)
+		}
+		// Empty allow-list => no restriction: any IP passes.
+		if err := h.iamSvc.CheckSession(h.ctx, h.principal, "203.0.113.9"); err != nil {
+			t.Fatalf("empty allow-list must permit any IP: %v", err)
+		}
+		// Invalid entries are rejected at write time.
+		bad := []string{"not-an-ip"}
+		if _, err := h.iamSvc.UpdateSessionPolicy(h.ctx, h.principal, h.tenantID, iam.SessionPolicyInput{IPAllowlist: &bad}); err == nil {
+			t.Fatal("an invalid ip_allowlist entry must be rejected")
+		}
+		if _, err := h.iamSvc.UpdateSessionPolicy(h.ctx, h.principal, h.tenantID, iam.SessionPolicyInput{AccessTTLSeconds: intPtr(30)}); err == nil {
+			t.Fatal("an out-of-range TTL must be rejected")
+		}
+		// Configure an allow-list + TTL; enforcement follows.
+		allow := []string{"10.0.0.0/8"}
+		up, err := h.iamSvc.UpdateSessionPolicy(h.ctx, h.principal, h.tenantID, iam.SessionPolicyInput{
+			IPAllowlist: &allow, AccessTTLSeconds: intPtr(120)})
+		if err != nil || up.AccessTTLSeconds != 120 {
+			t.Fatalf("update session policy: %v %+v", err, up)
+		}
+		if err := h.iamSvc.CheckSession(h.ctx, h.principal, "10.1.2.3"); err != nil {
+			t.Fatalf("in-allow-list IP must pass: %v", err)
+		}
+		if err := h.iamSvc.CheckSession(h.ctx, h.principal, "8.8.8.8"); err == nil {
+			t.Fatal("out-of-allow-list IP must be denied")
+		}
+		// Restore the default (no restriction) so it does not affect other subtests.
+		empty := []string{}
+		if _, err := h.iamSvc.UpdateSessionPolicy(h.ctx, h.principal, h.tenantID, iam.SessionPolicyInput{IPAllowlist: &empty}); err != nil {
+			t.Fatalf("reset allow-list: %v", err)
 		}
 	})
 

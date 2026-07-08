@@ -247,6 +247,9 @@ paths:
     get: { tags: [admin], summary: List API key metadata (never the secret), parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: sid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: keys } } }
     post: { tags: [admin], summary: Mint an API key (raw key returned ONCE), parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: sid, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created with one-time key } } }
   /admin/tenants/{id}/api-keys/{kid}: { delete: { tags: [admin], summary: Revoke an API key (fail-closed on next use), parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: kid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: revoked } } } }
+  /admin/tenants/{id}/session-policy:
+    get: { tags: [admin], summary: Get session policy (TTL/IP allow-list/anomaly log, IAM-007), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policy } } }
+    put: { tags: [admin], summary: Update session policy (validated TTL + IP/CIDR allow-list), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policy }, '400': { description: invalid TTL or allow-list entry } } }
   /admin/users: { post: { tags: [admin], summary: Create user (platform_admin), responses: { '201': { description: created } } } }
   /ingest:
     post:

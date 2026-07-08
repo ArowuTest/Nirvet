@@ -410,3 +410,27 @@ reviewer's order, each gated + tested + green on both backends.
 - **Deferred (tracked tasks)**: per-key **scopes** beyond role (fine-grained endpoint allowlist), automatic key
   **rotation reminders** (→ §6.18 ADMIN-009), user-owned personal API keys — next §6.2 slices. PAM/break-glass +
   session policy = §6.2 slice B; invitations + access reviews + ABAC = slice C.
+
+## Gate — §6.2 IAM slice B1: session & access policy — IAM-007
+
+- **SRS section / requirement**: §6.2 IAM-007 — configurable session timeout, IP restrictions, geo-anomaly
+  logging. Directly removes a hardcoded constant (the global access-token TTL) per the no-hardcoding rule.
+- **Contract / interfaces**: `session_policies` (1 row/tenant): access_ttl_seconds + ip_allowlist + geo_anomaly_
+  logging — admin-configurable via `GET/PUT /admin/tenants/{id}/session-policy` (platform_admin any / customer_admin
+  own). `auth.Manager.IssueWithTTL(p, ttl)`; `iam.Service.Login` issues with the tenant TTL. New
+  `auth.SessionChecker` interface (impl by iam.Service.CheckSession) injected into `auth.AuthenticateFull` — the IP
+  allow-list is enforced at ONE point on the already-resolved Principal (JWT or API key), not by touching token
+  verification.
+- **Invariants**: (1) TTL is a DB record (seeded default 900s, bounded 60–86400), never a code literal; login
+  reads it (cached). (2) empty allow-list = no restriction (default), so existing behaviour is unchanged. (3)
+  allow-list entries (IP or CIDR) validated at WRITE time — a bad entry is rejected, never silently ignored at
+  enforce time. (4) an unparseable client IP fails **closed** against a non-empty allow-list. (5) denied access is
+  audited when geo_anomaly_logging is on. (6) per-tenant policy cached 30s so authn stays a memory op on the happy
+  path; cache invalidated on update. (7) fail-open only on a policy *load* error (availability > lockout).
+- **Data model**: migration `0030` — session_policies (tenant-RLS FORCE), seeded for existing tenants; new tenants
+  self-heal a default row on first access.
+- **End-to-end fit**: login → token lifetime = tenant policy; every authed request → authn resolves Principal →
+  CheckSession enforces the allow-list. Heartbeat unaffected (default empty allow-list; RemoteAddr always allowed).
+- **Deferred (tracked tasks)**: idle/absolute session invalidation (needs server-side session store — JWT is
+  stateless), device-trust indicators, true geo-IP lookup (no geo-IP DB dependency — current anomaly signal is
+  "outside allow-list"). PAM elevation + break-glass = §6.2 slice B2 (next).

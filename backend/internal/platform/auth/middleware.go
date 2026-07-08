@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 
@@ -18,43 +19,96 @@ type APIKeyResolver interface {
 	ResolveAPIKey(ctx context.Context, rawKey string) (Principal, error)
 }
 
-// Authenticate verifies the Bearer token and injects the Principal into context.
-func Authenticate(m *Manager) httpx.Middleware { return authenticate(m, nil) }
-
-// AuthenticateWithAPIKeys accepts EITHER a JWT (Authorization: Bearer <jwt>) or an API key
-// (Authorization: Bearer nvt_… or X-API-Key: nvt_…), resolving the API key via the resolver.
-// A resolved key yields a normal Principal, so all downstream RBAC + RLS apply unchanged.
-func AuthenticateWithAPIKeys(m *Manager, resolver APIKeyResolver) httpx.Middleware {
-	return authenticate(m, resolver)
+// SessionChecker enforces the tenant's session policy (IP allow-list, §6.2 IAM-007) on a
+// resolved Principal. Implemented by iam.Service; injected at wiring time. Returning an error
+// denies the request. A nil checker disables the check.
+type SessionChecker interface {
+	CheckSession(ctx context.Context, p Principal, clientIP string) error
 }
 
-func authenticate(m *Manager, resolver APIKeyResolver) httpx.Middleware {
+// authDeps bundles the optional authenticators/checkers so the constructors stay simple.
+type authDeps struct {
+	resolver       APIKeyResolver
+	checker        SessionChecker
+	trustedProxies int
+}
+
+// Authenticate verifies the Bearer token and injects the Principal into context.
+func Authenticate(m *Manager) httpx.Middleware { return authenticate(m, authDeps{}) }
+
+// AuthenticateWithAPIKeys accepts EITHER a JWT or an API key (Authorization: Bearer nvt_… or
+// X-API-Key: nvt_…), resolving the key via the resolver.
+func AuthenticateWithAPIKeys(m *Manager, resolver APIKeyResolver) httpx.Middleware {
+	return authenticate(m, authDeps{resolver: resolver})
+}
+
+// AuthenticateFull is AuthenticateWithAPIKeys plus per-tenant session-policy enforcement
+// (IP allow-list) applied to the resolved Principal (§6.2 IAM-007). trustedProxies controls
+// spoof-resistant client-IP extraction from X-Forwarded-For.
+func AuthenticateFull(m *Manager, resolver APIKeyResolver, checker SessionChecker, trustedProxies int) httpx.Middleware {
+	return authenticate(m, authDeps{resolver: resolver, checker: checker, trustedProxies: trustedProxies})
+}
+
+func authenticate(m *Manager, d authDeps) httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if resolver != nil {
-				if raw := apiKeyFromRequest(r); raw != "" {
-					p, err := resolver.ResolveAPIKey(r.Context(), raw)
-					if err != nil {
-						httpx.Error(w, httpx.ErrUnauthorized("invalid api key"))
-						return
-					}
-					next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
+			p, ok := resolvePrincipal(w, r, m, d.resolver)
+			if !ok {
+				return
+			}
+			if d.checker != nil {
+				if err := d.checker.CheckSession(r.Context(), p, clientIP(r, d.trustedProxies)); err != nil {
+					httpx.Error(w, err)
 					return
 				}
-			}
-			h := r.Header.Get("Authorization")
-			if !strings.HasPrefix(h, "Bearer ") {
-				httpx.Error(w, httpx.ErrUnauthorized("missing bearer token"))
-				return
-			}
-			p, err := m.Verify(strings.TrimPrefix(h, "Bearer "))
-			if err != nil {
-				httpx.Error(w, httpx.ErrUnauthorized("invalid token"))
-				return
 			}
 			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 		})
 	}
+}
+
+// resolvePrincipal authenticates the request (API key first, then JWT), writing an error
+// response and returning ok=false on failure.
+func resolvePrincipal(w http.ResponseWriter, r *http.Request, m *Manager, resolver APIKeyResolver) (Principal, bool) {
+	if resolver != nil {
+		if raw := apiKeyFromRequest(r); raw != "" {
+			p, err := resolver.ResolveAPIKey(r.Context(), raw)
+			if err != nil {
+				httpx.Error(w, httpx.ErrUnauthorized("invalid api key"))
+				return Principal{}, false
+			}
+			return p, true
+		}
+	}
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") {
+		httpx.Error(w, httpx.ErrUnauthorized("missing bearer token"))
+		return Principal{}, false
+	}
+	p, err := m.Verify(strings.TrimPrefix(h, "Bearer "))
+	if err != nil {
+		httpx.Error(w, httpx.ErrUnauthorized("invalid token"))
+		return Principal{}, false
+	}
+	return p, true
+}
+
+// clientIP extracts the caller IP, honouring the rightmost trustedProxies entries of
+// X-Forwarded-For (spoof-resistant, matching the login-throttle logic).
+func clientIP(r *http.Request, trustedProxies int) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && trustedProxies > 0 {
+		parts := strings.Split(xff, ",")
+		idx := len(parts) - trustedProxies
+		if idx < 0 {
+			idx = 0
+		}
+		return strings.TrimSpace(parts[idx])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // apiKeyFromRequest returns a raw API key from the X-API-Key header or an Authorization:

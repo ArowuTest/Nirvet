@@ -105,6 +105,39 @@ func (h *Handler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"keys": ks})
 }
 
+// GetSessionPolicy handles GET /admin/tenants/{id}/session-policy (§6.2 IAM-007).
+func (h *Handler) GetSessionPolicy(w http.ResponseWriter, r *http.Request) {
+	_, id, ok := h.scopeTenant(w, r)
+	if !ok {
+		return
+	}
+	pol, err := h.svc.GetSessionPolicy(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pol)
+}
+
+// UpdateSessionPolicy handles PUT /admin/tenants/{id}/session-policy.
+func (h *Handler) UpdateSessionPolicy(w http.ResponseWriter, r *http.Request) {
+	p, id, ok := h.scopeTenant(w, r)
+	if !ok {
+		return
+	}
+	var in SessionPolicyInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	pol, err := h.svc.UpdateSessionPolicy(r.Context(), p, id, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pol)
+}
+
 // RevokeAPIKey handles DELETE /admin/tenants/{id}/api-keys/{kid}.
 func (h *Handler) RevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	p, id, ok := h.scopeTenant(w, r)

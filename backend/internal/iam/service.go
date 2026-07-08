@@ -144,7 +144,9 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 	// Success: clear any accumulated failures and the lock.
 	_ = s.repo.ResetLoginFailures(ctx, u.TenantID, u.ID)
 	p := auth.Principal{UserID: u.ID, TenantID: u.TenantID, Role: u.Role, Email: u.Email}
-	token, err := s.tokens.Issue(p)
+	// Issue the token with the tenant's configured session TTL (§6.2 IAM-007) — not a
+	// hardcoded lifetime. sessionTTL returns 0 (=> manager default) if unconfigured.
+	token, err := s.tokens.IssueWithTTL(p, s.sessionTTL(ctx, u.TenantID))
 	if err != nil {
 		return nil, err
 	}

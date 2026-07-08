@@ -56,8 +56,16 @@ func NewManager(secret, issuer string, accessTTL time.Duration) *Manager {
 	return &Manager{secret: []byte(secret), issuer: issuer, accessTTL: accessTTL}
 }
 
-// Issue creates a signed access token for the principal.
-func (m *Manager) Issue(p Principal) (string, error) {
+// Issue creates a signed access token using the manager's default TTL.
+func (m *Manager) Issue(p Principal) (string, error) { return m.IssueWithTTL(p, m.accessTTL) }
+
+// IssueWithTTL creates a signed access token with an explicit lifetime — used so login can
+// honour the tenant's configured session TTL (§6.2 IAM-007). A non-positive ttl falls back
+// to the manager default.
+func (m *Manager) IssueWithTTL(p Principal, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		ttl = m.accessTTL
+	}
 	now := time.Now()
 	claims := Claims{
 		TenantID: p.TenantID.String(),
@@ -67,7 +75,7 @@ func (m *Manager) Issue(p Principal) (string, error) {
 			Issuer:    m.issuer,
 			Subject:   p.UserID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(m.accessTTL)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(m.secret)
