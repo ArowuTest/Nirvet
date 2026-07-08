@@ -60,6 +60,11 @@ func (s *Service) ListByIncident(ctx context.Context, tenantID, incidentID uuid.
 	return s.repo.ListByIncident(ctx, tenantID, incidentID)
 }
 
+// ListByRef returns alerts touching an entity ref (actor or target) — entity graph.
+func (s *Service) ListByRef(ctx context.Context, tenantID uuid.UUID, ref string) ([]Alert, error) {
+	return s.repo.ListByRef(ctx, tenantID, ref)
+}
+
 // Get returns one alert.
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, error) {
 	a, err := s.repo.Get(ctx, tenantID, id)

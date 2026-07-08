@@ -103,6 +103,29 @@ func (r *Repository) ListByIncident(ctx context.Context, tenantID, incidentID uu
 	return out, err
 }
 
+// ListByRef returns alerts where the entity ref appears as actor or target — the
+// entity-graph "what has this touched" query (§6.9). Tenant-scoped via RLS.
+func (r *Repository) ListByRef(ctx context.Context, tenantID uuid.UUID, ref string) ([]Alert, error) {
+	var out []Alert
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT `+alertCols+` FROM alerts WHERE actor_ref=$1 OR target_ref=$1 ORDER BY created_at DESC LIMIT 200`, ref)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a Alert
+			if err := scanAlert(rows, &a); err != nil {
+				return err
+			}
+			out = append(out, a)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // Get returns one alert.
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, error) {
 	var a Alert

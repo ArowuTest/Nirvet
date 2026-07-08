@@ -95,6 +95,31 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, status string
 	return out, err
 }
 
+// ListByEntity returns all correlation clusters for an entity (any status) — the
+// entity-graph view (§6.9). Tenant-scoped via RLS.
+func (r *Repository) ListByEntity(ctx context.Context, tenantID uuid.UUID, entity string) ([]Correlation, error) {
+	var out []Correlation
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
+			        incident_id, first_seen, last_seen, created_at
+			   FROM correlations WHERE entity=$1 ORDER BY last_seen DESC LIMIT 100`, entity)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c Correlation
+			if err := scanRow(rows, &c); err != nil {
+				return err
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // Get returns one correlation.
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Correlation, error) {
 	var c Correlation

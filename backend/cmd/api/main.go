@@ -22,6 +22,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
+	"github.com/ArowuTest/nirvet/internal/entitygraph"
 	"github.com/ArowuTest/nirvet/internal/evidence"
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
@@ -154,6 +155,10 @@ func main() {
 	assetH := asset.NewHandler(assetSvc)
 	// A critical affected asset escalates incident severity + tightens SLA (§6.8/§6.15).
 	incidentSvc.WithAssetContext(assetSvc)
+
+	// Entity graph (§6.9): read-only blast-radius view composing alerts/incidents/
+	// correlations/asset for an entity ref.
+	entityGraphH := entitygraph.NewHandler(entitygraph.NewService(alertSvc, incidentSvc, correlationSvc, assetSvc))
 
 	// Evidence-pack export (§6.13): composes case + alert + event + asset + audit reads.
 	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, db))
@@ -321,6 +326,8 @@ func main() {
 	mux.Handle("POST /assets", provider(assetH.Create))
 	mux.Handle("GET /assets", provider(assetH.List))
 	mux.Handle("GET /assets/{id}", provider(assetH.Get))
+	// Entity graph (§6.9)
+	mux.Handle("GET /entities/graph", provider(entityGraphH.Graph))
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))

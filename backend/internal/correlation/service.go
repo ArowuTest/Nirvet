@@ -89,6 +89,11 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID, status string) (
 	return s.repo.List(ctx, tenantID, status)
 }
 
+// ListByEntity returns all correlation clusters for an entity ref (entity graph §6.9).
+func (s *Service) ListByEntity(ctx context.Context, tenantID uuid.UUID, entity string) ([]Correlation, error) {
+	return s.repo.ListByEntity(ctx, tenantID, entity)
+}
+
 // Get returns one correlation.
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Correlation, error) {
 	c, err := s.repo.Get(ctx, tenantID, id)

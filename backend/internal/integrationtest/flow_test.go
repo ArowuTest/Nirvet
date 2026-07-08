@@ -21,6 +21,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
+	"github.com/ArowuTest/nirvet/internal/entitygraph"
 	"github.com/ArowuTest/nirvet/internal/evidence"
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
@@ -61,6 +62,7 @@ type harness struct {
 	events   eventstore.EventStore
 	evidence *evidence.Service
 	assetSvc *asset.Service
+	graphSvc *entitygraph.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -156,6 +158,7 @@ func newHarness(t *testing.T) *harness {
 		events:   events,
 		assetSvc: assetSvc,
 		evidence: evidence.NewService(incSvc, alertSvc, events, assetSvc, db),
+		graphSvc: entitygraph.NewService(alertSvc, incSvc, corrSvc, assetSvc),
 	}
 }
 
@@ -373,6 +376,43 @@ func TestIntegration(t *testing.T) {
 		tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
 		if len(tl) == 0 {
 			t.Fatal("incident should have a seed timeline entry")
+		}
+	})
+
+	t.Run("EntityGraphBlastRadius", func(t *testing.T) {
+		// §6.9: the entity graph gathers everything touching a ref — alerts, the
+		// incidents they belong to, and the matched asset.
+		ref := "host:graph-target"
+		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: ref, Name: "Graph Target", Kind: "host", Criticality: "medium"}); err != nil {
+			t.Fatalf("register asset: %v", err)
+		}
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "graph", TargetRef: ref}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "graph-alert", Severity: "high", DedupeKey: ev.ID.String() + ":graph"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		if _, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID); err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		g, err := h.graphSvc.Build(h.ctx, h.tenantID, ref)
+		if err != nil {
+			t.Fatalf("build graph: %v", err)
+		}
+		if g.Summary.AlertCount < 1 || g.Summary.IncidentCount < 1 {
+			t.Fatalf("graph must include the alert + incident, got alerts=%d incidents=%d", g.Summary.AlertCount, g.Summary.IncidentCount)
+		}
+		if g.Asset == nil || g.Asset.Ref != ref {
+			t.Fatal("graph must match the inventory asset for the ref")
+		}
+		if g.Summary.MaxSeverity != "high" {
+			t.Fatalf("graph max severity should be high, got %q", g.Summary.MaxSeverity)
+		}
+		if g.Summary.OpenIncidents < 1 {
+			t.Fatalf("graph should count the open incident, got %d", g.Summary.OpenIncidents)
+		}
+		// An empty ref is rejected.
+		if _, err := h.graphSvc.Build(h.ctx, h.tenantID, ""); err == nil {
+			t.Fatal("empty ref must be rejected")
 		}
 	})
 
