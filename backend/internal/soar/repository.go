@@ -16,23 +16,6 @@ type Repository struct{ db *database.DB }
 // NewRepository builds the repository.
 func NewRepository(db *database.DB) *Repository { return &Repository{db: db} }
 
-// TenantAuthority reads the tenant's authority-to-act mode (platform table).
-func (r *Repository) TenantAuthority(ctx context.Context, tenantID uuid.UUID) (AuthorityMode, error) {
-	var m string
-	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT authority_mode FROM tenants WHERE id=$1`, tenantID).Scan(&m)
-	})
-	return AuthorityMode(m), err
-}
-
-// SetTenantAuthority updates a tenant's authority-to-act mode.
-func (r *Repository) SetTenantAuthority(ctx context.Context, tenantID uuid.UUID, mode AuthorityMode) error {
-	return r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE tenants SET authority_mode=$2 WHERE id=$1`, tenantID, string(mode))
-		return err
-	})
-}
-
 // ListPlaybooks returns global + tenant playbooks.
 func (r *Repository) ListPlaybooks(ctx context.Context, tenantID uuid.UUID) ([]Playbook, error) {
 	var out []Playbook

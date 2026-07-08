@@ -34,9 +34,9 @@ type Service struct {
 // executors are registered via WithExecutors at wiring time.
 func NewService(repo *Repository) *Service { return &Service{repo: repo, execs: NewExecutors()} }
 
-// WithAuthorizer wires the per-action authority store (tenant.Service). When set, SOAR resolves
-// authority per action from authority_policies; when nil it falls back to the legacy
-// tenants.authority_mode column (kept only so unit tests without a tenant service still run).
+// WithAuthorizer wires the per-action authority store (tenant.Service, the single source of truth:
+// authority_policies). Always wired in production; a nil authorizer resolves fail-closed to 'observe'
+// (nothing auto-runs). The legacy tenants.authority_mode column was dropped (Round-4 hygiene).
 func (s *Service) WithAuthorizer(a Authorizer) *Service { s.authz = a; return s }
 
 // WithExecutors wires the action-executor registry (real dispatch for registered actions; unregistered
@@ -70,8 +70,7 @@ func (s *Service) resolveDecision(ctx context.Context, tenantID uuid.UUID, actio
 		m, ar, bh, e := s.authz.ResolveAuthorityDecision(ctx, tenantID, actionType)
 		return AuthorityMode(m), ar, bh, e
 	}
-	m, e := s.repo.TenantAuthority(ctx, tenantID)
-	return m, "", false, e
+	return AuthorityObserve, "", false, nil // fail-closed: no authorizer wired ⇒ nothing auto-runs
 }
 
 // requiredApproverRank is the minimum approver seniority (auth.RoleRank) to clear a step of the given
@@ -101,13 +100,10 @@ func (s *Service) SetAuthority(ctx context.Context, p auth.Principal, tenantID u
 	if !validModes[mode] {
 		return httpx.ErrBadRequest("invalid authority mode")
 	}
-	if s.authz != nil {
-		if err := s.authz.SetCatchAllAuthority(ctx, p, tenantID, string(mode)); err != nil {
-			return httpx.ErrInternal("could not set authority")
-		}
-		return nil
+	if s.authz == nil {
+		return httpx.ErrInternal("authority store not configured")
 	}
-	if err := s.repo.SetTenantAuthority(ctx, tenantID, mode); err != nil {
+	if err := s.authz.SetCatchAllAuthority(ctx, p, tenantID, string(mode)); err != nil {
 		return httpx.ErrInternal("could not set authority")
 	}
 	return nil

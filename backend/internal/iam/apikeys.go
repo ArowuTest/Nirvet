@@ -255,10 +255,21 @@ func (s *Service) ResolveAPIKey(ctx context.Context, rawKey string) (auth.Princi
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
 		return auth.Principal{}, httpx.ErrUnauthorized("api key expired")
 	}
-	// Best-effort last-used bump (never blocks auth).
+	// Best-effort last-used bump (never blocks auth). Round-4 L5: emit a first-use-per-hour audit
+	// event so API-key USE (not only create/revoke) leaves an immutable trail — the CTE captures the
+	// prior last_used_at so we audit at most once per key per hour, keeping the hot path cheap.
 	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, e := tx.Exec(ctx, `UPDATE api_keys SET last_used_at=now() WHERE id=$1`, keyID)
-		return e
+		var prev *time.Time
+		if e := tx.QueryRow(ctx,
+			`WITH old AS (SELECT last_used_at AS prev FROM api_keys WHERE id=$1)
+			 UPDATE api_keys k SET last_used_at=now() FROM old WHERE k.id=$1 RETURNING old.prev`, keyID).Scan(&prev); e != nil {
+			return e
+		}
+		if prev == nil || time.Since(*prev) > time.Hour {
+			return audit.Record(ctx, tx, audit.Entry{ActorID: saID, ActorEmail: "svc:" + saID.String(),
+				Action: "iam.api_key_used", Target: "api_key:" + keyID.String()})
+		}
+		return nil
 	})
 	return auth.Principal{UserID: saID, TenantID: tenantID, Role: auth.Role(role), Email: "svc:" + saID.String()}, nil
 }

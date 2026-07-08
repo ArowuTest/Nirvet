@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/incident"
@@ -110,6 +112,49 @@ type ChangeHistoryEntry struct {
 var validSeverity = map[string]bool{"informational": true, "low": true, "medium": true, "high": true, "critical": true}
 var validChannel = map[string]bool{"email": true, "sms": true, "webhook": true, "teams": true, "slack": true}
 var validAuthorityMode = map[string]bool{"observe": true, "approval": true, "pre_authorized": true, "emergency": true}
+
+// validateEscalationAddress checks an escalation-contact address for its channel (Round-4 L4). The
+// URL channels (webhook/teams/slack) must be https and must NOT target an internal/loopback/link-
+// local host or the cloud metadata endpoint — §6.16 routing POSTs to these, so an unvalidated
+// address is an SSRF/exfil surface. Hostnames (non-literal-IP) pass here and are re-resolved+checked
+// by the notifier at send time (DNS-rebinding defence).
+func validateEscalationAddress(channel, address string) error {
+	address = strings.TrimSpace(address)
+	switch channel {
+	case "email":
+		if !strings.Contains(address, "@") || strings.ContainsAny(address, " \t") {
+			return httpx.ErrBadRequest("invalid email address")
+		}
+	case "sms":
+		if len(address) < 5 {
+			return httpx.ErrBadRequest("invalid phone number")
+		}
+	case "webhook", "teams", "slack":
+		u, err := url.Parse(address)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return httpx.ErrBadRequest(channel + " address must be an absolute https URL")
+		}
+		if isInternalHost(u.Hostname()) {
+			return httpx.ErrForbidden("webhook address may not target an internal, loopback, or metadata host")
+		}
+	}
+	return nil
+}
+
+// isInternalHost reports whether a host literal is an internal/loopback/link-local/metadata target.
+// Only literal IPs are decided here; a hostname returns false (re-checked after DNS at send time).
+func isInternalHost(host string) bool {
+	h := strings.ToLower(host)
+	if h == "localhost" || strings.HasSuffix(h, ".local") || strings.HasSuffix(h, ".internal") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	if ip == nil {
+		return false
+	}
+	// IsLinkLocalUnicast covers 169.254.0.0/16 incl. the 169.254.169.254 cloud metadata endpoint.
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
 
 // =========================== repository (governance) ===========================
 
@@ -265,16 +310,24 @@ func (s *Service) SetStatus(ctx context.Context, p auth.Principal, tenantID uuid
 	if !canTransition(cur.Status, to) {
 		return nil, httpx.ErrBadRequest(fmt.Sprintf("illegal status transition %s -> %s", cur.Status, to))
 	}
-	if err := s.repo.setStatus(ctx, tenantID, to); err != nil {
-		return nil, httpx.ErrInternal("could not update tenant status")
-	}
-	_ = s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+	// Round-4 M8: write the TEN-010 change-history + audit FIRST and PROPAGATE its error — a sensitive
+	// transition (active→legal_hold/archived) must never persist without its audit trail. The tenants
+	// registry is platform-level (WithSystem) and the history is tenant-RLS (WithTenant), so they can't
+	// share one tx; ordering history-before-status and failing on its error closes the evidentiary
+	// hole the previously-swallowed `_ =` left. (A rare status-update failure after history is written
+	// only leaves an extra history row on retry — never a status change with no history.)
+	if err := s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if e := recordChange(ctx, tx, tenantID, p, "status", "status", string(cur.Status), string(to)+" ("+reason+")"); e != nil {
 			return e
 		}
 		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "tenant.status_change",
 			Target: "tenant:" + tenantID.String(), Metadata: map[string]any{"from": cur.Status, "to": to, "reason": reason}})
-	})
+	}); err != nil {
+		return nil, httpx.ErrInternal("could not record tenant status change")
+	}
+	if err := s.repo.setStatus(ctx, tenantID, to); err != nil {
+		return nil, httpx.ErrInternal("could not update tenant status")
+	}
 	cur.Status = to
 	return cur, nil
 }
@@ -328,6 +381,12 @@ func (s *Service) AddEscalationContact(ctx context.Context, p auth.Principal, te
 	}
 	if !validChannel[in.Channel] {
 		return nil, httpx.ErrBadRequest("invalid channel")
+	}
+	// Round-4 L4: validate the address per channel at write time — §6.16 routing will POST to webhook/
+	// teams/slack addresses, so an unvalidated internal URL is an SSRF/exfil surface. The notifier
+	// re-checks at send time (defence in depth).
+	if err := validateEscalationAddress(in.Channel, in.Address); err != nil {
+		return nil, err
 	}
 	c := &EscalationContact{ID: uuid.New(), TenantID: tenantID, Name: in.Name, Role: in.Role,
 		MinSeverity: in.MinSeverity, OrderIndex: in.OrderIndex, Channel: in.Channel, Address: in.Address, Active: true}

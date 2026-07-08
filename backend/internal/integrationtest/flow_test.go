@@ -96,7 +96,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(db.Close)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	// A real tenant (SOAR reads tenants.authority_mode) + a user.
+	// A real tenant (SOAR resolves authority from authority_policies) + a user.
 	tn, err := tenant.NewService(tenant.NewRepository(db)).Create(ctx, tenant.CreateInput{Name: "itest-" + uuid.NewString()})
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
