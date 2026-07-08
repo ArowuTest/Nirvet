@@ -320,6 +320,7 @@ func main() {
 	mux.Handle("POST /notify/test", provider(notifyH.Test))
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
+	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
 	mux.Handle("GET /incidents/{id}/evidence-pack", provider(evidenceH.Pack))
 	// Asset inventory (§6.15)

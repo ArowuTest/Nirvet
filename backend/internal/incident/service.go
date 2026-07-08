@@ -260,6 +260,20 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Incident, err
 	return incs, nil
 }
 
+// AtRisk returns open incidents breaching or near-breaching their SLA, urgency-ordered,
+// with breach flags computed as of now (§6.8 at-risk queue).
+func (s *Service) AtRisk(ctx context.Context, tenantID uuid.UUID) ([]Incident, error) {
+	incs, err := s.repo.ListAtRisk(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for idx := range incs {
+		computeBreach(&incs[idx], now)
+	}
+	return incs, nil
+}
+
 // Get returns one incident with its SLA-breach status computed as of now.
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident, error) {
 	i, err := s.repo.Get(ctx, tenantID, id)

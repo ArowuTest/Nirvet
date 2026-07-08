@@ -61,6 +61,41 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID) ([]Incident, 
 	return out, err
 }
 
+// ListAtRisk returns open incidents that are already breaching, or due within the next
+// 30 minutes, ordered by the nearest deadline first — the SLA "at-risk" queue (§6.8).
+// Tenant-scoped via RLS.
+func (r *Repository) ListAtRisk(ctx context.Context, tenantID uuid.UUID) ([]Incident, error) {
+	var out []Incident
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at,
+			        acknowledged_at, ack_due_at, resolve_due_at
+			   FROM incidents
+			  WHERE closed_at IS NULL
+			    AND (
+			      (ack_due_at IS NOT NULL AND acknowledged_at IS NULL AND ack_due_at < now() + interval '30 minutes')
+			      OR (resolve_due_at IS NOT NULL AND resolve_due_at < now() + interval '30 minutes')
+			    )
+			  ORDER BY COALESCE(resolve_due_at, ack_due_at) ASC
+			  LIMIT 200`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var i Incident
+			if err := rows.Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category,
+				&i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt,
+				&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt); err != nil {
+				return err
+			}
+			out = append(out, i)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // Get returns one incident.
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident, error) {
 	var i Incident

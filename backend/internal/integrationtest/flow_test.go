@@ -379,6 +379,42 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("IncidentAtRiskQueue", func(t *testing.T) {
+		// §6.8 at-risk queue: an open incident past its resolve deadline shows up as
+		// at-risk with the breach flag set.
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "risk"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "risk-alert", Severity: "high", DedupeKey: ev.ID.String() + ":risk"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE incidents SET resolve_due_at = now() - interval '1 hour' WHERE id=$1`, inc.ID)
+			return e
+		}); err != nil {
+			t.Fatalf("backdate: %v", err)
+		}
+		atRisk, err := h.incSvc.AtRisk(h.ctx, h.tenantID)
+		if err != nil {
+			t.Fatalf("at-risk: %v", err)
+		}
+		found := false
+		for _, i := range atRisk {
+			if i.ID == inc.ID {
+				found = true
+				if !i.ResolveBreached {
+					t.Fatal("at-risk incident past resolve due must be flagged breached")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("a past-due open incident must appear in the at-risk queue")
+		}
+	})
+
 	t.Run("EntityGraphBlastRadius", func(t *testing.T) {
 		// §6.9: the entity graph gathers everything touching a ref — alerts, the
 		// incidents they belong to, and the matched asset.

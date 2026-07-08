@@ -30,6 +30,17 @@ func (h *Handler) PromoteFromAlert(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, inc)
 }
 
+// AtRisk handles GET /incidents/at-risk — open incidents breaching/near-breaching SLA.
+func (h *Handler) AtRisk(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	xs, err := h.svc.AtRisk(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"incidents": xs})
+}
+
 // List handles GET /incidents.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
