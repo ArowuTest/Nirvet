@@ -45,6 +45,26 @@ var validRiskClass = map[RiskClass]bool{
 	RiskInformational: true, RiskLow: true, RiskMedium: true, RiskHigh: true, RiskBusinessCritical: true,
 }
 
+// riskRank orders the §9.5 classes (higher = more dangerous). Used to CLAMP a tenant catalog
+// override so it can only RAISE an action's risk, never lower it (Round-4 M1: config may only
+// tighten a safety guarantee). An unknown class ranks as max (fail-closed).
+func riskRank(c RiskClass) int {
+	switch c {
+	case RiskInformational:
+		return 0
+	case RiskLow:
+		return 1
+	case RiskMedium:
+		return 2
+	case RiskHigh:
+		return 3
+	case RiskBusinessCritical:
+		return 4
+	default:
+		return 4
+	}
+}
+
 // Step is one action in a playbook.
 type Step struct {
 	Name             string    `json:"name"`

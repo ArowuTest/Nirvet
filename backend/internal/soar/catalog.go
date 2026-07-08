@@ -46,24 +46,50 @@ func unknownAction(actionKey string) ActionCatalog {
 
 // =========================== repository ===========================
 
-// resolveAction returns the effective catalog entry for an action_key: a tenant override wins over
-// the global default (ORDER BY tenant_id NULLS LAST → the non-null tenant row sorts first). RLS shows
-// global + own only. Returns (unknownAction, false) when nothing enabled matches (fail-closed).
+// resolveAction returns the effective catalog entry for an action_key. A tenant override may change
+// the executor/connector and may RAISE the risk class, but NEVER lower it: the effective risk is
+// max(seeded global class, tenant override class) — Round-4 M1, config may only tighten a safety
+// guarantee, so an override cannot relabel a business_critical action as low to bypass the Class-4
+// block. Loads both the global (authoritative seeded) row and the tenant override; RLS shows global
+// + own only. Returns (unknownAction=business_critical, false) when nothing enabled matches (fail-closed).
 func (r *Repository) resolveAction(ctx context.Context, tenantID uuid.UUID, actionKey string) (ActionCatalog, bool) {
-	var a ActionCatalog
+	var global, override *ActionCatalog
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
+		rows, err := tx.Query(ctx,
 			`SELECT id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled
 			   FROM soar_action_catalog
-			  WHERE action_key=$1 AND enabled = true AND (tenant_id = app_current_tenant() OR tenant_id IS NULL)
-			  ORDER BY tenant_id NULLS LAST
-			  LIMIT 1`, actionKey).
-			Scan(&a.ID, &a.TenantID, &a.ActionKey, &a.Title, &a.RiskClass, &a.Executor, &a.ConnectorKey, &a.Enabled)
+			  WHERE action_key=$1 AND enabled = true AND (tenant_id = app_current_tenant() OR tenant_id IS NULL)`, actionKey)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a ActionCatalog
+			if err := rows.Scan(&a.ID, &a.TenantID, &a.ActionKey, &a.Title, &a.RiskClass, &a.Executor, &a.ConnectorKey, &a.Enabled); err != nil {
+				return err
+			}
+			if a.TenantID == nil {
+				g := a
+				global = &g
+			} else {
+				o := a
+				override = &o
+			}
+		}
+		return rows.Err()
 	})
-	if err != nil {
+	if err != nil || (global == nil && override == nil) {
 		return unknownAction(actionKey), false
 	}
-	return a, true
+	// The override (if any) supplies executor/connector; risk is clamped up to the seeded class.
+	eff := global
+	if override != nil {
+		eff = override
+		if global != nil && riskRank(global.RiskClass) > riskRank(override.RiskClass) {
+			eff.RiskClass = global.RiskClass // override may only RAISE risk, never lower it
+		}
+	}
+	return *eff, true
 }
 
 func (r *Repository) listActionCatalog(ctx context.Context, tenantID uuid.UUID) ([]ActionCatalog, error) {

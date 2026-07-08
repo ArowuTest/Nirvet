@@ -66,6 +66,21 @@ func TestBusinessCriticalNeverAutonomous(t *testing.T) {
 	}
 }
 
+// TestRiskRankMonotonic locks the ordering the M1 override-clamp relies on: informational < low <
+// medium < high < business_critical, and an unknown class ranks as max (fail-closed). So
+// max(seeded, override) can only RAISE an action's risk, never lower it.
+func TestRiskRankMonotonic(t *testing.T) {
+	order := []RiskClass{RiskInformational, RiskLow, RiskMedium, RiskHigh, RiskBusinessCritical}
+	for i := 1; i < len(order); i++ {
+		if riskRank(order[i]) <= riskRank(order[i-1]) {
+			t.Fatalf("riskRank must increase: %s(%d) !> %s(%d)", order[i], riskRank(order[i]), order[i-1], riskRank(order[i-1]))
+		}
+	}
+	if riskRank("nonsense") != riskRank(RiskBusinessCritical) {
+		t.Fatalf("unknown class must rank as max (fail-closed)")
+	}
+}
+
 // fakeExecutor records calls and returns a preset outcome/error for dispatch tests.
 type fakeExecutor struct {
 	called bool

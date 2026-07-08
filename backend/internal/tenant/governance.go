@@ -393,6 +393,13 @@ func (s *Service) SetAuthorityPolicy(ctx context.Context, p auth.Principal, tena
 	if !validAuthorityMode[in.Mode] {
 		return nil, httpx.ErrBadRequest("invalid mode: observe|approval|pre_authorized|emergency")
 	}
+	// Round-4 L3: the blanket '*' catch-all may only set a RESTRICTIVE mode (observe|approval).
+	// Permissive modes (pre_authorized|emergency) auto-run actions, so they must be scoped to a
+	// specific action_type — a single customer-side change must not drop the response gate for EVERY
+	// action at once.
+	if in.ActionType == "*" && (in.Mode == "pre_authorized" || in.Mode == "emergency") {
+		return nil, httpx.ErrBadRequest("the '*' catch-all may only be 'observe' or 'approval'; scope pre_authorized/emergency to a specific action_type")
+	}
 	ap := &AuthorityPolicy{ID: uuid.New(), TenantID: tenantID, ActionType: in.ActionType, Mode: in.Mode,
 		ApproverRole: in.ApproverRole, BusinessHoursOnly: in.BusinessHoursOnly, Active: true}
 	err := s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {

@@ -256,8 +256,10 @@ func (s *Service) SetCorrelationPolicy(ctx context.Context, p auth.Principal, te
 	if in.PromoteThreshold < 1 || in.PromoteThreshold > 100 {
 		return nil, httpx.ErrBadRequest("promote_threshold must be between 1 and 100")
 	}
-	if in.MinAlerts < 1 {
-		return nil, httpx.ErrBadRequest("min_alerts_for_promotion must be >= 1")
+	// Corroboration floor (Round-4 L2 / R2 M-A): auto-promotion requires >= 2 alerts so a single
+	// crafted event can never spawn an incident. Config may tighten this (raise it) but not weaken it.
+	if in.MinAlerts < 2 {
+		return nil, httpx.ErrBadRequest("min_alerts_for_promotion must be >= 2 (anti-single-event-spam floor)")
 	}
 	pol := &CorrelationPolicy{TenantID: tenantID, WindowSeconds: in.WindowSeconds, PromoteThreshold: in.PromoteThreshold, MinAlerts: in.MinAlerts}
 	err := s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
