@@ -168,9 +168,11 @@ behind interfaces that already exist — not up front:
   model; POST /detections/import/sigma; supports selections/`and`, contains/startswith/endswith/re modifiers,
   list=OR, level→severity, attack.t* tags→MITRE; unsupported constructs error). Remaining: YARA/CEL/custom-DSL
   evaluators behind the same `Engine` seam; full Sigma condition grammar (or/not/`N of`/parentheses).
-- **Redis-backed distributed rate limiting** (scaling): Redis backend behind the `ratelimit` seam for N-replica
-  API (see scaling sequence above) — pull forward to the first horizontal scale-out.
+- **Redis-backed distributed rate limiting** (scaling): **DONE** — `ratelimit.Allower` interface + `RedisLimiter`
+  (atomic token-bucket Lua), selected by `NIRVET_REDIS_ADDR`; verified two instances share one global bucket.
+  Remaining: extend Redis to a general cache seam (session/hot-lookup) at the same scale point.
 - **Schema v1.1 — promote hot fields to columns** (ADR-0006): `mitre`, `ip`, `hostname`, `vendor`, `product`
   from `data` to indexed columns when analytics query patterns justify the column cost.
-- **ClickHouse event store** (ADR-0002 V1): implement the `EventStore` backend; review retention tiering.
-- **Dashboards** (UI): only after the above; the API contracts already exist (designer supplies HTML).
+- **NATS/Kafka queue backend** (scaling): behind the existing `queue` seam (ADR-0003) once event volume/worker
+  pools justify it (>500M/day) — after Redis, per the scaling sequence.
+- **Dashboards** (UI): the API contracts already exist (designer supplies HTML).

@@ -43,7 +43,9 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | crypto / ratelimit / blobstore | ✅ | — | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅² |
 
 ¹ ingestion audit = raw_events evidence trail (excluded from the mutation-audit middleware by design).
-² rate-limit state is in-memory (per-instance) — horizontal scale needs Redis (documented in ADR-0005/ratelimit).
+² rate limiting now has BOTH backends behind the `Allower` interface: in-memory (default) + a Redis token-bucket
+  limiter (global across replicas, `NIRVET_REDIS_ADDR`) — horizontal scale ✅. Redis limiter verified against a
+  real instance (burst/refill + two-instances-share-one-bucket).
 ³ incident is covered by the `Heartbeat_EndToEnd` integration test (promote → assign → note → playbook → close)
   and the `IncidentPromotion` test; assign/close/timeline links are all asserted. See `build/HEARTBEAT.md`.
 ⁴ ai unit tests cover the assistive-only guardrails: offline fallback restates OBSERVED evidence, never implies
