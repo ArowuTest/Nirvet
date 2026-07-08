@@ -23,13 +23,8 @@ const (
 	maxElevationSeconds = 28800 // 8 hours
 )
 
-// knownRoles are the roles an elevation may target (platform_admin is intentionally absent —
-// it is never grantable via elevation).
-var knownRoles = map[auth.Role]bool{
-	auth.RoleSOCManager: true, auth.RoleAnalystT1: true, auth.RoleAnalystT2: true,
-	auth.RoleAnalystT3: true, auth.RoleDetectionEng: true,
-	auth.RoleCustomerAdmin: true, auth.RoleCustomerViewer: true,
-}
+// knownRoles (the grantable-role allowlist an elevation may also target) is defined once in
+// roles.go and shared across the role-granting surfaces.
 
 // Elevation is a privileged-access grant.
 type Elevation struct {

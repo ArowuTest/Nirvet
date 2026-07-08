@@ -85,8 +85,9 @@ type SACreateInput struct {
 	Role auth.Role `json:"role"`
 }
 
-// CreateServiceAccount provisions a non-human principal. Least privilege: a service account
-// may never be a platform_admin (IAM-005).
+// CreateServiceAccount provisions a non-human principal. Least privilege (IAM-005): the role must
+// be a grantable, non-admin role, and — Round-4 H1 — a customer_admin may NOT mint a provider-role
+// service account (cross-domain BFLA). Same allowlist + domain guard as invitation creation.
 func (s *Service) CreateServiceAccount(ctx context.Context, p auth.Principal, tenantID uuid.UUID, in SACreateInput) (*ServiceAccount, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
@@ -95,8 +96,8 @@ func (s *Service) CreateServiceAccount(ctx context.Context, p auth.Principal, te
 	if in.Role == "" {
 		return nil, httpx.ErrBadRequest("role is required")
 	}
-	if in.Role == auth.RolePlatformAdmin {
-		return nil, httpx.ErrBadRequest("a service account may not hold platform_admin")
+	if err := validateGrantableRole(p.Role, in.Role); err != nil {
+		return nil, err
 	}
 	sa := &ServiceAccount{ID: uuid.New(), TenantID: tenantID, Name: in.Name, Role: in.Role, Active: true}
 	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {

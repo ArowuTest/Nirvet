@@ -60,11 +60,8 @@ func (s *Service) CreateInvitation(ctx context.Context, p auth.Principal, tenant
 	if in.Email == "" || !strings.Contains(in.Email, "@") {
 		return nil, "", httpx.ErrBadRequest("a valid email is required")
 	}
-	if in.Role == auth.RolePlatformAdmin || !knownRoles[in.Role] {
-		return nil, "", httpx.ErrBadRequest("role must be a grantable, non-admin role")
-	}
-	if !auth.IsProviderRole(p.Role) && auth.IsProviderRole(in.Role) {
-		return nil, "", httpx.ErrForbidden("cannot invite a provider role")
+	if err := validateGrantableRole(p.Role, in.Role); err != nil {
+		return nil, "", err
 	}
 	rb := make([]byte, 24)
 	if _, err := rand.Read(rb); err != nil {
