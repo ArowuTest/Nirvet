@@ -170,7 +170,7 @@ func (s *Service) AcceptInvitation(ctx context.Context, rawToken, password strin
 	if err != nil {
 		return nil, httpx.ErrInternal("could not set password")
 	}
-	u := &User{ID: uuid.New(), TenantID: tenantID, Email: email, Role: auth.Role(role), Status: UserActive}
+	u := &User{ID: uuid.New(), TenantID: tenantID, Email: email, PasswordHash: hash, Role: auth.Role(role), Status: UserActive}
 	err = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var exists bool
 		if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1)`, email).Scan(&exists); e != nil {
@@ -179,9 +179,8 @@ func (s *Service) AcceptInvitation(ctx context.Context, rawToken, password strin
 		if exists {
 			return errUserExists
 		}
-		if _, e := tx.Exec(ctx,
-			`INSERT INTO users (id, tenant_id, email, password_hash, role, status) VALUES ($1,$2,$3,$4,$5,'active')`,
-			u.ID, tenantID, email, hash, role); e != nil {
+		// Single INSERT definition (repository.CreateTx), atomic with the invite-claim + audit below.
+		if e := s.repo.CreateTx(ctx, tx, u); e != nil {
 			return e
 		}
 		// Claim the invite (one-time): only the winner flips accepted_at.

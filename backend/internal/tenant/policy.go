@@ -10,6 +10,7 @@ package tenant
 import (
 	"context"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
@@ -18,6 +19,42 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// policyCache memoises a tenant's SLA + correlation policy for a short TTL so the hot paths do
+// NOT hit the DB on every call — correlation.Correlate resolves the policy once per alert, and
+// SLA resolution runs on every incident open. Mirrors the threatintel enricher cache. A write
+// (SetSLAPolicy / SetCorrelationPolicy) invalidates the affected tenant so changes take effect at
+// once on the writing instance; other instances converge within the TTL (eventual consistency,
+// same as the enricher). Cross-instance staleness of a window/threshold change is harmless.
+type policyCache struct {
+	mu   sync.Mutex
+	ttl  time.Duration
+	sla  map[uuid.UUID]slaCacheEntry
+	corr map[uuid.UUID]corrCacheEntry
+}
+
+type slaCacheEntry struct {
+	bySeverity map[string][2]time.Duration // severity -> {ack, resolve}
+	expires    time.Time
+}
+
+type corrCacheEntry struct {
+	window           time.Duration
+	promoteThreshold int
+	minAlerts        int
+	expires          time.Time
+}
+
+func newPolicyCache(ttl time.Duration) *policyCache {
+	return &policyCache{ttl: ttl, sla: map[uuid.UUID]slaCacheEntry{}, corr: map[uuid.UUID]corrCacheEntry{}}
+}
+
+func (c *policyCache) invalidate(tenantID uuid.UUID) {
+	c.mu.Lock()
+	delete(c.sla, tenantID)
+	delete(c.corr, tenantID)
+	c.mu.Unlock()
+}
 
 // defaultSLASeconds is the single Go source of truth for the SLA defaults SeedGovernance writes
 // for a new tenant: {ack, resolve} seconds per severity. Mirrors migration 0035's backfill and
@@ -55,17 +92,45 @@ type SLAInput struct {
 }
 
 // ResolveSLA returns the tenant's configured ack/resolve deadlines for a severity as durations,
-// implementing incident.SLAResolver. On a missing row (or unknown severity) it returns (0,0,nil)
-// so the incident service falls back to its own default policy — never a zero-length SLA.
+// implementing incident.SLAResolver. Served from the per-tenant cache (one query per TTL, not one
+// per call). On a missing/unknown severity it returns (0,0,nil) so the incident service falls back
+// to its own default policy — never a zero-length SLA.
 func (s *Service) ResolveSLA(ctx context.Context, tenantID uuid.UUID, severity string) (ack, resolve time.Duration, err error) {
-	p, err := s.repo.getSLA(ctx, tenantID, severity)
-	if err == pgx.ErrNoRows {
-		return 0, 0, nil
-	}
+	m, err := s.slaBySeverity(ctx, tenantID)
 	if err != nil {
 		return 0, 0, err
 	}
-	return time.Duration(p.AckSeconds) * time.Second, time.Duration(p.ResolveSeconds) * time.Second, nil
+	if d, ok := m[severity]; ok {
+		return d[0], d[1], nil
+	}
+	return 0, 0, nil
+}
+
+// slaBySeverity returns the tenant's severity->{ack,resolve} map, cached for the policy-cache TTL
+// and loaded in a single query on a miss (all five rows), so the per-incident hot path does not
+// hit the DB every time.
+func (s *Service) slaBySeverity(ctx context.Context, tenantID uuid.UUID) (map[string][2]time.Duration, error) {
+	s.cache.mu.Lock()
+	ent, ok := s.cache.sla[tenantID]
+	s.cache.mu.Unlock()
+	if ok && time.Now().Before(ent.expires) {
+		return ent.bySeverity, nil
+	}
+	rows, err := s.repo.listSLA(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string][2]time.Duration, len(rows))
+	for _, p := range rows {
+		m[p.Severity] = [2]time.Duration{
+			time.Duration(p.AckSeconds) * time.Second,
+			time.Duration(p.ResolveSeconds) * time.Second,
+		}
+	}
+	s.cache.mu.Lock()
+	s.cache.sla[tenantID] = slaCacheEntry{bySeverity: m, expires: time.Now().Add(s.cache.ttl)}
+	s.cache.mu.Unlock()
+	return m, nil
 }
 
 // ListSLAPolicies returns the tenant's SLA targets, seeding defaults if none exist yet (so the
@@ -119,6 +184,7 @@ func (s *Service) SetSLAPolicy(ctx context.Context, p auth.Principal, tenantID u
 	if err != nil {
 		return nil, httpx.ErrInternal("could not set SLA policy")
 	}
+	s.cache.invalidate(tenantID) // subsequent resolves see the new value immediately on this instance
 	return pol, nil
 }
 
@@ -140,9 +206,16 @@ type CorrelationInput struct {
 }
 
 // ResolveCorrelationPolicy returns the tenant's correlation window + thresholds, implementing
-// correlation.PolicyResolver. On a missing row it returns the seeded defaults (never a zero
-// window, which would collapse all clustering).
+// correlation.PolicyResolver. Served from the per-tenant cache (one query per TTL, not one per
+// alert). On a missing row it returns the seeded defaults uncached (a transient pre-seed state;
+// every real tenant is seeded at Create) — never a zero window, which would collapse clustering.
 func (s *Service) ResolveCorrelationPolicy(ctx context.Context, tenantID uuid.UUID) (window time.Duration, promoteThreshold, minAlerts int, err error) {
+	s.cache.mu.Lock()
+	ent, ok := s.cache.corr[tenantID]
+	s.cache.mu.Unlock()
+	if ok && time.Now().Before(ent.expires) {
+		return ent.window, ent.promoteThreshold, ent.minAlerts, nil
+	}
 	p, err := s.repo.getCorrelationPolicy(ctx, tenantID)
 	if err == pgx.ErrNoRows {
 		return time.Duration(defaultCorrelationWindowSeconds) * time.Second, defaultCorrelationPromote, defaultCorrelationMinAlerts, nil
@@ -150,7 +223,11 @@ func (s *Service) ResolveCorrelationPolicy(ctx context.Context, tenantID uuid.UU
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	return time.Duration(p.WindowSeconds) * time.Second, p.PromoteThreshold, p.MinAlerts, nil
+	w := time.Duration(p.WindowSeconds) * time.Second
+	s.cache.mu.Lock()
+	s.cache.corr[tenantID] = corrCacheEntry{window: w, promoteThreshold: p.PromoteThreshold, minAlerts: p.MinAlerts, expires: time.Now().Add(s.cache.ttl)}
+	s.cache.mu.Unlock()
+	return w, p.PromoteThreshold, p.MinAlerts, nil
 }
 
 // GetCorrelationPolicy returns the tenant's correlation policy, seeding the default row if none
@@ -203,23 +280,11 @@ func (s *Service) SetCorrelationPolicy(ctx context.Context, p auth.Principal, te
 	if err != nil {
 		return nil, httpx.ErrInternal("could not set correlation policy")
 	}
+	s.cache.invalidate(tenantID) // subsequent resolves see the new value immediately on this instance
 	return pol, nil
 }
 
 // =========================== repository helpers ===========================
-
-func (r *Repository) getSLA(ctx context.Context, tenantID uuid.UUID, severity string) (*SLAPolicy, error) {
-	var p SLAPolicy
-	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
-			`SELECT tenant_id, severity, ack_seconds, resolve_seconds FROM sla_policies WHERE severity=$1`, severity).
-			Scan(&p.TenantID, &p.Severity, &p.AckSeconds, &p.ResolveSeconds)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
 
 func (r *Repository) listSLA(ctx context.Context, tenantID uuid.UUID) ([]SLAPolicy, error) {
 	var out []SLAPolicy

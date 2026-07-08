@@ -3,16 +3,22 @@ package tenant
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 )
 
 // Service holds tenant business logic.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo  *Repository
+	cache *policyCache // memoises SLA + correlation policy for the per-alert/per-incident hot paths
+}
 
 // NewService builds the service.
-func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+func NewService(repo *Repository) *Service {
+	return &Service{repo: repo, cache: newPolicyCache(30 * time.Second)}
+}
 
 // CreateInput is the payload to create a tenant.
 type CreateInput struct {

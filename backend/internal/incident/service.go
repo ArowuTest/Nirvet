@@ -11,6 +11,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/platform/safe"
+	sev "github.com/ArowuTest/nirvet/internal/platform/severity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -73,9 +74,6 @@ type Ticketer interface {
 type AssetContext interface {
 	TopCriticalityForRefs(ctx context.Context, tenantID uuid.UUID, refs []string) (criticality, ref string, found bool)
 }
-
-// severityRank orders the severity/criticality scale for escalation comparisons.
-var severityRank = map[string]int{"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 // Service holds incident business logic. It depends on the alert service to
 // promote alerts (one-way dependency: incident -> alert) and an optional notifier.
@@ -154,7 +152,7 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 	severity := a.Severity
 	var escalationNote string
 	if s.assets != nil {
-		if crit, ref, ok := s.assets.TopCriticalityForRefs(ctx, p.TenantID, []string{a.TargetRef, a.ActorRef}); ok && severityRank[crit] > severityRank[severity] {
+		if crit, ref, ok := s.assets.TopCriticalityForRefs(ctx, p.TenantID, []string{a.TargetRef, a.ActorRef}); ok && sev.Rank(crit) > sev.Rank(severity) {
 			escalationNote = fmt.Sprintf("Severity escalated %s→%s: affects %s-criticality asset %s", severity, crit, crit, ref)
 			severity = crit
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/severity"
 	"github.com/google/uuid"
 )
 
@@ -48,8 +49,6 @@ type Correlations interface {
 type Assets interface {
 	FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]asset.Asset, error)
 }
-
-var sevRank = map[string]int{"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 // Service assembles entity graphs.
 type Service struct {
@@ -102,9 +101,7 @@ func (s *Service) Build(ctx context.Context, tenantID uuid.UUID, ref string) (*G
 	}
 	maxSev := ""
 	for _, a := range alerts {
-		if sevRank[a.Severity] > sevRank[maxSev] {
-			maxSev = a.Severity
-		}
+		maxSev = severity.Worse(maxSev, a.Severity)
 	}
 	return &Graph{
 		Ref: ref, Asset: matched, Alerts: alerts, Incidents: incidents, Correlations: corrs,

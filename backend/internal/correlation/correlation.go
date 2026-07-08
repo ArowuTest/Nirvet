@@ -7,6 +7,7 @@ package correlation
 import (
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/severity"
 	"github.com/google/uuid"
 )
 
@@ -47,24 +48,6 @@ type Correlation struct {
 	FirstSeen   time.Time  `json:"first_seen"`
 	LastSeen    time.Time  `json:"last_seen"`
 	CreatedAt   time.Time  `json:"created_at"`
-}
-
-// severityRank orders canonical severities (higher = worse).
-func severityRank(s string) int {
-	switch s {
-	case "critical":
-		return 5
-	case "high":
-		return 4
-	case "medium":
-		return 3
-	case "low":
-		return 2
-	case "informational":
-		return 1
-	default:
-		return 0
-	}
 }
 
 // severityWeight is the base risk contribution of the worst severity in a cluster.
@@ -123,10 +106,5 @@ func mergeTechniques(existing, add []string) []string {
 	return out
 }
 
-// worseSeverity returns the more severe of two.
-func worseSeverity(a, b string) string {
-	if severityRank(b) > severityRank(a) {
-		return b
-	}
-	return a
-}
+// worseSeverity returns the more severe of two (canonical §10.2 ordering).
+func worseSeverity(a, b string) string { return severity.Worse(a, b) }

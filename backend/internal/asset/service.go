@@ -8,6 +8,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/severity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -107,11 +108,10 @@ func (s *Service) FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []str
 	return s.repo.FindByRefs(ctx, tenantID, refs)
 }
 
-var critRank = map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}
-
 // TopCriticalityForRefs returns the highest criticality (and its asset ref) among the
 // assets matching refs, so the incident module can escalate on a critical asset. Found
-// is false when no ref matches a known asset. Satisfies incident.AssetContext.
+// is false when no ref matches a known asset. Satisfies incident.AssetContext. Asset
+// criticality shares the canonical severity ordering (§10.2, internal/platform/severity).
 func (s *Service) TopCriticalityForRefs(ctx context.Context, tenantID uuid.UUID, refs []string) (string, string, bool) {
 	assets, err := s.repo.FindByRefs(ctx, tenantID, refs)
 	if err != nil || len(assets) == 0 {
@@ -119,7 +119,7 @@ func (s *Service) TopCriticalityForRefs(ctx context.Context, tenantID uuid.UUID,
 	}
 	best := assets[0]
 	for _, a := range assets[1:] {
-		if critRank[a.Criticality] > critRank[best.Criticality] {
+		if severity.Rank(a.Criticality) > severity.Rank(best.Criticality) {
 			best = a
 		}
 	}

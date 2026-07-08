@@ -12,19 +12,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// scopeTenant resolves the target tenant from {id} and enforces tenant scope.
+// scopeTenant resolves the target tenant from {id} and enforces tenant scope (shared guard).
 func (h *Handler) scopeTenant(w http.ResponseWriter, r *http.Request) (auth.Principal, uuid.UUID, bool) {
-	p, _ := auth.PrincipalFrom(r.Context())
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		httpx.Error(w, httpx.ErrBadRequest("invalid tenant id"))
-		return p, uuid.Nil, false
-	}
-	if p.Role != auth.RolePlatformAdmin && p.TenantID != id {
-		httpx.Error(w, httpx.ErrForbidden("cannot manage another tenant"))
-		return p, uuid.Nil, false
-	}
-	return p, id, true
+	return auth.ScopeToTenant(w, r, "id")
 }
 
 // CreateServiceAccount handles POST /admin/tenants/{id}/service-accounts.

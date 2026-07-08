@@ -15,14 +15,22 @@ type Repository struct{ db *database.DB }
 // NewRepository builds the repository.
 func NewRepository(db *database.DB) *Repository { return &Repository{db: db} }
 
-// Create inserts a user within the tenant's RLS context.
+// CreateTx inserts a user using an existing tenant-scoped transaction, so callers that must
+// create a user atomically with other writes (e.g. AcceptInvitation claiming the invite + audit
+// in one tx) share the single INSERT definition. The tx MUST already be in the user's tenant RLS
+// context.
+func (r *Repository) CreateTx(ctx context.Context, tx pgx.Tx, u *User) error {
+	return tx.QueryRow(ctx,
+		`INSERT INTO users (id, tenant_id, email, password_hash, role, status)
+		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING created_at`,
+		u.ID, u.TenantID, u.Email, u.PasswordHash, u.Role, u.Status,
+	).Scan(&u.CreatedAt)
+}
+
+// Create inserts a user within the tenant's RLS context (standalone transaction).
 func (r *Repository) Create(ctx context.Context, u *User) error {
 	return r.db.WithTenant(ctx, u.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
-			`INSERT INTO users (id, tenant_id, email, password_hash, role, status)
-			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING created_at`,
-			u.ID, u.TenantID, u.Email, u.PasswordHash, u.Role, u.Status,
-		).Scan(&u.CreatedAt)
+		return r.CreateTx(ctx, tx, u)
 	})
 }
 

@@ -12,21 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// scoped resolves the target tenant from the path and enforces tenant scope: a platform_admin
-// may target any tenant; anyone else (customer_admin) only their own. Returns ok=false and
-// writes the error response when denied.
+// scoped resolves the target tenant from {id} and enforces tenant scope via the shared guard:
+// a platform_admin may target any tenant; anyone else (customer_admin) only their own.
 func (h *Handler) scoped(w http.ResponseWriter, r *http.Request) (auth.Principal, uuid.UUID, bool) {
-	p, _ := auth.PrincipalFrom(r.Context())
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		httpx.Error(w, httpx.ErrBadRequest("invalid tenant id"))
-		return p, uuid.Nil, false
-	}
-	if p.Role != auth.RolePlatformAdmin && p.TenantID != id {
-		httpx.Error(w, httpx.ErrForbidden("cannot manage another tenant"))
-		return p, uuid.Nil, false
-	}
-	return p, id, true
+	return auth.ScopeToTenant(w, r, "id")
 }
 
 // GetProfile handles GET /admin/tenants/{id}/profile.
