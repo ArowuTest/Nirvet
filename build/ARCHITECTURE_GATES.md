@@ -586,3 +586,72 @@ approval-request UX (§6.16/designer).
 (fake executor: executed/failed) . Integration: playbook run against a catalog action with a fake connector
 executor asserts `executed` outcome + audit rows; run under `observe` still `pending_approval`. Migration applies;
 build/vet/gofmt/heartbeat green.
+
+---
+
+## Gate — §6.8 incident lifecycle depth, slice A (CASE-002/004/009) — reviewed Jul 2026
+
+**Why now.** Post-Round-4, first domain-depth slice. The audit flagged the incident model as thin, and
+grounding confirms it: the stage enum is only `new|triage|investigating|contained|closed` (0002 CHECK),
+`contained` is defined but NO code path reaches it (dead), `Close` just sets stage+note with no closure
+criteria, and the timeline has no internal-vs-customer visibility. This is core SOC workflow and unblocks
+§6.13 reporting/PIR.
+
+**SRS grounding.** CASE-002 incident lifecycle stages (opened→assigned→investigating→waiting_customer→
+containment_pending→contained→eradication→recovery→monitoring→closed→post_incident_review); CASE-003
+every case has disposition/root-cause/etc.; CASE-004 internal-only vs customer-visible notes; CASE-009
+closure criteria (disposition, root cause, impact, actions taken, lessons learned, customer ack). NIST
+800-61r3 Respond/Recover informs the eradication/recovery/monitoring/PIR structure.
+
+**In scope (slice A).**
+1. **Stage state machine (CASE-002).** Widen the stage vocabulary to the full CASE-002 chain (add
+   `assigned, waiting_customer, containment_pending, eradication, recovery, monitoring,
+   post_incident_review`); migration widens the CHECK. An allowed-transitions map (structural domain
+   vocabulary, mirroring `tenant.statusTransitions`), fail-closed on an illegal transition. New
+   `Transition(ctx, p, id, to, note)` service method + `POST /incidents/{id}/transition`; every
+   transition appends a timeline `status` entry and an audit row **atomically** (one tenant tx). Any
+   active stage may → `closed` (a false-positive can close early), so existing flows keep working; the
+   `contained` dead stage becomes reachable (investigating/containment_pending → contained →
+   eradication → …). Assign continues to move an unowned case toward `investigating`.
+2. **Closure criteria (CASE-009).** New nullable incident columns (disposition, root_cause, impact,
+   actions_taken, lessons_learned, customer_ack). Transitioning to `closed` REQUIRES a ClosureInput with
+   disposition + root_cause + impact + actions_taken (non-empty); disposition is validated against the
+   canonical SOC vocabulary (true_positive, false_positive, benign_true_positive, duplicate,
+   not_applicable — a structural enum like severity/stage, not a per-tenant tunable). `Close` becomes
+   Close(ClosureInput); the columns are persisted with the close in one tx; reopening (closed→
+   investigating) is allowed and audited.
+3. **Note visibility (CASE-004).** Add `visibility` (`internal|customer`, default `internal`) to
+   incident_timeline; migration widens the table + a CHECK. AddNote takes a visibility; system/status
+   entries default `internal`. A `CustomerTimeline` service method + `GET /incidents/{id}/customer-timeline`
+   returns only customer-visible entries, so a customer portal can never see analyst-only notes (enforced
+   at query time, not just UI).
+
+**Out of scope (slice B / later).** CASE-005 tasks (incident_tasks sub-entity — its own slice); CASE-007
+category templates + per-tenant disposition config (config tables; category stays a free string for now);
+CASE-006 parent-child / major-incident aggregation; INV-010 war-room; SLA re-computation on severity
+change mid-lifecycle (already handled at create).
+
+**Entities / schema / enums.**
+- `incidents`: +disposition, +root_cause, +impact, +actions_taken, +lessons_learned (text, default ''),
+  +customer_ack (bool default false). Stage CHECK widened (new migration DROP+ADD constraint, mirroring
+  0002/0028's status-widen pattern). No new index needed (stage filtering is over the tenant-scoped
+  list; existing incidents_tenant_created covers ordering).
+- `incident_timeline`: +visibility text default 'internal' CHECK (internal|customer).
+- Go: Stage constants added; `stageTransitions` map; `Disposition` validated set; `ClosureInput`;
+  `Incident` struct gains the closure fields; `TimelineEntry` gains Visibility.
+- **Idempotency**: a transition to the SAME stage is a no-op (returns current, like tenant.SetStatus);
+  closing an already-closed incident is idempotent. **Audit-in-tx** (house rule): stage change + timeline
+  + audit commit together via CreateWithSeed-style tx (extend repo with a Transition tx method).
+
+**Correctness invariants.**
+- Heartbeat stays green: its Assign→Close flow still works (investigating→closed is allowed; the heartbeat
+  Close call is updated to supply the now-required closure fields).
+- Illegal transition (e.g. closed→eradication) is rejected fail-closed.
+- Closing without the required closure fields is rejected (CASE-009), never a silent close.
+- A customer-timeline query NEVER returns an `internal` entry (tested with a mixed timeline).
+- RLS unchanged (all incident tables already tenant-RLS FORCE); no cross-tenant read.
+
+**Verify.** Unit: stage-transition legality (allowed/illegal/idempotent), disposition validation, closure
+required-fields. Integration: full lifecycle walk (triage→investigating→containment_pending→contained→
+eradication→recovery→monitoring→closed with closure) + illegal-transition rejection + customer-timeline
+filter (internal note hidden). Heartbeat green; migrations apply; build/vet/gofmt clean.

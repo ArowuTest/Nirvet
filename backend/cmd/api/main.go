@@ -460,8 +460,10 @@ func main() {
 	mux.Handle("GET /exposure/summary", provider(vulnH.Exposure))
 	// Entity graph (§6.9)
 	mux.Handle("GET /entities/graph", provider(entityGraphH.Graph))
+	mux.Handle("GET /incidents/{id}/customer-timeline", provider(incidentH.CustomerTimeline))
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
+	mux.Handle("POST /incidents/{id}/transition", provider(incidentH.Transition))
 	mux.Handle("POST /incidents/{id}/close", senior(incidentH.Close))
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))

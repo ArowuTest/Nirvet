@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/platform/safe"
@@ -406,20 +407,99 @@ func (s *Service) Timeline(ctx context.Context, tenantID, id uuid.UUID) ([]Timel
 	return s.repo.ListTimeline(ctx, tenantID, id)
 }
 
-// AddNote appends an analyst note.
-func (s *Service) AddNote(ctx context.Context, p auth.Principal, id uuid.UUID, note string) error {
+// CustomerTimeline returns only the customer-visible timeline entries (CASE-004) — the seam a
+// customer portal reads, so analyst-only notes never leak (filtered at query time).
+func (s *Service) CustomerTimeline(ctx context.Context, tenantID, id uuid.UUID) ([]TimelineEntry, error) {
+	return s.repo.ListCustomerTimeline(ctx, tenantID, id)
+}
+
+// AddNote appends an analyst note at the given visibility (internal|customer, CASE-004).
+func (s *Service) AddNote(ctx context.Context, p auth.Principal, id uuid.UUID, note, visibility string) error {
 	if note == "" {
 		return httpx.ErrBadRequest("note is required")
 	}
-	e := &TimelineEntry{ID: uuid.New(), IncidentID: id, Author: p.Email, Kind: "note", Note: note}
+	if visibility == "" {
+		visibility = VisibilityInternal
+	}
+	if visibility != VisibilityInternal && visibility != VisibilityCustomer {
+		return httpx.ErrBadRequest("visibility must be internal or customer")
+	}
+	e := &TimelineEntry{ID: uuid.New(), IncidentID: id, Author: p.Email, Kind: "note", Visibility: visibility, Note: note}
 	return s.repo.AddNote(ctx, p.TenantID, e)
 }
 
-// Close closes an incident with a closure note.
-func (s *Service) Close(ctx context.Context, p auth.Principal, id uuid.UUID, note string) error {
-	e := &TimelineEntry{ID: uuid.New(), IncidentID: id, Author: p.Email, Kind: "status", Note: "Closed: " + note}
-	if err := s.repo.Close(ctx, p.TenantID, id, e); err != nil {
-		return httpx.ErrNotFound("incident not closable")
+// noteSuffix appends an optional free-text note to a transition message.
+func noteSuffix(note string) string {
+	if strings.TrimSpace(note) == "" {
+		return ""
 	}
-	return nil
+	return " — " + note
+}
+
+// Transition moves an incident to a new stage, enforcing the CASE-002 state machine fail-closed.
+// Closing is NOT done here (it requires closure criteria — use Close). Reopen (closed→investigating)
+// and post_incident_review are valid transitions. Idempotent for a same-stage target.
+func (s *Service) Transition(ctx context.Context, p auth.Principal, id uuid.UUID, to Stage, note string) (*Incident, error) {
+	if !validStage(to) {
+		return nil, httpx.ErrBadRequest("unknown stage")
+	}
+	if to == StageClosed {
+		return nil, httpx.ErrBadRequest("closing requires closure criteria — use the close endpoint")
+	}
+	cur, err := s.repo.Get(ctx, p.TenantID, id)
+	if err != nil {
+		return nil, httpx.ErrNotFound("incident not found")
+	}
+	if cur.Stage == to {
+		return cur, nil // idempotent
+	}
+	if !canTransition(cur.Stage, to) {
+		return nil, httpx.ErrBadRequest(fmt.Sprintf("illegal stage transition %s -> %s", cur.Stage, to))
+	}
+	entry := &TimelineEntry{ID: uuid.New(), IncidentID: id, Author: p.Email, Kind: "status",
+		Note: fmt.Sprintf("Stage %s → %s%s", cur.Stage, to, noteSuffix(note))}
+	auditE := audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "incident.transition",
+		Target: "incident:" + id.String(), Metadata: map[string]any{"from": cur.Stage, "to": to}}
+	applied, err := s.repo.Transition(ctx, p.TenantID, id, cur.Stage, to, nil, entry, auditE)
+	if err != nil {
+		return nil, httpx.ErrInternal("could not transition incident")
+	}
+	if !applied {
+		return nil, httpx.ErrConflict("incident stage changed concurrently; retry")
+	}
+	cur.Stage = to
+	return cur, nil
+}
+
+// Close closes an incident, enforcing the CASE-009 closure criteria (disposition + root cause +
+// impact + actions taken). Any active stage may close (a false positive closes early). Idempotent.
+func (s *Service) Close(ctx context.Context, p auth.Principal, id uuid.UUID, in ClosureInput) (*Incident, error) {
+	if err := in.validate(); err != nil {
+		return nil, err
+	}
+	cur, err := s.repo.Get(ctx, p.TenantID, id)
+	if err != nil {
+		return nil, httpx.ErrNotFound("incident not found")
+	}
+	if cur.Stage == StageClosed {
+		return cur, nil // idempotent
+	}
+	if !canTransition(cur.Stage, StageClosed) {
+		return nil, httpx.ErrBadRequest(fmt.Sprintf("cannot close from stage %s", cur.Stage))
+	}
+	entry := &TimelineEntry{ID: uuid.New(), IncidentID: id, Author: p.Email, Kind: "status",
+		Note: fmt.Sprintf("Closed (%s): %s", in.Disposition, in.RootCause)}
+	auditE := audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "incident.close",
+		Target: "incident:" + id.String(), Metadata: map[string]any{"disposition": in.Disposition, "customer_ack": in.CustomerAck}}
+	applied, err := s.repo.Transition(ctx, p.TenantID, id, cur.Stage, StageClosed, &in, entry, auditE)
+	if err != nil {
+		return nil, httpx.ErrInternal("could not close incident")
+	}
+	if !applied {
+		return nil, httpx.ErrConflict("incident changed concurrently; retry")
+	}
+	cur.Stage = StageClosed
+	cur.Disposition, cur.RootCause, cur.Impact = string(in.Disposition), in.RootCause, in.Impact
+	cur.ActionsTaken, cur.LessonsLearned, cur.CustomerAck = in.ActionsTaken, in.LessonsLearned, in.CustomerAck
+	return cur, nil
 }

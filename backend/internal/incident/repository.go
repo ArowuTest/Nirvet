@@ -4,9 +4,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Repository persists incidents and timeline entries (tenant-scoped).
@@ -26,13 +28,57 @@ func (r *Repository) CreateTx(ctx context.Context, tx pgx.Tx, i *Incident) error
 	).Scan(&i.CreatedAt)
 }
 
-// AddTimelineTx inserts a timeline entry within an existing transaction.
+// AddTimelineTx inserts a timeline entry within an existing transaction. An unset visibility defaults
+// to internal (CASE-004) so nothing becomes customer-visible by accident.
 func (r *Repository) AddTimelineTx(ctx context.Context, tx pgx.Tx, e *TimelineEntry) error {
+	if e.Visibility == "" {
+		e.Visibility = VisibilityInternal
+	}
 	return tx.QueryRow(ctx,
-		`INSERT INTO incident_timeline (id, incident_id, author, kind, note)
-		 VALUES ($1,$2,$3,$4,$5) RETURNING at`,
-		e.ID, e.IncidentID, e.Author, e.Kind, e.Note,
+		`INSERT INTO incident_timeline (id, incident_id, author, kind, visibility, note)
+		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING at`,
+		e.ID, e.IncidentID, e.Author, e.Kind, e.Visibility, e.Note,
 	).Scan(&e.At)
+}
+
+// Transition applies a stage change atomically: it moves the incident from `from`→`to` (only if it
+// is still at `from` — optimistic concurrency, so two concurrent transitions can't both apply),
+// writes the closure columns when a ClosureInput is supplied (CASE-009), appends the timeline entry,
+// and records the audit row — all in one tenant tx (house rule: state + timeline + audit together).
+// Returns applied=false when the row was not at `from` (changed concurrently / not found).
+func (r *Repository) Transition(ctx context.Context, tenantID, id uuid.UUID, from, to Stage, closure *ClosureInput, entry *TimelineEntry, auditEntry audit.Entry) (bool, error) {
+	applied := false
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// closed_at is set on entering 'closed', cleared on reopen (→investigating), preserved otherwise.
+		var ct pgconn.CommandTag
+		var e error
+		if closure != nil {
+			ct, e = tx.Exec(ctx,
+				`UPDATE incidents SET stage=$3,
+				   closed_at = CASE WHEN $3='closed' THEN now() WHEN $3='investigating' THEN NULL ELSE closed_at END,
+				   disposition=$4, root_cause=$5, impact=$6, actions_taken=$7, lessons_learned=$8, customer_ack=$9
+				 WHERE id=$1 AND stage=$2`,
+				id, from, to, string(closure.Disposition), closure.RootCause, closure.Impact,
+				closure.ActionsTaken, closure.LessonsLearned, closure.CustomerAck)
+		} else {
+			ct, e = tx.Exec(ctx,
+				`UPDATE incidents SET stage=$3,
+				   closed_at = CASE WHEN $3='closed' THEN now() WHEN $3='investigating' THEN NULL ELSE closed_at END
+				 WHERE id=$1 AND stage=$2`, id, from, to)
+		}
+		if e != nil {
+			return e
+		}
+		if ct.RowsAffected() == 0 {
+			return nil // not at `from` anymore — applied stays false
+		}
+		applied = true
+		if e := r.AddTimelineTx(ctx, tx, entry); e != nil {
+			return e
+		}
+		return audit.Record(ctx, tx, auditEntry)
+	})
+	return applied, err
 }
 
 // List returns incidents for a tenant.
@@ -130,16 +176,18 @@ func (r *Repository) GetByIDs(ctx context.Context, tenantID uuid.UUID, ids []uui
 	return out, err
 }
 
-// Get returns one incident.
+// Get returns one incident, including the closure-criteria fields (CASE-009) for the detail view.
 func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident, error) {
 	var i Incident
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
 			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at,
-			        acknowledged_at, ack_due_at, resolve_due_at
+			        acknowledged_at, ack_due_at, resolve_due_at,
+			        disposition, root_cause, impact, actions_taken, lessons_learned, customer_ack
 			   FROM incidents WHERE id=$1`, id,
 		).Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category, &i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt,
-			&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt)
+			&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt,
+			&i.Disposition, &i.RootCause, &i.Impact, &i.ActionsTaken, &i.LessonsLearned, &i.CustomerAck)
 	})
 	if err != nil {
 		return nil, err
@@ -147,20 +195,36 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident
 	return &i, nil
 }
 
-// ListTimeline returns an incident's timeline.
+// ListTimeline returns an incident's full timeline (internal + customer entries).
 func (r *Repository) ListTimeline(ctx context.Context, tenantID, id uuid.UUID) ([]TimelineEntry, error) {
+	return r.listTimeline(ctx, tenantID, id, "")
+}
+
+// ListCustomerTimeline returns ONLY the customer-visible entries (CASE-004) — the seam a customer
+// portal reads, so analyst-only notes can never leak, enforced at query time.
+func (r *Repository) ListCustomerTimeline(ctx context.Context, tenantID, id uuid.UUID) ([]TimelineEntry, error) {
+	return r.listTimeline(ctx, tenantID, id, VisibilityCustomer)
+}
+
+func (r *Repository) listTimeline(ctx context.Context, tenantID, id uuid.UUID, visibility string) ([]TimelineEntry, error) {
 	var out []TimelineEntry
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx,
-			`SELECT id, incident_id, at, author, kind, note FROM incident_timeline
-			  WHERE incident_id=$1 ORDER BY at ASC`, id)
+		q := `SELECT id, incident_id, at, author, kind, visibility, note FROM incident_timeline
+		       WHERE incident_id=$1`
+		args := []any{id}
+		if visibility != "" {
+			q += ` AND visibility=$2`
+			args = append(args, visibility)
+		}
+		q += ` ORDER BY at ASC`
+		rows, err := tx.Query(ctx, q, args...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var e TimelineEntry
-			if err := rows.Scan(&e.ID, &e.IncidentID, &e.At, &e.Author, &e.Kind, &e.Note); err != nil {
+			if err := rows.Scan(&e.ID, &e.IncidentID, &e.At, &e.Author, &e.Kind, &e.Visibility, &e.Note); err != nil {
 				return err
 			}
 			out = append(out, e)
@@ -188,21 +252,6 @@ func (r *Repository) Assign(ctx context.Context, tenantID, id, ownerID uuid.UUID
 			        acknowledged_at = COALESCE(acknowledged_at, now()),
 			        stage = CASE WHEN stage IN ('new','triage') THEN 'investigating' ELSE stage END
 			  WHERE id = $1 AND stage <> 'closed'`, id, ownerID)
-		if err != nil {
-			return err
-		}
-		if ct.RowsAffected() == 0 {
-			return pgx.ErrNoRows
-		}
-		return r.AddTimelineTx(ctx, tx, e)
-	})
-}
-
-// Close marks an incident closed and records a timeline entry.
-func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID, e *TimelineEntry) error {
-	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		ct, err := tx.Exec(ctx,
-			`UPDATE incidents SET stage='closed', closed_at=now() WHERE id=$1 AND stage <> 'closed'`, id)
 		if err != nil {
 			return err
 		}

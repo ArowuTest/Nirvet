@@ -455,6 +455,67 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	// §6.8 slice A: the full CASE-002 stage machine, CASE-009 closure criteria, CASE-004 note visibility.
+	t.Run("IncidentLifecycleWalk", func(t *testing.T) {
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "lifecycle"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "lifecycle-alert", Severity: "high", DedupeKey: ev.ID.String() + ":lc"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID) // starts at 'triage'
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		// Illegal skip is rejected (triage → eradication).
+		if _, err := h.incSvc.Transition(h.ctx, h.principal, inc.ID, incident.StageEradication, ""); err == nil {
+			t.Fatal("illegal transition triage->eradication must be rejected")
+		}
+		// Walk the CASE-002 chain.
+		for _, st := range []incident.Stage{
+			incident.StageInvestigating, incident.StageContainmentPending, incident.StageContained,
+			incident.StageEradication, incident.StageRecovery, incident.StageMonitoring,
+		} {
+			if _, err := h.incSvc.Transition(h.ctx, h.principal, inc.ID, st, "advancing"); err != nil {
+				t.Fatalf("transition to %s: %v", st, err)
+			}
+		}
+		// CASE-009: closing without the required criteria is rejected.
+		if _, err := h.incSvc.Close(h.ctx, h.principal, inc.ID, incident.ClosureInput{Disposition: incident.DispTruePositive}); err == nil {
+			t.Fatal("close without root_cause/impact/actions must be rejected")
+		}
+		closed, err := h.incSvc.Close(h.ctx, h.principal, inc.ID, incident.ClosureInput{
+			Disposition: incident.DispTruePositive, RootCause: "rc", Impact: "im", ActionsTaken: "act"})
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if closed.Stage != incident.StageClosed || closed.Disposition != string(incident.DispTruePositive) {
+			t.Fatalf("closed incident wrong: stage=%s disp=%s", closed.Stage, closed.Disposition)
+		}
+		// CASE-004: the customer timeline must exclude internal notes.
+		if err := h.incSvc.AddNote(h.ctx, h.principal, inc.ID, "analyst-only detail", incident.VisibilityInternal); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.incSvc.AddNote(h.ctx, h.principal, inc.ID, "customer-facing update", incident.VisibilityCustomer); err != nil {
+			t.Fatal(err)
+		}
+		cust, _ := h.incSvc.CustomerTimeline(h.ctx, h.tenantID, inc.ID)
+		var haveCustomer bool
+		for _, e := range cust {
+			if e.Visibility != incident.VisibilityCustomer {
+				t.Fatalf("customer timeline leaked a %s entry", e.Visibility)
+			}
+			if e.Note == "analyst-only detail" {
+				t.Fatal("internal note leaked to the customer timeline")
+			}
+			if e.Note == "customer-facing update" {
+				haveCustomer = true
+			}
+		}
+		if !haveCustomer {
+			t.Fatal("customer timeline missing the customer-facing note")
+		}
+	})
+
 	t.Run("IncidentAtRiskQueue", func(t *testing.T) {
 		// §6.8 at-risk queue: an open incident past its resolve deadline shows up as
 		// at-risk with the breach flag set.
@@ -1455,8 +1516,8 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("10. incident should move to investigating on assignment, got %s", reloaded.Stage)
 		}
 
-		// 11. Timeline: an analyst note is recorded on the investigation timeline.
-		if err := h.incSvc.AddNote(h.ctx, h.principal, inc.ID, "Confirmed malware on finance laptop; isolating."); err != nil {
+		// 11. Timeline: an analyst note is recorded on the investigation timeline (internal visibility).
+		if err := h.incSvc.AddNote(h.ctx, h.principal, inc.ID, "Confirmed malware on finance laptop; isolating.", incident.VisibilityInternal); err != nil {
 			t.Fatalf("11. add timeline note: %v", err)
 		}
 
@@ -1480,8 +1541,12 @@ func TestIntegration(t *testing.T) {
 			}
 		}
 
-		// 13. Close incident: with a closure note (records a status timeline entry).
-		if err := h.incSvc.Close(h.ctx, h.principal, inc.ID, "Contained and remediated."); err != nil {
+		// 13. Close incident: closure requires the CASE-009 criteria (disposition/root-cause/impact/actions).
+		if _, err := h.incSvc.Close(h.ctx, h.principal, inc.ID, incident.ClosureInput{
+			Disposition: incident.DispTruePositive, RootCause: "Malware via phishing attachment",
+			Impact: "One finance laptop; contained before spread", ActionsTaken: "Isolated host, reset creds, remediated",
+			LessonsLearned: "Tighten attachment filtering", CustomerAck: true,
+		}); err != nil {
 			t.Fatalf("13. close incident: %v", err)
 		}
 		closed, _ := h.incSvc.Get(h.ctx, h.tenantID, inc.ID)

@@ -96,7 +96,7 @@ func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "assigned"})
 }
 
-// AddNote handles POST /incidents/{id}/notes.
+// AddNote handles POST /incidents/{id}/notes with optional {"visibility":"internal|customer"}.
 func (h *Handler) AddNote(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -105,21 +105,38 @@ func (h *Handler) AddNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Note string `json:"note"`
+		Note       string `json:"note"`
+		Visibility string `json:"visibility"`
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.AddNote(r.Context(), p, id, in.Note); err != nil {
+	if err := h.svc.AddNote(r.Context(), p, id, in.Note, in.Visibility); err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]string{"status": "note_added"})
 }
 
-// Close handles POST /incidents/{id}/close.
-func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
+// CustomerTimeline handles GET /incidents/{id}/customer-timeline — customer-visible entries only.
+func (h *Handler) CustomerTimeline(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	tl, err := h.svc.CustomerTimeline(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"timeline": tl})
+}
+
+// Transition handles POST /incidents/{id}/transition with {"stage":"...","note":"..."} (CASE-002).
+func (h *Handler) Transition(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -127,12 +144,38 @@ func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Note string `json:"note"`
+		Stage string `json:"stage"`
+		Note  string `json:"note"`
 	}
-	_ = httpx.Decode(r, &in)
-	if err := h.svc.Close(r.Context(), p, id, in.Note); err != nil {
+	if err := httpx.Decode(r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "closed"})
+	inc, err := h.svc.Transition(r.Context(), p, id, Stage(in.Stage), in.Note)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, inc)
+}
+
+// Close handles POST /incidents/{id}/close with the CASE-009 closure criteria.
+func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	var in ClosureInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	inc, err := h.svc.Close(r.Context(), p, id, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, inc)
 }

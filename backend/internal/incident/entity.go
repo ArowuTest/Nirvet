@@ -8,16 +8,41 @@ import (
 	"github.com/google/uuid"
 )
 
-// Stage in the incident lifecycle (doc 03 §5).
+// Stage in the incident lifecycle — the full SRS CASE-002 chain. The allowed transitions between
+// stages are the stageTransitions state machine (transitions.go); this is the vocabulary.
 type Stage string
 
 const (
-	StageNew           Stage = "new"
-	StageTriage        Stage = "triage"
-	StageInvestigating Stage = "investigating"
-	StageContained     Stage = "contained"
-	StageClosed        Stage = "closed"
+	StageNew                Stage = "new"
+	StageTriage             Stage = "triage"
+	StageAssigned           Stage = "assigned"
+	StageInvestigating      Stage = "investigating"
+	StageWaitingCustomer    Stage = "waiting_customer"
+	StageContainmentPending Stage = "containment_pending"
+	StageContained          Stage = "contained"
+	StageEradication        Stage = "eradication"
+	StageRecovery           Stage = "recovery"
+	StageMonitoring         Stage = "monitoring"
+	StageClosed             Stage = "closed"
+	StagePostIncidentReview Stage = "post_incident_review"
 )
+
+// Disposition is the canonical SOC outcome vocabulary recorded at closure (CASE-009). Structural
+// domain vocabulary (like severity/stage), not a per-tenant tunable.
+type Disposition string
+
+const (
+	DispTruePositive       Disposition = "true_positive"
+	DispFalsePositive      Disposition = "false_positive"
+	DispBenignTruePositive Disposition = "benign_true_positive"
+	DispDuplicate          Disposition = "duplicate"
+	DispNotApplicable      Disposition = "not_applicable"
+)
+
+var validDisposition = map[Disposition]bool{
+	DispTruePositive: true, DispFalsePositive: true, DispBenignTruePositive: true,
+	DispDuplicate: true, DispNotApplicable: true,
+}
 
 // Incident is a security case.
 type Incident struct {
@@ -30,6 +55,14 @@ type Incident struct {
 	OwnerID   *uuid.UUID `json:"owner_id,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+
+	// Closure criteria (CASE-009), populated on the transition to 'closed'. Empty until then.
+	Disposition    string `json:"disposition,omitempty"`
+	RootCause      string `json:"root_cause,omitempty"`
+	Impact         string `json:"impact,omitempty"`
+	ActionsTaken   string `json:"actions_taken,omitempty"`
+	LessonsLearned string `json:"lessons_learned,omitempty"`
+	CustomerAck    bool   `json:"customer_ack"`
 
 	// SLA timers (SRS §6.8). Due-times are stamped at creation from the severity
 	// policy; acknowledged_at on first ownership. The *Breached flags are derived on
@@ -47,6 +80,13 @@ type TimelineEntry struct {
 	IncidentID uuid.UUID `json:"incident_id"`
 	At         time.Time `json:"at"`
 	Author     string    `json:"author"`
-	Kind       string    `json:"kind"` // note|status|action|evidence
+	Kind       string    `json:"kind"`       // note|status|action|evidence
+	Visibility string    `json:"visibility"` // internal|customer (CASE-004); default internal
 	Note       string    `json:"note"`
 }
+
+// visibility values (CASE-004).
+const (
+	VisibilityInternal = "internal"
+	VisibilityCustomer = "customer"
+)
