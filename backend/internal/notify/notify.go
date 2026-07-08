@@ -10,16 +10,18 @@ import (
 	"net/http"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 )
 
 // Message is an outbound notification.
 type Message struct {
-	To      string `json:"to"`
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
-	Channel string `json:"channel"` // log | email | teams | slack (defaults to log)
+	To       string    `json:"to"`
+	Subject  string    `json:"subject"`
+	Body     string    `json:"body"`
+	Channel  string    `json:"channel"`             // log | email | sms | teams | slack (defaults to log)
+	TenantID uuid.UUID `json:"tenant_id,omitempty"` // used by email/sms to resolve the tenant's sender config
 }
 
 // Channel delivers a message over one transport.
@@ -41,7 +43,9 @@ func (c *logChannel) Send(_ context.Context, m Message) error {
 type Service struct {
 	channels map[string]Channel
 	log      *slog.Logger
-	outbox   *OutboxRepository // durable delivery queue (nil = direct dispatch only)
+	outbox   *OutboxRepository   // durable delivery queue (nil = direct dispatch only)
+	senders  *SenderRepo         // per-tenant email/sms sender config (nil = email/sms unavailable)
+	cipher   crypto.SecretCipher // vault for sender secrets (nil = email/sms unavailable)
 }
 
 // NewService builds the dispatcher with the log channel plus the real webhook/Teams/Slack channels
@@ -89,15 +93,43 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
 // Test handles POST /notify/test — dispatch a message (default log channel).
 func (h *Handler) Test(w http.ResponseWriter, r *http.Request) {
-	_, _ = auth.PrincipalFrom(r.Context())
+	p, _ := auth.PrincipalFrom(r.Context())
 	var m Message
 	if err := httpx.Decode(r, &m); err != nil {
 		httpx.Error(w, err)
 		return
 	}
+	m.TenantID = p.TenantID // email/sms resolve the caller tenant's sender config
 	if err := h.svc.Dispatch(r.Context(), m); err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "dispatched"})
+}
+
+// ConfigureSender handles PUT /notify/senders — configure a tenant email/sms sender (COMM-001). The
+// secret is vault-encrypted; it is never returned.
+func (h *Handler) ConfigureSender(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in SenderInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.ConfigureSender(r.Context(), p.TenantID, in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "configured"})
+}
+
+// ListSenders handles GET /notify/senders — tenant sender configs (secrets omitted).
+func (h *Handler) ListSenders(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	xs, err := h.svc.ListSenders(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list senders"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"senders": xs})
 }

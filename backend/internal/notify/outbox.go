@@ -122,7 +122,7 @@ func (s *Service) Drain(ctx context.Context, limit int) (int, error) {
 	}
 	sent := 0
 	for _, it := range items {
-		derr := s.Dispatch(ctx, Message{To: it.Recipient, Subject: it.Subject, Body: it.Body, Channel: it.Channel})
+		derr := s.Dispatch(ctx, Message{To: it.Recipient, Subject: it.Subject, Body: it.Body, Channel: it.Channel, TenantID: it.TenantID})
 		if derr != nil {
 			_ = s.outbox.markFailed(ctx, it.TenantID, it.ID, it.Attempts, derr.Error())
 			continue

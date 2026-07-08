@@ -157,7 +157,8 @@ func main() {
 	// Durable notification outbox: notifications are enqueued transactionally and
 	// delivered by a background dispatcher with retry (R3 §6.5 — no silent drop).
 	outboxRepo := notify.NewOutboxRepository(db)
-	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
+	notifySvc := notify.NewService(log).WithOutbox(outboxRepo).
+		WithSenders(notify.NewSenderRepo(db), cipher, notify.DefaultSMSClient()) // §6.16 email/SMS via per-tenant sender config
 	notifyH := notify.NewHandler(notifySvc)
 	// Break-glass access fires an automatic alert (§6.2 IAM-006).
 	iamSvc.WithAlerter(notifySvc)
@@ -460,6 +461,9 @@ func main() {
 	mux.Handle("PUT /billing/entitlements", padmin(billingH.Set))
 	// notifications
 	mux.Handle("POST /notify/test", senior(notifyH.Test))
+	// §6.16 per-tenant email/SMS sender config (COMM-001); secrets vault-encrypted, manager-gated.
+	mux.Handle("GET /notify/senders", provider(notifyH.ListSenders))
+	mux.Handle("PUT /notify/senders", manager(notifyH.ConfigureSender))
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}

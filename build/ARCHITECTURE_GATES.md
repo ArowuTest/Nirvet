@@ -888,3 +888,30 @@ endpoint (alerts-per-cluster ratio, largest cluster, single-alert-cluster %) to 
 gates promotion); storm threshold config-floored; tenant isolation; GET never writes. Verify: unit
 (explain factor math, effective severity/risk precedence, suppression active-window logic, storm trip) +
 integration (override persists + wins + audited, suppression blocks promotion, storm flags, isolation).
+
+---
+
+## Gate — §6.16 notification → FULL — reviewed Jul 2026
+
+Drive §6.16 PARTIAL→FULL. Done: webhook/Teams/Slack channels (SSRF-safe), escalation routing, durable
+outbox + dispatcher, in-platform log channel. Two slices close the rest.
+
+**Slice B (COMM-001 email/SMS via per-tenant sender config).** The headline gap ("needs vault sender
+config"). A notification_senders table holds per-tenant, per-channel sender config: email = SMTP
+host/port/from/username + vault-encrypted password (crypto.SecretCipher, per-tenant); sms = provider
+POST URL + vault-encrypted API key. Real emailChannel (net/smtp, STARTTLS) and smsChannel (generic JSON
+POST {to,message} + Bearer, via an outbound client) look up the sender by the message's tenant, decrypt
+the secret at send time, and deliver — so an email/sms outbox row is delivered, not dead-lettered, once a
+tenant configures a sender. Message gains TenantID, threaded through the outbox Drain. Unconfigured →
+graceful dead-letter (existing retry/cap). Sender secrets are write-only (never returned).
+
+**Slice C (COMM-006/007/008/009).** notification_templates (tenant+global, per-channel, per-locale,
+{{var}} render) so producers reference a template key + vars (COMM-007) with locale selection (COMM-008);
+throttle/digest (per-tenant window that de-dupes or batches repeated notifications, COMM-006); secure
+expiring links (signed, TTL-bounded token over a resource ref, verified on access, COMM-009).
+
+**Invariants.** Sender secrets vault-encrypted per tenant + never serialized; tenant isolation on senders/
+templates; SMS/email delivery honors the existing at-least-once outbox + dead-letter cap; SMTP uses TLS;
+config-first (no hardcoded provider). Verify: unit (sender secret round-trip via cipher, template render,
+throttle window) + integration (configure sender → email/sms channel resolves + attempts delivery,
+tenant isolation on senders, unconfigured dead-letters).
