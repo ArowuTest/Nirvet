@@ -40,3 +40,44 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, c)
 }
+
+// Explain handles GET /correlations/{id}/explain — the risk-factor breakdown (COR-006).
+func (h *Handler) Explain(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid correlation id"))
+		return
+	}
+	c, factors, err := h.svc.Explain(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"correlation":        c,
+		"factors":            factors,
+		"effective_risk":     c.EffectiveRisk(),
+		"effective_severity": c.EffectiveSeverity(),
+	})
+}
+
+// Override handles PUT /correlations/{id}/override — analyst severity/risk override (COR-009).
+func (h *Handler) Override(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid correlation id"))
+		return
+	}
+	var in OverrideInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Override(r.Context(), p.TenantID, id, p.UserID, in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "overridden"})
+}

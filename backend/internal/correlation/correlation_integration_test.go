@@ -77,11 +77,43 @@ func TestCorrelation_ClustersByEntity(t *testing.T) {
 	// The list is risk-ranked; the critical cluster ranks above the low one.
 	list, _ := svc.List(ctx, tn.ID, "open")
 	for i := 1; i < len(list); i++ {
-		if list[i-1].RiskScore < list[i].RiskScore {
+		if list[i-1].EffectiveRisk() < list[i].EffectiveRisk() {
 			t.Fatalf("list must be risk-ranked desc: %+v", list)
 		}
 	}
+
+	// COR-006 explainability: the factor breakdown reconstructs the computed risk from stored signals.
+	expC, factors, err := svc.Explain(ctx, tn.ID, cid1)
+	if err != nil || len(factors) != 4 {
+		t.Fatalf("explain: %d factors err=%v", len(factors), err)
+	}
+	sum := 0
+	for _, f := range factors {
+		sum += f.Contribution
+	}
+	if want := expC.RiskScore; sum < want { // clamp means sum can exceed, never be below the clamped value's inputs
+		t.Fatalf("explain factors (%d) below risk score (%d)", sum, want)
+	}
+
+	// COR-009 analyst override: reason mandatory; override wins as effective risk/severity.
+	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), correlation.OverrideInput{Severity: "low", Risk: ptr(15)}); err == nil {
+		t.Fatal("override without a reason must be rejected")
+	}
+	rk := 15
+	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), correlation.OverrideInput{Severity: "low", Risk: &rk, Reason: "confirmed benign maintenance"}); err != nil {
+		t.Fatalf("override: %v", err)
+	}
+	after, _ := svc.Get(ctx, tn.ID, cid1)
+	if after.EffectiveSeverity() != "low" || after.EffectiveRisk() != 15 || after.OverrideReason == "" {
+		t.Fatalf("override should win as effective values: %+v", after)
+	}
+	// The computed values are preserved underneath the override.
+	if after.MaxSeverity != "critical" {
+		t.Fatalf("computed max severity must be preserved under override, got %q", after.MaxSeverity)
+	}
 }
+
+func ptr(i int) *int { return &i }
 
 // stubIncidenter records the incidents a correlation would auto-open.
 type stubIncidenter struct{ opened int }

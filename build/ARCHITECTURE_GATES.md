@@ -860,3 +860,31 @@ the timeline; GET handlers never write (RLS aborted-tx rule).
 create task + update status (timeline entry written), link parent + reject cycle + reject cross-tenant,
 category set validated against seeded config + rejected when unknown, tenant isolation on tasks/categories.
 Heartbeat green; build/vet/gofmt clean.
+
+---
+
+## Gate — §6.7 correlation → FULL — reviewed Jul 2026
+
+Drive §6.7 PARTIAL→FULL. Already done: clustering, config window/threshold/min-alerts, corroboration floor,
+exactly-once auto-promotion, concurrency-safe update. Two slices close the rest.
+
+**Slice B (COR-006 explainability + COR-009 analyst override).** Persist max_confidence on the cluster;
+add an Explain(cluster) that returns the per-factor risk contribution breakdown (severity base, volume,
+technique breadth, confidence) so an analyst sees WHY a cluster scored as it did (COR-006). Add an
+analyst override of severity/risk with a required reason, audited, overridden_by/at recorded (COR-009);
+List/Get order and display by the EFFECTIVE severity/risk (override wins). Overrides may only be set by
+provider roles; the reason is mandatory. Migration adds columns; scanOne/SELECTs updated uniformly.
+
+**Slice C (COR-007 suppression windows + COR-008 storm mode + COR-010 over-correlation).** A
+correlation_suppressions config table (match by entity or technique, time-bounded maintenance window):
+a matching cluster is still formed but auto-promotion is suppressed while active, flagged suppressed with
+the reason (COR-007). Storm mode: a per-tenant storm threshold (clusters opened per hour) in
+correlation_policies; when exceeded, Correlate stops opening N incidents and the coverage endpoint reports
+storm state so the UI can switch to incident-command aggregation (COR-008). An over-correlation metric
+endpoint (alerts-per-cluster ratio, largest cluster, single-alert-cluster %) to detect over-grouping
+(COR-010). All thresholds config, not constants.
+
+**Invariants.** Overrides tighten/annotate only via audited endpoint; suppression never drops alerts (only
+gates promotion); storm threshold config-floored; tenant isolation; GET never writes. Verify: unit
+(explain factor math, effective severity/risk precedence, suppression active-window logic, storm trip) +
+integration (override persists + wins + audited, suppression blocks promotion, storm flags, isolation).

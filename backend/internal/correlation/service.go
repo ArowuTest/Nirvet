@@ -82,7 +82,10 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 		c.AlertCount++
 		c.MaxSeverity = worseSeverity(c.MaxSeverity, severity)
 		c.Techniques = mergeTechniques(c.Techniques, mitre)
-		c.RiskScore = RiskScore(c.MaxSeverity, c.AlertCount, len(c.Techniques), confidence)
+		if confidence > c.MaxConfidence {
+			c.MaxConfidence = confidence
+		}
+		c.RiskScore = RiskScore(c.MaxSeverity, c.AlertCount, len(c.Techniques), c.MaxConfidence)
 	})
 	if err != nil {
 		return uuid.Nil, individual, err
@@ -91,7 +94,8 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 		c = &Correlation{
 			ID: uuid.New(), TenantID: tenantID, Entity: entity, Status: StatusOpen,
 			AlertCount: 1, MaxSeverity: severity, Techniques: mergeTechniques(nil, mitre),
-			RiskScore: RiskScore(severity, 1, len(mitre), confidence),
+			MaxConfidence: confidence,
+			RiskScore:     RiskScore(severity, 1, len(mitre), confidence),
 		}
 		if err := s.repo.Create(ctx, c); err != nil {
 			return uuid.Nil, individual, err
@@ -145,4 +149,57 @@ func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Correlation
 		return nil, httpx.ErrNotFound("correlation not found")
 	}
 	return c, nil
+}
+
+// Explain returns the risk-factor breakdown for a cluster (COR-006).
+func (s *Service) Explain(ctx context.Context, tenantID, id uuid.UUID) (*Correlation, []Factor, error) {
+	c, err := s.repo.Get(ctx, tenantID, id)
+	if err != nil {
+		return nil, nil, httpx.ErrNotFound("correlation not found")
+	}
+	return c, Explain(c.MaxSeverity, c.AlertCount, len(c.Techniques), c.MaxConfidence), nil
+}
+
+// OverrideInput is an analyst severity/risk override with a mandatory reason (COR-009).
+type OverrideInput struct {
+	Severity string `json:"severity"` // "" leaves severity unoverridden
+	Risk     *int   `json:"risk"`     // nil leaves risk unoverridden
+	Reason   string `json:"reason"`
+}
+
+// Override records an analyst's adjustment of a cluster's severity/risk with a reason (COR-009). At
+// least one of severity/risk must be provided; the reason is mandatory (audited via mutation middleware).
+func (s *Service) Override(ctx context.Context, tenantID, id uuid.UUID, by uuid.UUID, in OverrideInput) error {
+	if in.Reason == "" {
+		return httpx.ErrBadRequest("an override reason is required")
+	}
+	if in.Severity == "" && in.Risk == nil {
+		return httpx.ErrBadRequest("provide a severity and/or risk to override")
+	}
+	var sev *string
+	if in.Severity != "" {
+		if !validSeverity(in.Severity) {
+			return httpx.ErrBadRequest("invalid severity")
+		}
+		sev = &in.Severity
+	}
+	if in.Risk != nil && (*in.Risk < 0 || *in.Risk > 100) {
+		return httpx.ErrBadRequest("risk must be 0-100")
+	}
+	applied, err := s.repo.Override(ctx, tenantID, id, sev, in.Risk, in.Reason, by)
+	if err != nil {
+		return httpx.ErrInternal("could not apply override")
+	}
+	if !applied {
+		return httpx.ErrNotFound("correlation not found")
+	}
+	return nil
+}
+
+func validSeverity(s string) bool {
+	switch s {
+	case "informational", "low", "medium", "high", "critical":
+		return true
+	}
+	return false
 }

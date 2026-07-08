@@ -48,6 +48,53 @@ type Correlation struct {
 	FirstSeen   time.Time  `json:"first_seen"`
 	LastSeen    time.Time  `json:"last_seen"`
 	CreatedAt   time.Time  `json:"created_at"`
+
+	// MaxConfidence is the highest per-alert confidence seen, persisted so the risk breakdown
+	// (COR-006) can be reconstructed on read.
+	MaxConfidence int `json:"max_confidence"`
+
+	// Analyst override of severity/risk (COR-009). Nil pointers = no override; when set, the
+	// effective severity/risk (EffectiveSeverity/EffectiveRisk) is the override.
+	SeverityOverride *string    `json:"severity_override,omitempty"`
+	RiskOverride     *int       `json:"risk_override,omitempty"`
+	OverrideReason   string     `json:"override_reason,omitempty"`
+	OverriddenBy     *uuid.UUID `json:"overridden_by,omitempty"`
+	OverriddenAt     *time.Time `json:"overridden_at,omitempty"`
+}
+
+// EffectiveSeverity returns the analyst-overridden severity when set, else the computed max severity.
+func (c *Correlation) EffectiveSeverity() string {
+	if c.SeverityOverride != nil && *c.SeverityOverride != "" {
+		return *c.SeverityOverride
+	}
+	return c.MaxSeverity
+}
+
+// EffectiveRisk returns the analyst-overridden risk when set, else the computed risk score.
+func (c *Correlation) EffectiveRisk() int {
+	if c.RiskOverride != nil {
+		return *c.RiskOverride
+	}
+	return c.RiskScore
+}
+
+// Factor is one contributing signal in a cluster's risk breakdown (COR-006).
+type Factor struct {
+	Name         string `json:"name"`
+	Contribution int    `json:"contribution"`
+	Detail       string `json:"detail"`
+}
+
+// Explain returns the per-factor breakdown of a cluster's computed risk (COR-006) — the same terms
+// RiskScore sums, exposed so an analyst can see WHY a cluster scored as it did. Contributions are the
+// pre-clamp additive terms; their sum may exceed the clamped RiskScore of 100.
+func Explain(maxSeverity string, alertCount, distinctTechniques, maxConfidence int) []Factor {
+	return []Factor{
+		{Name: "severity", Contribution: severityWeight(maxSeverity), Detail: "worst severity in cluster: " + maxSeverity},
+		{Name: "volume", Contribution: clamp(alertCount, 0, 5) * 4, Detail: "correlated alert count"},
+		{Name: "technique_breadth", Contribution: clamp(distinctTechniques, 0, 5) * 4, Detail: "distinct ATT&CK techniques"},
+		{Name: "confidence", Contribution: clamp(maxConfidence, 0, 100) / 10, Detail: "highest detection confidence"},
+	}
 }
 
 // severityWeight is the base risk contribution of the worst severity in a cluster.

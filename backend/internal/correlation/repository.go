@@ -19,9 +19,9 @@ func NewRepository(db *database.DB) *Repository { return &Repository{db: db} }
 func (r *Repository) Create(ctx context.Context, c *Correlation) error {
 	return r.db.WithTenant(ctx, c.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`INSERT INTO correlations (id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING first_seen, last_seen, created_at`,
-			c.ID, c.TenantID, c.Entity, c.Status, c.AlertCount, c.MaxSeverity, c.RiskScore, c.Techniques,
+			`INSERT INTO correlations (id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques, max_confidence)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING first_seen, last_seen, created_at`,
+			c.ID, c.TenantID, c.Entity, c.Status, c.AlertCount, c.MaxSeverity, c.RiskScore, c.Techniques, c.MaxConfidence,
 		).Scan(&c.FirstSeen, &c.LastSeen, &c.CreatedAt)
 	})
 }
@@ -36,7 +36,8 @@ func (r *Repository) UpdateActive(ctx context.Context, tenantID uuid.UUID, entit
 		var c Correlation
 		err := scanOne(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
-			        incident_id, first_seen, last_seen, created_at
+			        incident_id, first_seen, last_seen, created_at, max_confidence,
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at
 			   FROM correlations
 			  WHERE entity=$1 AND status IN ('open','promoted') AND last_seen >= $2
 			  ORDER BY last_seen DESC LIMIT 1
@@ -49,9 +50,9 @@ func (r *Repository) UpdateActive(ctx context.Context, tenantID uuid.UUID, entit
 		}
 		mutate(&c)
 		ct, err := tx.Exec(ctx,
-			`UPDATE correlations SET alert_count=$2, max_severity=$3, risk_score=$4, techniques=$5, last_seen=now()
+			`UPDATE correlations SET alert_count=$2, max_severity=$3, risk_score=$4, techniques=$5, max_confidence=$6, last_seen=now()
 			  WHERE id=$1`,
-			c.ID, c.AlertCount, c.MaxSeverity, c.RiskScore, c.Techniques)
+			c.ID, c.AlertCount, c.MaxSeverity, c.RiskScore, c.Techniques, c.MaxConfidence)
 		if err != nil {
 			return err
 		}
@@ -89,16 +90,35 @@ func (r *Repository) SetIncident(ctx context.Context, tenantID, id, incidentID u
 	})
 }
 
-// List returns a tenant's correlations, highest risk first.
+// Override records an analyst's severity/risk override for a cluster with a reason (COR-009). applied is
+// false if the cluster is not in this tenant.
+func (r *Repository) Override(ctx context.Context, tenantID, id uuid.UUID, severity *string, risk *int, reason string, by uuid.UUID) (bool, error) {
+	applied := false
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx,
+			`UPDATE correlations
+			    SET severity_override=$2, risk_override=$3, override_reason=$4, overridden_by=$5, overridden_at=now()
+			  WHERE id=$1`, id, severity, risk, reason, by)
+		if err != nil {
+			return err
+		}
+		applied = ct.RowsAffected() == 1
+		return nil
+	})
+	return applied, err
+}
+
+// List returns a tenant's correlations, highest EFFECTIVE risk first (override wins over computed).
 func (r *Repository) List(ctx context.Context, tenantID uuid.UUID, status string) ([]Correlation, error) {
 	var out []Correlation
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
-			        incident_id, first_seen, last_seen, created_at
+			        incident_id, first_seen, last_seen, created_at, max_confidence,
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at
 			   FROM correlations
 			  WHERE ($1='' OR status=$1)
-			  ORDER BY risk_score DESC, last_seen DESC LIMIT 200`, status)
+			  ORDER BY COALESCE(risk_override, risk_score) DESC, last_seen DESC LIMIT 200`, status)
 		if err != nil {
 			return err
 		}
@@ -122,7 +142,8 @@ func (r *Repository) ListByEntity(ctx context.Context, tenantID uuid.UUID, entit
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
-			        incident_id, first_seen, last_seen, created_at
+			        incident_id, first_seen, last_seen, created_at, max_confidence,
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at
 			   FROM correlations WHERE entity=$1 ORDER BY last_seen DESC LIMIT 100`, entity)
 		if err != nil {
 			return err
@@ -146,7 +167,8 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Correlat
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return scanOne(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
-			        incident_id, first_seen, last_seen, created_at
+			        incident_id, first_seen, last_seen, created_at, max_confidence,
+			        severity_override, risk_override, override_reason, overridden_by, overridden_at
 			   FROM correlations WHERE id=$1`, id), &c)
 	})
 	if err != nil {
@@ -159,7 +181,8 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scanOne(row scanner, c *Correlation) error {
 	return row.Scan(&c.ID, &c.TenantID, &c.Entity, &c.Status, &c.AlertCount, &c.MaxSeverity,
-		&c.RiskScore, &c.Techniques, &c.IncidentID, &c.FirstSeen, &c.LastSeen, &c.CreatedAt)
+		&c.RiskScore, &c.Techniques, &c.IncidentID, &c.FirstSeen, &c.LastSeen, &c.CreatedAt,
+		&c.MaxConfidence, &c.SeverityOverride, &c.RiskOverride, &c.OverrideReason, &c.OverriddenBy, &c.OverriddenAt)
 }
 
 func scanRow(rows pgx.Rows, c *Correlation) error { return scanOne(rows, c) }
