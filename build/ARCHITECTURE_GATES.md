@@ -161,6 +161,54 @@ behind interfaces that already exist — not up front:
   with ClickHouse enabled that count should read from the EventStore (small follow-up). Alerts/incidents (the
   system of record) are unaffected. **Deferred:** BigQuery cold tier + retention tiering (ADR-0002 §4), OpenSearch.
 
+## Case-management & investigation arc — §6.8/§6.9/§6.12/§6.13/§6.15 (Jul 2026)
+
+Process note: these were built in a fast sequence and the gate entries are backfilled
+here to restore the design-review record (gate-before-build resumes from now). All fit
+the flow at *Incident → Timeline → (Investigation) → Reporting*, none are load-bearing
+for the heartbeat (HEARTBEAT.md line 45): the spine stayed green on Postgres AND
+ClickHouse after every commit. All map to real SRS §6 domains + MVP FRs (FR-002 asset,
+FR-006 timeline, FR-007 evidence, FR-008 SLA).
+
+- **Incident SLA timers + lifecycle (§6.8 case mgmt / FR-008).** Per-severity ack/resolve
+  targets in code (`incident/sla.go`), due-times stamped at creation, `acknowledged_at`
+  on first ownership, derived breach flags on read (migration 0020). Breach **alerting**:
+  system sweeper (SECURITY DEFINER `incidents_sla_breaches`, mirrors the ingest reconciler)
+  notifies + timelines once per breach (migration 0021). **Reporting posture** + **at-risk
+  queue** (`GET /incidents/at-risk`). *Invariants:* tenant-scoped; notify best-effort;
+  sweeper idempotent via notified markers. *Deferred:* SLA policy per-tenant config,
+  business-hours calendars, breach dashboard widget.
+- **Asset inventory + criticality escalation (§6.15 / FR-002).** Tenant asset registry
+  (`internal/asset`, migration 0022, RLS+FORCE, upsert on ref). A promoted alert on a
+  MORE-critical asset raises incident severity (never lowers) + tightens SLA + timelines
+  it (`incident.WithAssetContext`). *Invariants:* tenant-scoped; escalation only fires on
+  a matching more-critical asset, so the heartbeat (no registered asset) is unchanged.
+  *Deferred:* vulnerability + exposure records, external asset-source sync, identity assets.
+- **Entity graph (§6.9 — the section is literally "…and Entity Graph").** Read-only
+  blast-radius view `GET /entities/graph?ref=` composing alerts+incidents+correlations+asset
+  for a ref (`internal/entitygraph`, no table; added `alert.ListByRef`,
+  `correlation.ListByEntity`). *Invariants:* pure composition over tenant-scoped reads —
+  a graph can only hold the caller's own tenant data. *Deferred:* multi-hop relationship
+  edges, graph visualisation payload, time-window scoping.
+- **Evidence-pack export (§6.13 — "…and Evidence Packs" / FR-007).** `GET
+  /incidents/{id}/evidence-pack` bundles case+timeline+alerts+events+assets+audit with a
+  SHA-256 tamper-evident manifest (`internal/evidence`; added `eventstore.GetByIDs` on both
+  backends, `audit.FindByActionContains`). *Invariants:* tenant-scoped composition;
+  read-only; audit trail is the append-only log. *Deferred:* signed/PDF export, object-store
+  archival of generated packs, chain-of-custody signature.
+- **AI incident triage (§6.12).** `POST /incidents/{id}/triage` — assistive-only assessment
+  composing incident+SLA+affected-assets+alerts+MITRE (`ai.WithIncidentContext`). *Invariants
+  (doc 04 §3):* assistive-only (recommends via approval, never executes), tenant-scoped
+  retrieval, evidence-linked (refs listed, observed vs inferred), full audit
+  (`ai.triage_incident`), offline deterministic fallback when unkeyed. *Deferred:* RAG over
+  case history, agentic multi-step investigation, eval harness.
+- **Detection rule-pack (§6.6).** Broadened the global catalogue 5→11 rules across more
+  ATT&CK tactics (execution/privesc/evasion/exfil/persistence/account-manipulation),
+  migration 0023, inserted by the migrator (superuser, bypasses forced RLS). *Invariants:*
+  global rules (tenant_id NULL) apply to all tenants; tenants still add their own; fits the
+  Normalize→Detect stage. *Deferred:* aggregation/threshold rules (brute-force needs a
+  windowed count the per-event condition model can't express), coverage heatmap.
+
 ## Next gates (before starting)
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 ## Gate: SAML 2.0 SSO (SP-initiated) — §6.2 IAM-001 — reviewed Jul 2026

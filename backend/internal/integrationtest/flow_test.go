@@ -318,6 +318,31 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("DetectionRulePackFires", func(t *testing.T) {
+		// A global rule-pack rule (Suspicious script execution / T1059, migration 0023)
+		// fires on a PowerShell-execution event out of the box — no tenant rules needed.
+		if _, err := h.ingest.Ingest(h.ctx, h.tenantID, ingestion.IngestInput{
+			Source: "dtest", NativeID: "ps-" + uuid.NewString(),
+			ClassName: "Process", ActivityName: "powershell encoded command", Severity: "high",
+			ActorRef: "user:ps", TargetRef: "host:ps",
+		}); err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("worker: %v", err)
+		}
+		alerts, _ := h.alertSvc.List(h.ctx, h.tenantID, "")
+		found := false
+		for _, a := range alerts {
+			if strings.Contains(a.Title, "Suspicious script execution") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("global rule-pack rule 'Suspicious script execution' must fire on a PowerShell event")
+		}
+	})
+
 	t.Run("IngestDedupeAndDetect", func(t *testing.T) {
 		in := ingestion.IngestInput{Source: "itest", NativeID: "e1", ClassName: "Malware xyz", Severity: "critical", ActorRef: "user:x", TargetRef: "host:h1"}
 		dk, err := h.ingest.Ingest(h.ctx, h.tenantID, in)
