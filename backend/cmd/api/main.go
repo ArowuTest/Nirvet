@@ -152,6 +152,8 @@ func main() {
 	// Asset inventory (§6.15): tenant-scoped assets with business criticality.
 	assetSvc := asset.NewService(asset.NewRepository(db))
 	assetH := asset.NewHandler(assetSvc)
+	// A critical affected asset escalates incident severity + tightens SLA (§6.8/§6.15).
+	incidentSvc.WithAssetContext(assetSvc)
 
 	// Evidence-pack export (§6.13): composes case + alert + event + asset + audit reads.
 	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, db))

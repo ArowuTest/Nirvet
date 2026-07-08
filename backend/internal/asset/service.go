@@ -81,3 +81,22 @@ func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Asset, erro
 func (s *Service) FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]Asset, error) {
 	return s.repo.FindByRefs(ctx, tenantID, refs)
 }
+
+var critRank = map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+// TopCriticalityForRefs returns the highest criticality (and its asset ref) among the
+// assets matching refs, so the incident module can escalate on a critical asset. Found
+// is false when no ref matches a known asset. Satisfies incident.AssetContext.
+func (s *Service) TopCriticalityForRefs(ctx context.Context, tenantID uuid.UUID, refs []string) (string, string, bool) {
+	assets, err := s.repo.FindByRefs(ctx, tenantID, refs)
+	if err != nil || len(assets) == 0 {
+		return "", "", false
+	}
+	best := assets[0]
+	for _, a := range assets[1:] {
+		if critRank[a.Criticality] > critRank[best.Criticality] {
+			best = a
+		}
+	}
+	return best.Criticality, best.Ref, true
+}

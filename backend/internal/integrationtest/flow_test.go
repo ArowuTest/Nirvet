@@ -139,6 +139,7 @@ func newHarness(t *testing.T) *harness {
 	// High-risk correlation clusters auto-open an incident (§6.7).
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 	assetSvc := asset.NewService(asset.NewRepository(db))
+	incSvc.WithAssetContext(assetSvc) // critical-asset escalation (§6.8/§6.15)
 
 	return &harness{
 		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, approver: approver, email: email,
@@ -372,6 +373,56 @@ func TestIntegration(t *testing.T) {
 		tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
 		if len(tl) == 0 {
 			t.Fatal("incident should have a seed timeline entry")
+		}
+	})
+
+	t.Run("IncidentEscalatesForCriticalAsset", func(t *testing.T) {
+		// §6.8/§6.15: a high-severity alert on a CRITICAL asset promotes to a CRITICAL
+		// incident (severity raised, never lowered), with the escalation on the timeline.
+		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:crown-jewel", Name: "Crown Jewel DB", Kind: "host", Criticality: "critical"}); err != nil {
+			t.Fatalf("register critical asset: %v", err)
+		}
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "esc", TargetRef: "host:crown-jewel"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "esc-alert", Severity: "high", DedupeKey: ev.ID.String() + ":esc"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		if inc.Severity != "critical" {
+			t.Fatalf("incident severity should escalate high→critical for a critical asset, got %q", inc.Severity)
+		}
+		tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, inc.ID)
+		escalated := false
+		for _, e := range tl {
+			if strings.Contains(e.Note, "Severity escalated") {
+				escalated = true
+			}
+		}
+		if !escalated {
+			t.Fatal("escalation must be recorded on the incident timeline")
+		}
+		// A medium-severity alert on the same critical asset also escalates to critical.
+		ev2 := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "medium", Source: "esc", TargetRef: "host:crown-jewel"}
+		a2, _, _ := h.alertSvc.CreateFromEvent(h.ctx, ev2, alert.Spec{Title: "esc2", Severity: "medium", DedupeKey: ev2.ID.String() + ":esc2"})
+		inc2, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a2.ID)
+		if err != nil {
+			t.Fatalf("promote2: %v", err)
+		}
+		if inc2.Severity != "critical" {
+			t.Fatalf("medium alert on critical asset should escalate to critical, got %q", inc2.Severity)
+		}
+		// Control: an alert on an UNknown asset keeps its own severity (no escalation).
+		ev3 := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "low", Source: "esc", TargetRef: "host:unmanaged"}
+		a3, _, _ := h.alertSvc.CreateFromEvent(h.ctx, ev3, alert.Spec{Title: "esc3", Severity: "low", DedupeKey: ev3.ID.String() + ":esc3"})
+		inc3, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a3.ID)
+		if err != nil {
+			t.Fatalf("promote3: %v", err)
+		}
+		if inc3.Severity != "low" {
+			t.Fatalf("alert on unmanaged asset must NOT escalate, got %q", inc3.Severity)
 		}
 	})
 

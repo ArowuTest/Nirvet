@@ -36,6 +36,16 @@ type Ticketer interface {
 	MirrorIncident(ctx context.Context, tenantID uuid.UUID, title, severity, body string) (ref, url string, err error)
 }
 
+// AssetContext resolves the highest business criticality among a set of entity refs,
+// so an incident affecting a critical asset can be escalated (SRS §6.8/§6.15).
+// Implemented by asset.Service; optional (nil = no escalation).
+type AssetContext interface {
+	TopCriticalityForRefs(ctx context.Context, tenantID uuid.UUID, refs []string) (criticality, ref string, found bool)
+}
+
+// severityRank orders the severity/criticality scale for escalation comparisons.
+var severityRank = map[string]int{"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
 // Service holds incident business logic. It depends on the alert service to
 // promote alerts (one-way dependency: incident -> alert) and an optional notifier.
 type Service struct {
@@ -44,6 +54,7 @@ type Service struct {
 	notifier  Notifier
 	assignees Assignees
 	ticketer  Ticketer
+	assets    AssetContext
 }
 
 // NewService builds the service. notifier and assignees may be nil.
@@ -57,6 +68,9 @@ func (s *Service) WithAssignees(a Assignees) *Service { s.assignees = a; return 
 // WithTicketer wires outbound ITSM mirroring (best-effort on incident open).
 func (s *Service) WithTicketer(t Ticketer) *Service { s.ticketer = t; return s }
 
+// WithAssetContext wires asset-criticality escalation (best-effort on incident open).
+func (s *Service) WithAssetContext(a AssetContext) *Service { s.assets = a; return s }
+
 // CreateFromAlert promotes an alert into a new incident (atomic write).
 func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID uuid.UUID) (*Incident, error) {
 	a, err := s.alertSvc.Get(ctx, p.TenantID, alertID)
@@ -64,15 +78,26 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 		return nil, err
 	}
 	owner := p.UserID
+	// Asset-criticality escalation (§6.8/§6.15): if this alert affects a more critical
+	// asset than its own severity, raise the incident's severity (never lower). This
+	// also tightens the SLA, since due-times are computed from the escalated severity.
+	severity := a.Severity
+	var escalationNote string
+	if s.assets != nil {
+		if crit, ref, ok := s.assets.TopCriticalityForRefs(ctx, p.TenantID, []string{a.TargetRef, a.ActorRef}); ok && severityRank[crit] > severityRank[severity] {
+			escalationNote = fmt.Sprintf("Severity escalated %s→%s: affects %s-criticality asset %s", severity, crit, crit, ref)
+			severity = crit
+		}
+	}
 	// SLA: an analyst promoted and owns this case, so it is acknowledged now; the
-	// ack/resolve deadlines follow the severity policy (§6.8).
+	// ack/resolve deadlines follow the (possibly escalated) severity policy (§6.8).
 	now := time.Now()
-	ackDue, resolveDue := slaFor(a.Severity).dueTimes(now)
+	ackDue, resolveDue := slaFor(severity).dueTimes(now)
 	inc := &Incident{
 		ID:             uuid.New(),
 		TenantID:       p.TenantID,
 		Title:          a.Title,
-		Severity:       a.Severity,
+		Severity:       severity,
 		Category:       "uncategorised",
 		Stage:          StageTriage,
 		OwnerID:        &owner,
@@ -86,6 +111,12 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 	}
 	if err := s.repo.CreateFromAlertTx(ctx, p.TenantID, inc, seed, promote); err != nil {
 		return nil, httpx.ErrInternal("could not promote alert")
+	}
+	// Record the asset-driven escalation on the timeline (best-effort).
+	if escalationNote != "" {
+		_ = s.repo.AddNote(ctx, p.TenantID, &TimelineEntry{
+			ID: uuid.New(), IncidentID: inc.ID, Author: "system", Kind: "status", Note: escalationNote,
+		})
 	}
 	// Customer notification (draft; external delivery gated by approval). Closes
 	// the end-to-end flow: alert -> incident -> notification.
