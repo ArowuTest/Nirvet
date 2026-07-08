@@ -29,3 +29,19 @@ func (h *Handler) SummariseAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, sum)
 }
+
+// TriageIncident handles POST /incidents/{id}/triage — an assistive triage assessment.
+func (h *Handler) TriageIncident(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	sum, err := h.svc.TriageIncident(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, sum)
+}

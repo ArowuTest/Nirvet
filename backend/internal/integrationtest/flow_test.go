@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/ai"
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/billing"
@@ -63,6 +64,7 @@ type harness struct {
 	evidence *evidence.Service
 	assetSvc *asset.Service
 	graphSvc *entitygraph.Service
+	aiSvc    *ai.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -159,6 +161,7 @@ func newHarness(t *testing.T) *harness {
 		assetSvc: assetSvc,
 		evidence: evidence.NewService(incSvc, alertSvc, events, assetSvc, db),
 		graphSvc: entitygraph.NewService(alertSvc, incSvc, corrSvc, assetSvc),
+		aiSvc:    ai.NewService(ai.NewGateway("", "test-model"), alertSvc, db).WithIncidentContext(incSvc, assetSvc),
 	}
 }
 
@@ -412,6 +415,56 @@ func TestIntegration(t *testing.T) {
 		}
 		if !found {
 			t.Fatal("a past-due open incident must appear in the at-risk queue")
+		}
+	})
+
+	t.Run("AICopilotIncidentTriage", func(t *testing.T) {
+		// §6.12: assistive-only triage grounded in the incident's own evidence, with the
+		// offline deterministic fallback (no LLM key). Guardrails: assistive flag,
+		// observed-only confidence, actions routed via approval, evidence-linked, audited.
+		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:triage", Name: "Triage Host", Kind: "host", Criticality: "critical"}); err != nil {
+			t.Fatalf("asset: %v", err)
+		}
+		ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "ai", TargetRef: "host:triage"}
+		a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "ai-alert", Severity: "high", MITRE: []string{"T1059"}, DedupeKey: ev.ID.String() + ":ai"})
+		if err != nil || !ins {
+			t.Fatalf("seed alert: %v", err)
+		}
+		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		sum, err := h.aiSvc.TriageIncident(h.ctx, h.principal, inc.ID)
+		if err != nil {
+			t.Fatalf("triage: %v", err)
+		}
+		if !sum.Assistive {
+			t.Fatal("triage must be flagged assistive")
+		}
+		if sum.Confidence != "observed" {
+			t.Fatalf("offline triage confidence should be observed, got %q", sum.Confidence)
+		}
+		if !strings.Contains(sum.Text, "approval workflow") {
+			t.Fatal("assistive triage must route actions through the approval workflow (no self-execution)")
+		}
+		hasInc, hasAsset := false, false
+		for _, e := range sum.Evidence {
+			if e == "incident:"+inc.ID.String() {
+				hasInc = true
+			}
+			if e == "asset:host:triage" {
+				hasAsset = true
+			}
+		}
+		if !hasInc || !hasAsset {
+			t.Fatalf("evidence must reference the incident + affected asset, got %v", sum.Evidence)
+		}
+		var n int
+		_ = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action='ai.triage_incident' AND target=$1`, "incident:"+inc.ID.String()).Scan(&n)
+		})
+		if n < 1 {
+			t.Fatal("AI triage must be audited")
 		}
 	})
 

@@ -175,7 +175,10 @@ func main() {
 
 	connectorH := connector.NewHandler(connector.NewService(connector.NewRepository(db), vault, ingestSvc))
 	soarH := soar.NewHandler(soar.NewService(soar.NewRepository(db)))
-	aiH := ai.NewHandler(ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db))
+	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
+	// AI incident triage composes incident + asset context (§6.12, assistive-only).
+	aiSvc.WithIncidentContext(incidentSvc, assetSvc)
+	aiH := ai.NewHandler(aiSvc)
 	reportingH := reporting.NewHandler(reporting.NewService(db, events))
 	complianceH := compliance.NewHandler()
 
@@ -284,6 +287,7 @@ func main() {
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
 	mux.Handle("POST /alerts/{id}/promote", provider(incidentH.PromoteFromAlert))
 	mux.Handle("POST /alerts/{id}/summarise", provider(aiH.SummariseAlert))
+	mux.Handle("POST /incidents/{id}/triage", provider(aiH.TriageIncident))
 	// detection engineering
 	mux.Handle("GET /detections", provider(detectionH.List))
 	mux.Handle("POST /detections", detEng(detectionH.Create))
