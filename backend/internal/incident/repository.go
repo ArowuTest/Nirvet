@@ -183,11 +183,13 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Incident
 		return tx.QueryRow(ctx,
 			`SELECT id, tenant_id, title, severity, category, stage, owner_id, created_at, closed_at,
 			        acknowledged_at, ack_due_at, resolve_due_at,
-			        disposition, root_cause, impact, actions_taken, lessons_learned, customer_ack
+			        disposition, root_cause, impact, actions_taken, lessons_learned, customer_ack,
+			        parent_id, is_major
 			   FROM incidents WHERE id=$1`, id,
 		).Scan(&i.ID, &i.TenantID, &i.Title, &i.Severity, &i.Category, &i.Stage, &i.OwnerID, &i.CreatedAt, &i.ClosedAt,
 			&i.AcknowledgedAt, &i.AckDueAt, &i.ResolveDueAt,
-			&i.Disposition, &i.RootCause, &i.Impact, &i.ActionsTaken, &i.LessonsLearned, &i.CustomerAck)
+			&i.Disposition, &i.RootCause, &i.Impact, &i.ActionsTaken, &i.LessonsLearned, &i.CustomerAck,
+			&i.ParentID, &i.IsMajor)
 	})
 	if err != nil {
 		return nil, err

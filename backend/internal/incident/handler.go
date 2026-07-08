@@ -179,3 +179,172 @@ func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, inc)
 }
+
+// pathID parses the {id} path value or writes a 400 and returns ok=false.
+func pathID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// CreateTask handles POST /incidents/{id}/tasks (CASE-005).
+func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in TaskInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	t, err := h.svc.CreateTask(r.Context(), p, id, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, t)
+}
+
+// ListTasks handles GET /incidents/{id}/tasks.
+func (h *Handler) ListTasks(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	tasks, err := h.svc.ListTasks(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list tasks"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
+// UpdateTask handles PUT /incidents/tasks/{id} with {"status":"..."}.
+func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Status string `json:"status"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.UpdateTaskStatus(r.Context(), p, id, in.Status); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": in.Status})
+}
+
+// ListCategories handles GET /incident-categories (CASE-007).
+func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	cats, err := h.svc.ListCategories(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list categories"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"categories": cats})
+}
+
+// SetCategory handles PUT /incidents/{id}/category with {"category":"..."}.
+func (h *Handler) SetCategory(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Category string `json:"category"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.SetCategory(r.Context(), p, id, in.Category); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"category": in.Category})
+}
+
+// LinkParent handles POST /incidents/{id}/parent with {"parent_id":"..."} (CASE-006). An empty/absent
+// parent_id unlinks.
+func (h *Handler) LinkParent(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ParentID string `json:"parent_id"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.ParentID == "" {
+		if err := h.svc.UnlinkParent(r.Context(), p, id); err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "unlinked"})
+		return
+	}
+	parentID, err := uuid.Parse(in.ParentID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid parent_id"))
+		return
+	}
+	if err := h.svc.LinkParent(r.Context(), p, id, parentID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "linked"})
+}
+
+// SetMajor handles PUT /incidents/{id}/major with {"is_major":true|false}.
+func (h *Handler) SetMajor(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		IsMajor bool `json:"is_major"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.SetMajor(r.Context(), p, id, in.IsMajor); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]bool{"is_major": in.IsMajor})
+}
+
+// Children handles GET /incidents/{id}/children.
+func (h *Handler) Children(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	kids, err := h.svc.Children(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list children"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"children": kids})
+}

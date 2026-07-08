@@ -473,6 +473,15 @@ func main() {
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
 	mux.Handle("POST /incidents/{id}/transition", provider(incidentH.Transition))
+	// §6.8 slice B: tasks (CASE-005), categories (CASE-007), parent/child + major (CASE-006).
+	mux.Handle("GET /incident-categories", provider(incidentH.ListCategories))
+	mux.Handle("GET /incidents/{id}/tasks", provider(incidentH.ListTasks))
+	mux.Handle("POST /incidents/{id}/tasks", provider(incidentH.CreateTask))
+	mux.Handle("PUT /incident-tasks/{id}", provider(incidentH.UpdateTask))
+	mux.Handle("PUT /incidents/{id}/category", provider(incidentH.SetCategory))
+	mux.Handle("GET /incidents/{id}/children", provider(incidentH.Children))
+	mux.Handle("POST /incidents/{id}/parent", provider(incidentH.LinkParent))
+	mux.Handle("PUT /incidents/{id}/major", senior(incidentH.SetMajor)) // declaring a major incident is significant
 	mux.Handle("POST /incidents/{id}/close", senior(incidentH.Close))
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))

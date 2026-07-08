@@ -56,6 +56,11 @@ type Incident struct {
 	CreatedAt time.Time  `json:"created_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
 
+	// Parent/child linking (CASE-006). ParentID points at an umbrella "major" incident; IsMajor
+	// flags that this incident IS such an umbrella.
+	ParentID *uuid.UUID `json:"parent_id,omitempty"`
+	IsMajor  bool       `json:"is_major"`
+
 	// Closure criteria (CASE-009), populated on the transition to 'closed'. Empty until then.
 	Disposition    string `json:"disposition,omitempty"`
 	RootCause      string `json:"root_cause,omitempty"`
@@ -90,3 +95,40 @@ const (
 	VisibilityInternal = "internal"
 	VisibilityCustomer = "customer"
 )
+
+// Task is an investigation task / checklist item on an incident (CASE-005).
+type Task struct {
+	ID          uuid.UUID  `json:"id"`
+	IncidentID  uuid.UUID  `json:"incident_id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description,omitempty"`
+	AssigneeID  *uuid.UUID `json:"assignee_id,omitempty"`
+	Status      string     `json:"status"` // open|in_progress|done|cancelled
+	DueAt       *time.Time `json:"due_at,omitempty"`
+	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+// Task status vocabulary (CASE-005).
+const (
+	TaskOpen       = "open"
+	TaskInProgress = "in_progress"
+	TaskDone       = "done"
+	TaskCancelled  = "cancelled"
+)
+
+var validTaskStatus = map[string]bool{
+	TaskOpen: true, TaskInProgress: true, TaskDone: true, TaskCancelled: true,
+}
+
+// Category is a configurable incident category template (CASE-007). Global (tenant nil) or tenant-custom.
+type Category struct {
+	ID              uuid.UUID  `json:"id"`
+	TenantID        *uuid.UUID `json:"tenant_id,omitempty"`
+	Key             string     `json:"key"`
+	Name            string     `json:"name"`
+	Description     string     `json:"description,omitempty"`
+	DefaultSeverity string     `json:"default_severity"`
+	Enabled         bool       `json:"enabled"`
+}

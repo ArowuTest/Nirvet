@@ -813,3 +813,50 @@ read that never writes through a GET (RLS aborted-tx rule); weighted rollup dete
 Integration: seeded frameworks/controls visible to a tenant (global), Assess produces per-control status
 from live state, manual override persists + wins + is audited, tenant B can't see tenant A's status,
 global template not writable by a tenant. Heartbeat green; build/vet/gofmt clean.
+
+---
+
+## Gate — §6.8 case management → FULL, slice B (CASE-005/006/007) — reviewed Jul 2026
+
+**Why now.** Drive §6.8 from PARTIAL to FULL (owner directive: partials→full). Slice A shipped the CASE-002
+stage machine + CASE-009 closure + CASE-004 note visibility + SLA. Slice B adds the case-STRUCTURE core:
+tasks, parent/child (major incidents), and config-driven categories. Slice C (next) finishes with CASE-008
+attachments/chain-of-custody + CASE-010 KB links → then §6.8 is FULL.
+
+**SRS grounding.** CASE-005 investigation tasks/checklist with owner + status; CASE-006 parent-child /
+major-incident linking (an umbrella case aggregating related incidents); CASE-007 category templates as
+CONFIG (not the current free-text `category` string) with a seeded default set + tenant-custom.
+
+**In scope (slice B).**
+1. **CASE-005 tasks.** `incident_tasks` (incident_id, tenant_id, title, description, assignee_id, status
+   open|in_progress|done|cancelled, due_at, created_by, created_at, completed_at). Create/list/update-
+   status; assignee validated in-tenant (reuse Assignees resolver); status change + completion recorded on
+   the timeline. Claim-then-act CAS on status so concurrent updates don't clobber (guarded UPDATE WHERE
+   status=$expected optional; simple UPDATE with audit is fine for tasks).
+2. **CASE-006 parent/child + major.** ALTER incidents ADD parent_id (self-FK, nullable) + is_major bool.
+   Link a child to a parent (same tenant; cycle-guard: a parent cannot be set to itself or to any of its
+   own descendants); unlink; list children; mark/unmark major. Setting a parent records both sides on the
+   timeline. A child's severity/SLA is unchanged (aggregation is a view concern).
+3. **CASE-007 category templates.** `incident_categories` (global seed + tenant-custom, key, name,
+   default_severity, description, enabled) — per-command RLS (global-or-own read, own-only write) like
+   detection_rules/stix. Seeded defaults (malware, phishing, unauthorized_access, data_exfiltration, dos,
+   policy_violation, recon, misconfiguration, insider_threat, uncategorised). SetCategory validates the
+   incident's category against the configured set (no more free-text); category list endpoint.
+
+**Out of scope (slice C / later).** CASE-008 attachments/chain-of-custody, CASE-010 KB links (next slice);
+category→default-playbook auto-suggest; SLA-per-category; child roll-up dashboards (UI).
+
+**Entities/enums/RLS.** incident_tasks + incident_categories tenant-scoped; categories nullable tenant_id
+(NULL=global) per-command policies. Enums: task status open|in_progress|done|cancelled. incidents gains
+parent_id (self-ref, ON DELETE SET NULL) + is_major. Indexes: incident_tasks(tenant_id, incident_id),
+incident_categories(tenant_id, key) unique, incidents(parent_id). Guard: cross-tenant assignee rejected;
+parent cycle rejected; category must exist.
+
+**Invariants.** Tenant isolation on all new tables; task assignee in-tenant only; parent link same-tenant +
+acyclic; category validated against config; every mutation audited (mutation middleware) + material ones on
+the timeline; GET handlers never write (RLS aborted-tx rule).
+
+**Verify.** Unit: cycle-guard (self + descendant), task status vocab, category validation. Integration:
+create task + update status (timeline entry written), link parent + reject cycle + reject cross-tenant,
+category set validated against seeded config + rejected when unknown, tenant isolation on tasks/categories.
+Heartbeat green; build/vet/gofmt clean.
