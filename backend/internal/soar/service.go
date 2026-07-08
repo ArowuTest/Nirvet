@@ -287,8 +287,19 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 		steps = append(steps, approvedStep{idx: i, act: act})
 	}
 
-	// Execution phase (one tx): dispatch each cleared step, skip business_critical, persist + audit.
+	// Execution phase (one tx): CLAIM the run (pending_approval→running) before dispatching, so two
+	// concurrent approves can't both execute (Round-4 R-2 claim-then-act — the row lock serialises
+	// them and the loser sees status≠pending_approval). Then dispatch, persist, audit.
+	claimed := false
 	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ok, e := s.repo.claimPendingTx(ctx, tx, run.ID)
+		if e != nil {
+			return e
+		}
+		if !ok {
+			return nil // another approver claimed it first — nothing dispatched
+		}
+		claimed = true
 		anyFailed := false
 		for _, st := range steps {
 			if st.block {
@@ -323,6 +334,9 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 	})
 	if err != nil {
 		return nil, httpx.ErrInternal("could not approve run")
+	}
+	if !claimed {
+		return nil, httpx.ErrConflict("run is no longer pending approval (already decided)")
 	}
 	return run, nil
 }

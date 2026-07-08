@@ -1086,9 +1086,16 @@ func TestIntegration(t *testing.T) {
 
 		// Authority-to-act: configure one action, then resolution — configured action returns
 		// its mode; an unconfigured action falls back to the fail-closed '*' catch-all.
+		// Round-4 R-3: a PERMISSIVE per-action mode (pre_authorized/emergency) requires a
+		// platform_admin — a customer-side role may only tighten.
 		if _, err := gov.SetAuthorityPolicy(h.ctx, h.principal, h.tenantID, tenant.AuthorityInput{
+			ActionType: "isolate_endpoint", Mode: "pre_authorized"}); err == nil {
+			t.Fatal("a non-platform_admin must NOT be able to set a permissive per-action authority mode (R-3)")
+		}
+		padmin := auth.Principal{UserID: h.principal.UserID, TenantID: h.tenantID, Role: auth.RolePlatformAdmin, Email: "padmin@acme.test"}
+		if _, err := gov.SetAuthorityPolicy(h.ctx, padmin, h.tenantID, tenant.AuthorityInput{
 			ActionType: "isolate_endpoint", Mode: "pre_authorized"}); err != nil {
-			t.Fatalf("set authority policy: %v", err)
+			t.Fatalf("set authority policy (platform_admin): %v", err)
 		}
 		if ap, err := gov.ResolveAuthority(h.ctx, h.tenantID, "isolate_endpoint"); err != nil || ap.Mode != "pre_authorized" {
 			t.Fatalf("configured action must resolve to pre_authorized, got %+v (%v)", ap, err)

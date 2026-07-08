@@ -110,6 +110,12 @@ func (s *Service) BreakGlass(ctx context.Context, p auth.Principal, in Elevation
 	if strings.TrimSpace(in.Reason) == "" {
 		return nil, httpx.ErrBadRequest("an emergency reason is required")
 	}
+	// Round-4 R-4: cannot break-glass while ALREADY operating under an elevated token — otherwise the
+	// one-tier cap (computed from the current role) could be laddered (t1→t2→t3→…) hop by hop. The
+	// caller must break-glass from their persistent base identity.
+	if p.ElevationID != "" {
+		return nil, httpx.ErrForbidden("cannot invoke break-glass while already elevated; use your base session")
+	}
 	// Round-4 M5: only an operationally-trusted base role may self-elevate without approval, and the
 	// jump is capped to ONE tier above the base — so a stolen analyst_t1 token cannot break-glass
 	// straight to soc_manager (SOAR-approver authority). validateTarget still enforces domain + no-admin.

@@ -21,6 +21,8 @@ func TestValidateEscalationAddress(t *testing.T) {
 		{"webhook", "https://10.0.0.5/x", true},             // RFC1918
 		{"webhook", "https://192.168.1.1/x", true},          // RFC1918
 		{"teams", "https://localhost/x", true},              // localhost
+		{"webhook", "https://2130706433/x", true},           // R-5: decimal-integer IP (127.0.0.1)
+		{"webhook", "https://0x7f000001/x", true},           // R-5: hex IP encoding
 		{"slack", "https://hooks.slack.com/services/x", false},
 		{"webhook", "ftp://x", true}, // bad scheme
 	}

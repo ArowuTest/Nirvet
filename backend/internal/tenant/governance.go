@@ -116,8 +116,9 @@ var validAuthorityMode = map[string]bool{"observe": true, "approval": true, "pre
 // validateEscalationAddress checks an escalation-contact address for its channel (Round-4 L4). The
 // URL channels (webhook/teams/slack) must be https and must NOT target an internal/loopback/link-
 // local host or the cloud metadata endpoint — §6.16 routing POSTs to these, so an unvalidated
-// address is an SSRF/exfil surface. Hostnames (non-literal-IP) pass here and are re-resolved+checked
-// by the notifier at send time (DNS-rebinding defence).
+// address is an SSRF/exfil surface. This is the WRITE-TIME guard only; a hostname (non-literal-IP)
+// passes here and MUST be re-resolved and re-checked at SEND time when the outbound webhook channel
+// is built (§6.16) — that DNS-rebinding defence is NOT present yet (the notifier is a log stub).
 func validateEscalationAddress(channel, address string) error {
 	address = strings.TrimSpace(address)
 	switch channel {
@@ -142,11 +143,16 @@ func validateEscalationAddress(channel, address string) error {
 }
 
 // isInternalHost reports whether a host literal is an internal/loopback/link-local/metadata target.
-// Only literal IPs are decided here; a hostname returns false (re-checked after DNS at send time).
+// Only literal IPs are decided here; a real hostname returns false. Round-4 R-5: also reject numeric
+// integer/hex IP encodings (e.g. "2130706433" or "0x7f000001" = 127.0.0.1) which net.ParseIP does not
+// recognise as IPs — deny them outright rather than let an alternate encoding slip past the checks.
 func isInternalHost(host string) bool {
 	h := strings.ToLower(host)
 	if h == "localhost" || strings.HasSuffix(h, ".local") || strings.HasSuffix(h, ".internal") {
 		return true
+	}
+	if isNumericHost(h) {
+		return true // integer/hex/octal IP encoding — not a real hostname; fail closed
 	}
 	ip := net.ParseIP(h)
 	if ip == nil {
@@ -154,6 +160,24 @@ func isInternalHost(host string) bool {
 	}
 	// IsLinkLocalUnicast covers 169.254.0.0/16 incl. the 169.254.169.254 cloud metadata endpoint.
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+// isNumericHost reports whether a host is an all-numeric (decimal integer), hex (0x…), or octal-ish
+// (leading-zero) form that some HTTP clients would decode to an IP — a valid dotted IP is NOT numeric
+// here (it contains dots and parses via net.ParseIP), so this only fires on the alternate encodings.
+func isNumericHost(h string) bool {
+	if h == "" || strings.Contains(h, ".") || strings.Contains(h, ":") {
+		return false
+	}
+	if strings.HasPrefix(h, "0x") {
+		return true
+	}
+	for _, c := range h {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true // all digits with no dots — a decimal integer IP encoding
 }
 
 // =========================== repository (governance) ===========================
@@ -458,6 +482,12 @@ func (s *Service) SetAuthorityPolicy(ctx context.Context, p auth.Principal, tena
 	// action at once.
 	if in.ActionType == "*" && (in.Mode == "pre_authorized" || in.Mode == "emergency") {
 		return nil, httpx.ErrBadRequest("the '*' catch-all may only be 'observe' or 'approval'; scope pre_authorized/emergency to a specific action_type")
+	}
+	// Round-4 R-3: a PERMISSIVE mode (auto-runs the action) requires a provider platform_admin —
+	// a customer_admin may only TIGHTEN (observe|approval), never unilaterally enable autonomous
+	// containment for a specific action (e.g. isolate_endpoint → emergency). Overrides tighten only.
+	if (in.Mode == "pre_authorized" || in.Mode == "emergency") && p.Role != auth.RolePlatformAdmin {
+		return nil, httpx.ErrForbidden("a permissive authority mode (pre_authorized/emergency) may only be set by a platform_admin")
 	}
 	ap := &AuthorityPolicy{ID: uuid.New(), TenantID: tenantID, ActionType: in.ActionType, Mode: in.Mode,
 		ApproverRole: in.ApproverRole, BusinessHoursOnly: in.BusinessHoursOnly, Active: true}
