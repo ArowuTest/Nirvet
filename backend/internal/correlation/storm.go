@@ -4,10 +4,15 @@ import (
 	"context"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// maxSuppressionWindow caps how long a suppression may withhold auto-promotion, so a maintenance window
+// can never silently blind detection forever (Round-5 M5). A longer need = re-create (re-audited).
+const maxSuppressionWindow = 90 * 24 * time.Hour
 
 // minStormThreshold floors the configurable storm threshold so a tenant can't set it to 0/1 and put
 // itself permanently in storm mode (config-guardrail: overrides may only tighten within reason).
@@ -46,11 +51,17 @@ type OverCorrelationMetrics struct {
 
 func (r *Repository) insertSuppression(ctx context.Context, tenantID uuid.UUID, s *Suppression, by uuid.UUID) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			`INSERT INTO correlation_suppressions (id, tenant_id, match_type, match_value, reason, starts_at, ends_at, created_by)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING created_at`,
 			s.ID, tenantID, s.MatchType, s.MatchValue, s.Reason, s.StartsAt, s.EndsAt, by,
-		).Scan(&s.CreatedAt)
+		).Scan(&s.CreatedAt); err != nil {
+			return err
+		}
+		// Immutable domain audit (M5): the suppressed target + reason, in-tx so it commits with the row.
+		return audit.Record(ctx, tx, audit.Entry{ActorID: by, Action: "correlation.suppression.create",
+			Target:   "suppression:" + s.ID.String(),
+			Metadata: map[string]any{"match_type": s.MatchType, "match_value": s.MatchValue, "reason": s.Reason, "ends_at": s.EndsAt}})
 	})
 }
 
@@ -59,7 +70,7 @@ func (r *Repository) listSuppressions(ctx context.Context, tenantID uuid.UUID) (
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
 			`SELECT id, match_type, match_value, reason, starts_at, ends_at, created_at
-			   FROM correlation_suppressions ORDER BY created_at DESC LIMIT 200`)
+			   FROM correlation_suppressions WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200`)
 		if err != nil {
 			return err
 		}
@@ -76,15 +87,26 @@ func (r *Repository) listSuppressions(ctx context.Context, tenantID uuid.UUID) (
 	return out, err
 }
 
-func (r *Repository) deleteSuppression(ctx context.Context, tenantID, id uuid.UUID) (bool, error) {
+// deleteSuppression SOFT-deletes a suppression (sets deleted_at) so a durable record survives that it
+// existed, and writes an immutable audit of the lift with the suppressed target + reason (M5).
+func (r *Repository) deleteSuppression(ctx context.Context, tenantID, id uuid.UUID, by uuid.UUID) (bool, error) {
 	applied := false
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		ct, err := tx.Exec(ctx, `DELETE FROM correlation_suppressions WHERE id=$1`, id)
-		if err != nil {
-			return err
+		var mt, mv, reason string
+		e := tx.QueryRow(ctx,
+			`UPDATE correlation_suppressions SET deleted_at=now()
+			  WHERE id=$1 AND deleted_at IS NULL
+			  RETURNING match_type, match_value, reason`, id).Scan(&mt, &mv, &reason)
+		if e == pgx.ErrNoRows {
+			return nil
 		}
-		applied = ct.RowsAffected() == 1
-		return nil
+		if e != nil {
+			return e
+		}
+		applied = true
+		return audit.Record(ctx, tx, audit.Entry{ActorID: by, Action: "correlation.suppression.lift",
+			Target:   "suppression:" + id.String(),
+			Metadata: map[string]any{"match_type": mt, "match_value": mv, "reason": reason}})
 	})
 	return applied, err
 }
@@ -96,7 +118,7 @@ func (r *Repository) activeSuppressionFor(ctx context.Context, tenantID uuid.UUI
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
 			`SELECT reason FROM correlation_suppressions
-			  WHERE starts_at <= now() AND (ends_at IS NULL OR ends_at > now())
+			  WHERE deleted_at IS NULL AND starts_at <= now() AND (ends_at IS NULL OR ends_at > now())
 			    AND ( (match_type='entity' AND match_value=$1)
 			       OR (match_type='technique' AND match_value = ANY($2::text[])) )
 			  ORDER BY created_at DESC LIMIT 1`, entity, techniques).Scan(&reason)
@@ -187,13 +209,21 @@ func (s *Service) CreateSuppression(ctx context.Context, tenantID uuid.UUID, by 
 	if in.MatchValue == "" {
 		return nil, httpx.ErrBadRequest("match_value is required")
 	}
-	if in.EndsAt != nil && in.StartsAt != nil && !in.EndsAt.After(*in.StartsAt) {
-		return nil, httpx.ErrBadRequest("ends_at must be after starts_at")
+	// M5: a suppression must be time-bounded (no silent forever-blind) and capped, so it always expires
+	// and returns to visible detection unless explicitly re-created (re-audited).
+	if in.EndsAt == nil {
+		return nil, httpx.ErrBadRequest("ends_at is required (a suppression must be time-bounded)")
 	}
 	sup := &Suppression{ID: uuid.New(), MatchType: in.MatchType, MatchValue: in.MatchValue, Reason: in.Reason, EndsAt: in.EndsAt}
 	sup.StartsAt = time.Now()
 	if in.StartsAt != nil {
 		sup.StartsAt = *in.StartsAt
+	}
+	if !in.EndsAt.After(sup.StartsAt) {
+		return nil, httpx.ErrBadRequest("ends_at must be after starts_at")
+	}
+	if in.EndsAt.Sub(sup.StartsAt) > maxSuppressionWindow {
+		return nil, httpx.ErrBadRequest("suppression window exceeds the 90-day maximum")
 	}
 	if err := s.repo.insertSuppression(ctx, tenantID, sup, by); err != nil {
 		return nil, httpx.ErrInternal("could not create suppression")
@@ -206,9 +236,9 @@ func (s *Service) ListSuppressions(ctx context.Context, tenantID uuid.UUID) ([]S
 	return s.repo.listSuppressions(ctx, tenantID)
 }
 
-// DeleteSuppression removes a suppression rule.
-func (s *Service) DeleteSuppression(ctx context.Context, tenantID, id uuid.UUID) error {
-	applied, err := s.repo.deleteSuppression(ctx, tenantID, id)
+// DeleteSuppression lifts (soft-deletes) a suppression rule, audited with the actor.
+func (s *Service) DeleteSuppression(ctx context.Context, tenantID, id uuid.UUID, by uuid.UUID) error {
+	applied, err := s.repo.deleteSuppression(ctx, tenantID, id, by)
 	if err != nil {
 		return httpx.ErrInternal("could not delete suppression")
 	}

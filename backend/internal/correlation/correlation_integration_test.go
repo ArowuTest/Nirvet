@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
@@ -97,11 +98,16 @@ func TestCorrelation_ClustersByEntity(t *testing.T) {
 	}
 
 	// COR-009 analyst override: reason mandatory; override wins as effective risk/severity.
-	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), correlation.OverrideInput{Severity: "low", Risk: ptr(15)}); err == nil {
+	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), true, correlation.OverrideInput{Severity: "low", Risk: ptr(15)}); err == nil {
 		t.Fatal("override without a reason must be rejected")
 	}
 	rk := 15
-	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), correlation.OverrideInput{Severity: "low", Risk: &rk, Reason: "confirmed benign maintenance"}); err != nil {
+	// R5-M7: lowering the risk (15 < computed) requires a senior; a non-senior is rejected...
+	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), false, correlation.OverrideInput{Severity: "low", Risk: &rk, Reason: "benign"}); err == nil {
+		t.Fatal("a non-senior risk-down override must be rejected")
+	}
+	// ...a senior may.
+	if err := svc.Override(ctx, tn.ID, cid1, uuid.New(), true, correlation.OverrideInput{Severity: "low", Risk: &rk, Reason: "confirmed benign maintenance"}); err != nil {
 		t.Fatalf("override: %v", err)
 	}
 	after, _ := svc.Get(ctx, tn.ID, cid1)
@@ -201,10 +207,23 @@ func TestCorrelation_SuppressionStormMetrics(t *testing.T) {
 	// COR-007: suppress a specific entity, then send a corroborated high-risk cluster on it → the
 	// cluster is formed and flagged suppressed, but NO incident is auto-opened.
 	suppressed := "host:" + uuid.NewString()
+	ends := time.Now().Add(24 * time.Hour)
 	if _, err := svc.CreateSuppression(ctx, tn.ID, uuid.New(), correlation.SuppressionInput{
-		MatchType: "entity", MatchValue: suppressed, Reason: "planned maintenance",
+		MatchType: "entity", MatchValue: suppressed, Reason: "planned maintenance", EndsAt: &ends,
 	}); err != nil {
 		t.Fatalf("create suppression: %v", err)
+	}
+	// M5: a suppression must be time-bounded and within the 90-day cap.
+	if _, err := svc.CreateSuppression(ctx, tn.ID, uuid.New(), correlation.SuppressionInput{
+		MatchType: "entity", MatchValue: "x", Reason: "forever",
+	}); err == nil {
+		t.Fatal("suppression without ends_at must be rejected")
+	}
+	tooLong := time.Now().Add(200 * 24 * time.Hour)
+	if _, err := svc.CreateSuppression(ctx, tn.ID, uuid.New(), correlation.SuppressionInput{
+		MatchType: "entity", MatchValue: "y", Reason: "too long", EndsAt: &tooLong,
+	}); err == nil {
+		t.Fatal("suppression beyond the 90-day cap must be rejected")
 	}
 	cid, _, _ := svc.Correlate(ctx, tn.ID, suppressed, "critical", []string{"T1486", "T1490"}, 95)
 	if _, _, err := svc.Correlate(ctx, tn.ID, suppressed, "critical", []string{"T1059"}, 95); err != nil {
@@ -231,7 +250,7 @@ func TestCorrelation_SuppressionStormMetrics(t *testing.T) {
 	if len(sups) != 1 {
 		t.Fatalf("expected 1 suppression, got %d", len(sups))
 	}
-	if err := svc.DeleteSuppression(ctx, tn.ID, sups[0].ID); err != nil {
+	if err := svc.DeleteSuppression(ctx, tn.ID, sups[0].ID, uuid.New()); err != nil {
 		t.Fatalf("delete suppression: %v", err)
 	}
 

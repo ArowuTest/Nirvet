@@ -186,8 +186,9 @@ type OverrideInput struct {
 }
 
 // Override records an analyst's adjustment of a cluster's severity/risk with a reason (COR-009). At
-// least one of severity/risk must be provided; the reason is mandatory (audited via mutation middleware).
-func (s *Service) Override(ctx context.Context, tenantID, id uuid.UUID, by uuid.UUID, in OverrideInput) error {
+// least one of severity/risk must be provided; the reason is mandatory. The change is written to an
+// append-only audit (old→new); a risk-DOWN override requires a senior role (R5-M7).
+func (s *Service) Override(ctx context.Context, tenantID, id uuid.UUID, by uuid.UUID, isSenior bool, in OverrideInput) error {
 	if in.Reason == "" {
 		return httpx.ErrBadRequest("an override reason is required")
 	}
@@ -204,9 +205,12 @@ func (s *Service) Override(ctx context.Context, tenantID, id uuid.UUID, by uuid.
 	if in.Risk != nil && (*in.Risk < 0 || *in.Risk > 100) {
 		return httpx.ErrBadRequest("risk must be 0-100")
 	}
-	applied, err := s.repo.Override(ctx, tenantID, id, sev, in.Risk, in.Reason, by)
+	applied, forbidden, err := s.repo.Override(ctx, tenantID, id, sev, in.Risk, in.Reason, by, isSenior)
 	if err != nil {
 		return httpx.ErrInternal("could not apply override")
+	}
+	if forbidden {
+		return httpx.ErrForbidden("lowering a cluster's risk requires a senior role")
 	}
 	if !applied {
 		return httpx.ErrNotFound("correlation not found")

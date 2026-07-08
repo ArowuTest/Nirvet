@@ -75,7 +75,7 @@ func (h *Handler) Override(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.Override(r.Context(), p.TenantID, id, p.UserID, in); err != nil {
+	if err := h.svc.Override(r.Context(), p.TenantID, id, p.UserID, auth.IsSenior(p.Role), in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
@@ -139,7 +139,7 @@ func (h *Handler) DeleteSuppression(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.ErrBadRequest("invalid suppression id"))
 		return
 	}
-	if err := h.svc.DeleteSuppression(r.Context(), p.TenantID, id); err != nil {
+	if err := h.svc.DeleteSuppression(r.Context(), p.TenantID, id, p.UserID); err != nil {
 		httpx.Error(w, err)
 		return
 	}

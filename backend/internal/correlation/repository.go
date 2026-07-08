@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -91,22 +92,55 @@ func (r *Repository) SetIncident(ctx context.Context, tenantID, id, incidentID u
 	})
 }
 
-// Override records an analyst's severity/risk override for a cluster with a reason (COR-009). applied is
-// false if the cluster is not in this tenant.
-func (r *Repository) Override(ctx context.Context, tenantID, id uuid.UUID, severity *string, risk *int, reason string, by uuid.UUID) (bool, error) {
-	applied := false
-	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		ct, err := tx.Exec(ctx,
+// Override records an analyst's severity/risk override for a cluster with a reason (COR-009), writing an
+// append-only old→new audit in the same tx (R5-M7). A risk-DOWN override (lowering the effective risk,
+// which could bury a real cluster) requires a senior role — forbidden=true if a non-senior attempts it.
+// applied=false if the cluster is not in this tenant.
+func (r *Repository) Override(ctx context.Context, tenantID, id uuid.UUID, severity *string, risk *int, reason string, by uuid.UUID, isSenior bool) (applied, forbidden bool, err error) {
+	err = r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var curScore int
+		var curOverride *int
+		var curSevOverride *string
+		e := tx.QueryRow(ctx,
+			`SELECT risk_score, risk_override, severity_override FROM correlations WHERE id=$1 FOR UPDATE`, id).
+			Scan(&curScore, &curOverride, &curSevOverride)
+		if e == pgx.ErrNoRows {
+			return nil // applied stays false
+		}
+		if e != nil {
+			return e
+		}
+		effBefore := curScore
+		if curOverride != nil {
+			effBefore = *curOverride
+		}
+		effAfter := curScore
+		if risk != nil {
+			effAfter = *risk
+		}
+		if effAfter < effBefore && !isSenior {
+			forbidden = true
+			return nil
+		}
+		if _, e := tx.Exec(ctx,
 			`UPDATE correlations
 			    SET severity_override=$2, risk_override=$3, override_reason=$4, overridden_by=$5, overridden_at=now()
-			  WHERE id=$1`, id, severity, risk, reason, by)
-		if err != nil {
-			return err
+			  WHERE id=$1`, id, severity, risk, reason, by); e != nil {
+			return e
 		}
-		applied = ct.RowsAffected() == 1
-		return nil
+		applied = true
+		return audit.Record(ctx, tx, audit.Entry{ActorID: by, Action: "correlation.override",
+			Target: "correlation:" + id.String(),
+			Metadata: map[string]any{
+				"reason":       reason,
+				"old_risk":     effBefore,
+				"new_risk":     effAfter,
+				"old_severity": curSevOverride,
+				"new_severity": severity,
+				"risk_down":    effAfter < effBefore,
+			}})
 	})
-	return applied, err
+	return applied, forbidden, err
 }
 
 // List returns a tenant's correlations, highest EFFECTIVE risk first (override wins over computed).
