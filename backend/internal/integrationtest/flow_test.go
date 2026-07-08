@@ -42,7 +42,8 @@ type harness struct {
 	ctx       context.Context
 	db        *database.DB
 	tenantID  uuid.UUID
-	principal auth.Principal
+	principal auth.Principal // analyst who requests SOAR runs
+	approver  auth.Principal // distinct senior (soc_manager) who approves — four-eyes
 	email     string
 
 	iamSvc   *iam.Service
@@ -97,6 +98,15 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("create user: %v", err)
 	}
 	principal := auth.Principal{UserID: u.ID, TenantID: tn.ID, Role: auth.RoleAnalystT2, Email: email}
+	// A distinct senior user (soc_manager) to approve SOAR runs — the requester may
+	// not approve their own run (separation of duties), so approvals need a second
+	// principal that is both a different user and a senior role.
+	approverEmail := "approver-" + uuid.NewString() + "@t"
+	au, err := iamSvc.Create(ctx, tn.ID, iam.CreateInput{Email: approverEmail, Password: "password123", Role: auth.RoleSOCManager})
+	if err != nil {
+		t.Fatalf("create approver: %v", err)
+	}
+	approver := auth.Principal{UserID: au.ID, TenantID: tn.ID, Role: auth.RoleSOCManager, Email: approverEmail}
 
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
@@ -126,7 +136,7 @@ func newHarness(t *testing.T) *harness {
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 
 	return &harness{
-		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, email: email,
+		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, approver: approver, email: email,
 		iamSvc:   iamSvc,
 		ingest:   ingestSvc,
 		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
@@ -167,6 +177,30 @@ func TestIntegration(t *testing.T) {
 		})
 		if n < 1 {
 			t.Fatal("expected an auth.login audit record")
+		}
+	})
+
+	t.Run("ChangePasswordRoundTrip", func(t *testing.T) {
+		// A user can rotate their own password off the seed credential: the old one
+		// stops working and the new one logs in. Wrong current password is rejected.
+		if err := h.iamSvc.ChangePassword(h.ctx, h.principal, "wrong-current", "newpassword456"); err == nil {
+			t.Fatal("change-password must reject an incorrect current password")
+		}
+		if err := h.iamSvc.ChangePassword(h.ctx, h.principal, "password123", "short"); err == nil {
+			t.Fatal("change-password must reject a too-short new password")
+		}
+		if err := h.iamSvc.ChangePassword(h.ctx, h.principal, "password123", "newpassword456"); err != nil {
+			t.Fatalf("change-password should succeed: %v", err)
+		}
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "password123", "", "req-itest"); err == nil {
+			t.Fatal("old password must no longer log in after a change")
+		}
+		if _, err := h.iamSvc.Login(h.ctx, h.email, "newpassword456", "", "req-itest"); err != nil {
+			t.Fatalf("new password must log in after a change: %v", err)
+		}
+		// Restore the seed password so later subtests that rely on it still pass.
+		if err := h.iamSvc.ChangePassword(h.ctx, h.principal, "newpassword456", "password123"); err != nil {
+			t.Fatalf("restore password: %v", err)
 		}
 	})
 
@@ -281,7 +315,12 @@ func TestIntegration(t *testing.T) {
 		if run.Status != soar.RunPendingApproval {
 			t.Fatalf("under 'observe' the run must be pending_approval, got %s", run.Status)
 		}
-		approved, err := h.soarSvc.Approve(h.ctx, h.principal, run.ID)
+		// Separation of duties: the analyst who requested the run cannot approve it.
+		if _, err := h.soarSvc.Approve(h.ctx, h.principal, run.ID); err == nil {
+			t.Fatal("four-eyes: the requester must NOT be able to approve their own run")
+		}
+		// A distinct senior approver completes it.
+		approved, err := h.soarSvc.Approve(h.ctx, h.approver, run.ID)
 		if err != nil {
 			t.Fatalf("approve: %v", err)
 		}
@@ -365,7 +404,8 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// 12. Playbook: run a containment playbook tied to THIS incident. Default
-		//     authority is 'observe' → containment needs approval → then approve.
+		//     authority is 'observe' → containment needs approval → a senior approver
+		//     (not the requesting analyst — four-eyes) approves.
 		pbs, err := h.soarSvc.ListPlaybooks(h.ctx, h.tenantID)
 		if err != nil || len(pbs) == 0 {
 			t.Fatalf("12. expected a seeded playbook: %v", err)
@@ -378,7 +418,7 @@ func TestIntegration(t *testing.T) {
 			t.Fatalf("12. playbook run not tied to incident: %v", run.IncidentID)
 		}
 		if run.Status == soar.RunPendingApproval {
-			if _, err := h.soarSvc.Approve(h.ctx, h.principal, run.ID); err != nil {
+			if _, err := h.soarSvc.Approve(h.ctx, h.approver, run.ID); err != nil {
 				t.Fatalf("12. approve containment: %v", err)
 			}
 		}

@@ -101,9 +101,9 @@ func (s *Service) ProvisionForSSO(ctx context.Context, tenantID uuid.UUID, email
 
 // LoginResult carries the issued token and principal.
 type LoginResult struct {
-	Token     string        `json:"token"`
+	Token     string         `json:"token"`
 	Principal auth.Principal `json:"-"`
-	User      *User         `json:"user"`
+	User      *User          `json:"user"`
 }
 
 // Login authenticates by email+password (and TOTP MFA when enabled) and issues
@@ -133,6 +133,37 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 	})
 	u.PasswordHash = ""
 	return &LoginResult{Token: token, Principal: p, User: u}, nil
+}
+
+// ChangePassword lets an authenticated user rotate their own password. The current
+// password must be supplied and verified (so a stolen session token alone cannot
+// silently reset it), the new one must meet the length policy and differ from the
+// old. This is the supported path off the default bootstrap credential (IAM-002).
+func (s *Service) ChangePassword(ctx context.Context, p auth.Principal, current, newPassword string) error {
+	if current == "" || newPassword == "" {
+		return httpx.ErrBadRequest("current_password and new_password are required")
+	}
+	if len(newPassword) < 8 {
+		return httpx.ErrBadRequest("new password must be at least 8 characters")
+	}
+	if current == newPassword {
+		return httpx.ErrBadRequest("new password must differ from the current password")
+	}
+	u, err := s.repo.GetByID(ctx, p.TenantID, p.UserID)
+	if err != nil {
+		return httpx.ErrNotFound("user not found")
+	}
+	if !auth.ComparePassword(u.PasswordHash, current) {
+		return httpx.ErrUnauthorized("current password is incorrect")
+	}
+	hash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		return httpx.ErrInternal("could not hash password")
+	}
+	if err := s.repo.UpdatePassword(ctx, p.TenantID, p.UserID, hash); err != nil {
+		return httpx.ErrInternal("could not update password")
+	}
+	return nil
 }
 
 // Me returns the current user.

@@ -62,6 +62,21 @@ func (r *Repository) SetMFAEnabled(ctx context.Context, tenantID, userID uuid.UU
 	})
 }
 
+// UpdatePassword sets a new bcrypt hash for the user within the tenant context.
+// Returns pgx.ErrNoRows if the user does not exist (or is not visible under RLS).
+func (r *Repository) UpdatePassword(ctx context.Context, tenantID, userID uuid.UUID, hash string) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, hash)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		return nil
+	})
+}
+
 // GetByID returns a user within the tenant context.
 func (r *Repository) GetByID(ctx context.Context, tenantID, id uuid.UUID) (*User, error) {
 	var u User

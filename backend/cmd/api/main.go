@@ -197,6 +197,11 @@ func main() {
 	detEng := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng))
 	}
+	// SOAR approvals gate destructive automation, so they are restricted to senior
+	// roles (four-eyes is additionally enforced in the service: requester != approver).
+	soarApprover := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager))
+	}
 	// SSO connections are managed by the tenant's own admin or a platform admin.
 	ssoAdmin := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleCustomerAdmin))
@@ -239,6 +244,7 @@ func main() {
 	mux.Handle("GET /admin/ticketing", ssoAdmin(ticketingH.List))
 	mux.Handle("DELETE /admin/ticketing/{id}", ssoAdmin(ticketingH.Delete))
 	mux.Handle("GET /me", authed(iamH.Me))
+	mux.Handle("POST /me/password", authed(iamH.ChangePassword))
 	mux.Handle("POST /mfa/enroll", authed(iamH.EnrollMFA))
 	mux.Handle("POST /mfa/activate", authed(iamH.ActivateMFA))
 	mux.Handle("POST /mfa/disable", authed(iamH.DisableMFA))
@@ -278,8 +284,8 @@ func main() {
 	mux.Handle("POST /playbooks/{id}/run", provider(soarH.Run))
 	mux.Handle("GET /soar/runs", provider(soarH.ListRuns))
 	mux.Handle("GET /soar/runs/{id}", provider(soarH.GetRun))
-	mux.Handle("POST /soar/runs/{id}/approve", provider(soarH.Approve))
-	mux.Handle("POST /soar/runs/{id}/reject", provider(soarH.Reject))
+	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))
+	mux.Handle("POST /soar/runs/{id}/reject", soarApprover(soarH.Reject))
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))

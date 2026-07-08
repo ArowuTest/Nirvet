@@ -101,6 +101,29 @@ func (h *Handler) mfaAction(w http.ResponseWriter, r *http.Request, activate boo
 	httpx.JSON(w, http.StatusOK, map[string]bool{"mfa_enabled": activate})
 }
 
+// ChangePassword handles POST /me/password with
+// {"current_password":"...","new_password":"..."}.
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized("not authenticated"))
+		return
+	}
+	var in struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.ChangePassword(r.Context(), p, in.CurrentPassword, in.NewPassword); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]bool{"changed": true})
+}
+
 // Me handles GET /me.
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	p, ok := auth.PrincipalFrom(r.Context())

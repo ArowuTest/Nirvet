@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -67,7 +68,7 @@ func (wk *Worker) RunOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, j := range jobs {
-		if err := wk.process(ctx, j); err != nil {
+		if err := wk.processGuarded(ctx, j); err != nil {
 			wk.log.Warn("normalize failed; retry/dead-letter", "job", j.ID, "err", err)
 			_ = wk.q.Fail(ctx, j.ID, err.Error())
 			continue
@@ -75,6 +76,22 @@ func (wk *Worker) RunOnce(ctx context.Context) (int, error) {
 		_ = wk.q.Complete(ctx, j.ID)
 	}
 	return len(jobs), nil
+}
+
+// processGuarded runs process with panic recovery so one poison event (a nil
+// dereference in a normalizer, a malformed vendor payload) cannot crash the worker
+// goroutine and halt ingestion for every tenant. A recovered panic is converted to
+// an error, so the job follows the normal retry/dead-letter path instead of taking
+// the process down.
+func (wk *Worker) processGuarded(ctx context.Context, j queue.Job) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			wk.log.Error("ingest worker recovered from panic; job will retry/dead-letter",
+				"job", j.ID, "panic", r)
+			err = fmt.Errorf("panic processing job: %v", r)
+		}
+	}()
+	return wk.process(ctx, j)
 }
 
 // mitreFromData extracts ATT&CK technique ids from data.mitre, which normalizers

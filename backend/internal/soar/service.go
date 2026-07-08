@@ -92,6 +92,17 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 	return run, nil
 }
 
+// canApprove enforces separation of duties: the user who requested a run may not
+// approve it. A run with no recorded requester (system/correlation-initiated) may
+// be approved by any authorised approver. This is a pure guard so it can be unit
+// tested without a database (SRS §6.11; four-eyes on authority-to-act).
+func canApprove(run *PlaybookRun, approver uuid.UUID) error {
+	if run.RequestedBy != nil && *run.RequestedBy == approver {
+		return httpx.ErrForbidden("separation of duties: the requester of a playbook run may not approve it")
+	}
+	return nil
+}
+
 // Approve executes the awaiting steps of a pending run (simulated) and completes it.
 func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID) (*PlaybookRun, error) {
 	run, err := s.repo.GetRun(ctx, p.TenantID, runID)
@@ -100,6 +111,10 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 	}
 	if run.Status != RunPendingApproval {
 		return nil, httpx.ErrBadRequest("run is not pending approval")
+	}
+	// Four-eyes: an approver cannot rubber-stamp their own requested action.
+	if err := canApprove(run, p.UserID); err != nil {
+		return nil, err
 	}
 	for i := range run.Steps {
 		if run.Steps[i].Status == "awaiting_approval" {
