@@ -50,6 +50,19 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// RBAC route tiers (R2 H-D/M-D). provider = any SOC role incl. analyst_t1 (reads +
+// triage/assign/note). senior = destructive/sensitive routes T1 must not reach. manager
+// = platform_admin + soc_manager only (asset criticality writes). Package-level so the
+// membership invariant is regression-tested (main_test.go).
+var (
+	providerRoles = []auth.Role{
+		auth.RolePlatformAdmin, auth.RoleSOCManager,
+		auth.RoleAnalystT1, auth.RoleAnalystT2, auth.RoleAnalystT3, auth.RoleDetectionEng,
+	}
+	seniorRoles  = []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleAnalystT2, auth.RoleAnalystT3}
+	managerRoles = []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager}
+)
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -187,10 +200,6 @@ func main() {
 
 	// --- routing ---
 	authn := auth.Authenticate(tokens)
-	providerRoles := []auth.Role{
-		auth.RolePlatformAdmin, auth.RoleSOCManager,
-		auth.RoleAnalystT1, auth.RoleAnalystT2, auth.RoleAnalystT3, auth.RoleDetectionEng,
-	}
 	// Rate limits. In-memory (per-instance) by default; global across replicas when
 	// NIRVET_REDIS_ADDR is set (reviewer: introduce Redis at first horizontal scale-out).
 	var redisClient *redis.Client
@@ -223,6 +232,18 @@ func main() {
 	// roles (four-eyes is additionally enforced in the service: requester != approver).
 	soarApprover := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager))
+	}
+	// senior = destructive/sensitive actions that a T1 (or a stolen T1 token) must not
+	// reach: connector create/delete (creds / blind detection), playbook run, incident
+	// close, alert promote, threat-intel writes, evidence-pack export (R2 H-D). T1 keeps
+	// reads + triage/assign/note + assistive AI.
+	senior := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(seniorRoles...))
+	}
+	// manager = platform_admin + soc_manager only. Asset writes set criticality that
+	// auto-escalates incident severity + SLA, so they are restricted here (R2 M-D).
+	manager := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(managerRoles...))
 	}
 	// SSO connections are managed by the tenant's own admin or a platform admin.
 	ssoAdmin := func(h http.HandlerFunc) http.Handler {
@@ -285,7 +306,7 @@ func main() {
 	mux.Handle("GET /alerts", provider(alertH.List))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
-	mux.Handle("POST /alerts/{id}/promote", provider(incidentH.PromoteFromAlert))
+	mux.Handle("POST /alerts/{id}/promote", senior(incidentH.PromoteFromAlert))
 	mux.Handle("POST /alerts/{id}/summarise", provider(aiH.SummariseAlert))
 	mux.Handle("POST /incidents/{id}/triage", provider(aiH.TriageIncident))
 	// detection engineering
@@ -297,14 +318,14 @@ func main() {
 	// connectors
 	mux.Handle("GET /connectors/catalogue", provider(connectorH.Catalogue))
 	mux.Handle("GET /connectors", provider(connectorH.List))
-	mux.Handle("POST /connectors", provider(connectorH.Create))
-	mux.Handle("DELETE /connectors/{id}", provider(connectorH.Delete))
+	mux.Handle("POST /connectors", senior(connectorH.Create))
+	mux.Handle("DELETE /connectors/{id}", senior(connectorH.Delete))
 	// public webhook ingestion (source-key authenticated, per-IP rate limited)
 	webhookLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "webhook"), ratelimit.ByIP)
 	mux.Handle("POST /ingest/webhook/{id}", httpx.Chain(http.HandlerFunc(connectorH.Webhook), webhookLimit))
 	// SOAR (playbooks, runs, approvals, authority-to-act)
 	mux.Handle("GET /playbooks", provider(soarH.ListPlaybooks))
-	mux.Handle("POST /playbooks/{id}/run", provider(soarH.Run))
+	mux.Handle("POST /playbooks/{id}/run", senior(soarH.Run))
 	mux.Handle("GET /soar/runs", provider(soarH.ListRuns))
 	mux.Handle("GET /soar/runs/{id}", provider(soarH.GetRun))
 	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))
@@ -312,7 +333,7 @@ func main() {
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
-	mux.Handle("POST /threat-intel", provider(threatH.Add))
+	mux.Handle("POST /threat-intel", senior(threatH.Add))
 	// reporting
 	mux.Handle("GET /reports/summary", provider(reportingH.SummaryHTTP))
 	// compliance
@@ -321,21 +342,21 @@ func main() {
 	mux.Handle("GET /billing/entitlements", provider(billingH.Get))
 	mux.Handle("PUT /billing/entitlements", padmin(billingH.Set))
 	// notifications
-	mux.Handle("POST /notify/test", provider(notifyH.Test))
+	mux.Handle("POST /notify/test", senior(notifyH.Test))
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
-	mux.Handle("GET /incidents/{id}/evidence-pack", provider(evidenceH.Pack))
+	mux.Handle("GET /incidents/{id}/evidence-pack", senior(evidenceH.Pack))
 	// Asset inventory (§6.15)
-	mux.Handle("POST /assets", provider(assetH.Create))
+	mux.Handle("POST /assets", manager(assetH.Create))
 	mux.Handle("GET /assets", provider(assetH.List))
 	mux.Handle("GET /assets/{id}", provider(assetH.Get))
 	// Entity graph (§6.9)
 	mux.Handle("GET /entities/graph", provider(entityGraphH.Graph))
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))
 	mux.Handle("POST /incidents/{id}/notes", provider(incidentH.AddNote))
-	mux.Handle("POST /incidents/{id}/close", provider(incidentH.Close))
+	mux.Handle("POST /incidents/{id}/close", senior(incidentH.Close))
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))
 
