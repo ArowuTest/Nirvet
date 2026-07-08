@@ -50,6 +50,7 @@ type Rule struct {
 	Confidence  int        `json:"confidence"` // 0-100
 	MITRE       []string   `json:"mitre"`      // technique IDs
 	Condition   Condition  `json:"condition"`
+	Expression  string     `json:"expression,omitempty"` // CEL; when set, takes precedence over Condition
 	Enabled     bool       `json:"enabled"`
 	CreatedAt   time.Time  `json:"created_at"`
 }

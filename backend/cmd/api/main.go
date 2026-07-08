@@ -247,6 +247,7 @@ func main() {
 	mux.Handle("GET /detections", provider(detectionH.List))
 	mux.Handle("POST /detections", detEng(detectionH.Create))
 	mux.Handle("POST /detections/import/sigma", detEng(detectionH.ImportSigma))
+	mux.Handle("POST /detections/cel", detEng(detectionH.CreateCEL))
 	mux.Handle("POST /detections/{id}/enabled", detEng(detectionH.SetEnabled))
 	// connectors
 	mux.Handle("GET /connectors/catalogue", provider(connectorH.Catalogue))

@@ -22,7 +22,7 @@ func scanRules(rows pgx.Rows) ([]Rule, error) {
 		var r Rule
 		var cond []byte
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Description, &r.Severity,
-			&r.Confidence, &r.MITRE, &cond, &r.Enabled, &r.CreatedAt); err != nil {
+			&r.Confidence, &r.MITRE, &cond, &r.Expression, &r.Enabled, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(cond, &r.Condition)
@@ -31,7 +31,7 @@ func scanRules(rows pgx.Rows) ([]Rule, error) {
 	return out, rows.Err()
 }
 
-const ruleCols = `id, tenant_id, name, description, severity, confidence, mitre, condition, enabled, created_at`
+const ruleCols = `id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, created_at`
 
 // ListActive returns enabled rules applicable to the tenant (global + own).
 func (r *Repository) ListActive(ctx context.Context, tenantID uuid.UUID) ([]Rule, error) {
@@ -68,9 +68,9 @@ func (r *Repository) Create(ctx context.Context, tenantID uuid.UUID, rule *Rule)
 	cond, _ := json.Marshal(rule.Condition)
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`INSERT INTO detection_rules (id, tenant_id, name, description, severity, confidence, mitre, condition, enabled)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING created_at`,
-			rule.ID, tenantID, rule.Name, rule.Description, rule.Severity, rule.Confidence, rule.MITRE, cond, rule.Enabled,
+			`INSERT INTO detection_rules (id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING created_at`,
+			rule.ID, tenantID, rule.Name, rule.Description, rule.Severity, rule.Confidence, rule.MITRE, cond, rule.Expression, rule.Enabled,
 		).Scan(&rule.CreatedAt)
 	})
 }

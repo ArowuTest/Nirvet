@@ -192,10 +192,12 @@ behind interfaces that already exist — not up front:
 - **Deferred (logged):** signed AuthnRequests (SP private key in vault) and encrypted assertions — many IdPs don't
   require them; the critical direction (validating the IdP's signed response) is covered. SLO single-logout,
   SP-metadata publishing endpoint.
-- **Pluggable detection DSLs** (§6.6, reviewer): **Sigma import DONE** (`detection.ImportSigma` → native Condition
-  model; POST /detections/import/sigma; supports selections/`and`, contains/startswith/endswith/re modifiers,
-  list=OR, level→severity, attack.t* tags→MITRE; unsupported constructs error). Remaining: YARA/CEL/custom-DSL
-  evaluators behind the same `Engine` seam; full Sigma condition grammar (or/not/`N of`/parentheses).
+- **Pluggable detection DSLs** (§6.6, reviewer): **Sigma + CEL DONE**. Sigma (`detection.ImportSigma` → native
+  Condition; POST /detections/import/sigma). CEL expression rules (`detection.CompileCEL`/`EvalCEL`; POST
+  /detections/cel; migration 0014 `expression` column; compiled programs cached in the Engine and evaluated in the
+  same loop as native/Sigma rules; expression must yield bool, validated at create time; fail-safe eval). The
+  engine is NOT wired to one rule language. Remaining: **YARA deferred** (needs CGO/libyara — not pure-Go / breaks
+  cloud-portability without a native dep); full Sigma condition grammar (or/not/`N of`/parentheses).
 - **Redis-backed distributed rate limiting** (scaling): **DONE** — `ratelimit.Allower` interface + `RedisLimiter`
   (atomic token-bucket Lua), selected by `NIRVET_REDIS_ADDR`; verified two instances share one global bucket.
   Remaining: extend Redis to a general cache seam (session/hot-lookup) at the same scale point.

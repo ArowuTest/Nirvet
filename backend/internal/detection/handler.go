@@ -58,6 +58,22 @@ func (h *Handler) ImportSigma(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, rule)
 }
 
+// CreateCEL handles POST /detections/cel — create a CEL expression rule.
+func (h *Handler) CreateCEL(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in CELRuleInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	rule, err := h.svc.CreateCELRule(r.Context(), p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, rule)
+}
+
 // SetEnabled handles POST /detections/{id}/enabled with body {"enabled":bool}.
 func (h *Handler) SetEnabled(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

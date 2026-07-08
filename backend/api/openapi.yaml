@@ -224,6 +224,13 @@ paths:
       requestBody: { required: true, content: { application/x-yaml: { schema: { type: string } } } }
       responses: { '201': { description: rule created, content: { application/json: { schema: { $ref: '#/components/schemas/DetectionRule' } } } }, '400': { description: unsupported/invalid Sigma } }
   /detections/{id}/enabled: { post: { tags: [detection], summary: Enable/disable a rule, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok } } } }
+  /detections/import/sigma: { post: { tags: [detection], summary: Import a Sigma rule (YAML body) → native condition rule (detection_engineer), responses: { '201': { description: created }, '400': { description: unsupported/invalid Sigma } } } }
+  /detections/cel:
+    post:
+      tags: [detection]
+      summary: Create a CEL expression rule (compiled + type-checked; must yield bool)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name, severity, expression], properties: { name: { type: string }, description: { type: string }, severity: { type: string }, confidence: { type: integer }, mitre: { type: array, items: { type: string } }, expression: { type: string, example: 'event.severity == "critical" && event.class_name.contains("malware")' } } } } } }
+      responses: { '201': { description: created }, '400': { description: invalid CEL expression } }
   /alerts: { get: { tags: [alerts], summary: List alerts, parameters: [{ name: status, in: query, schema: { type: string } }], responses: { '200': { description: alerts } } } }
   /alerts/{id}: { get: { tags: [alerts], summary: Get alert, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: alert, content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } } } } }
   /alerts/{id}/assign: { post: { tags: [alerts], summary: Assign alert, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: assigned } } } }
