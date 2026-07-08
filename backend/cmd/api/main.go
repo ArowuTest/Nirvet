@@ -5,6 +5,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -173,8 +176,27 @@ func main() {
 	// correlations/asset for an entity ref.
 	entityGraphH := entitygraph.NewHandler(entitygraph.NewService(alertSvc, incidentSvc, correlationSvc, assetSvc))
 
-	// Evidence-pack export (§6.13): composes case + alert + event + asset + audit reads.
-	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, db))
+	// Evidence-pack signing key (R2 H-B): a persistent Ed25519 seed from config, else an
+	// ephemeral per-process key in dev (packs are still really signed, just not verifiable
+	// across a restart — production requires the key via config guard).
+	var evidenceSigner ed25519.PrivateKey
+	if cfg.EvidenceSigningKey != "" {
+		seed, derr := base64.StdEncoding.DecodeString(cfg.EvidenceSigningKey)
+		if derr != nil || len(seed) != ed25519.SeedSize {
+			log.Error("evidence signing key invalid: need a base64 32-byte Ed25519 seed")
+			os.Exit(1)
+		}
+		evidenceSigner = ed25519.NewKeyFromSeed(seed)
+	} else {
+		if _, evidenceSigner, err = ed25519.GenerateKey(rand.Reader); err != nil {
+			log.Error("evidence signer keygen failed", "err", err)
+			os.Exit(1)
+		}
+		log.Warn("evidence signing key not set — using an ephemeral key; exported packs cannot be verified across restarts")
+	}
+	// Evidence-pack export (§6.13): composes case + alert + event + asset + audit reads,
+	// with an Ed25519 signature over the pack digest (R2 H-B).
+	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, db, evidenceSigner))
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
 	billingH := billing.NewHandler(billingSvc)
@@ -348,6 +370,7 @@ func main() {
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
 	mux.Handle("GET /incidents/{id}/evidence-pack", senior(evidenceH.Pack))
+	mux.Handle("GET /evidence/public-key", provider(evidenceH.PublicKey)) // publish for out-of-band verification
 	// Asset inventory (§6.15)
 	mux.Handle("POST /assets", manager(assetH.Create))
 	mux.Handle("GET /assets", provider(assetH.List))

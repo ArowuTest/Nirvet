@@ -27,11 +27,12 @@ func TestLoadDevelopmentDefaults(t *testing.T) {
 func TestProductionGuards(t *testing.T) {
 	// A fully-valid production environment (mutated per case below).
 	base := map[string]string{
-		"NIRVET_ENV":                "production",
-		"NIRVET_JWT_SECRET":         "a-real-secret",
-		"NIRVET_BOOTSTRAP_PASSWORD": "a-real-bootstrap-pw",
-		"NIRVET_SECRET_MASTER_KEY":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32 bytes b64
-		"NIRVET_KMS_KEY_NAME":       "",
+		"NIRVET_ENV":                  "production",
+		"NIRVET_JWT_SECRET":           "a-real-secret",
+		"NIRVET_BOOTSTRAP_PASSWORD":   "a-real-bootstrap-pw",
+		"NIRVET_SECRET_MASTER_KEY":    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32 bytes b64
+		"NIRVET_KMS_KEY_NAME":         "",
+		"NIRVET_EVIDENCE_SIGNING_KEY": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
 	}
 
 	cases := []struct {
@@ -43,6 +44,7 @@ func TestProductionGuards(t *testing.T) {
 		{"default jwt", map[string]string{"NIRVET_JWT_SECRET": "dev-insecure-change-me"}, "NIRVET_JWT_SECRET"},
 		{"default bootstrap pw", map[string]string{"NIRVET_BOOTSTRAP_PASSWORD": "ChangeMe123!"}, "NIRVET_BOOTSTRAP_PASSWORD"},
 		{"no vault key", map[string]string{"NIRVET_SECRET_MASTER_KEY": ""}, "NIRVET_SECRET_MASTER_KEY"},
+		{"no evidence signing key", map[string]string{"NIRVET_EVIDENCE_SIGNING_KEY": ""}, "NIRVET_EVIDENCE_SIGNING_KEY"},
 		{"kms satisfies vault", map[string]string{"NIRVET_SECRET_MASTER_KEY": "", "NIRVET_KMS_KEY_NAME": "projects/p/locations/l/keyRings/r/cryptoKeys/k"}, ""},
 	}
 

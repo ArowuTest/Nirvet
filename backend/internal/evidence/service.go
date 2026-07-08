@@ -2,9 +2,12 @@ package evidence
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
 	"time"
 
@@ -45,11 +48,22 @@ type Service struct {
 	events    eventstore.EventStore
 	assets    Assets
 	db        *database.DB
+	signer    ed25519.PrivateKey // signs the pack digest (R2 H-B)
 }
 
-// NewService builds the evidence service.
-func NewService(incidents Incidents, alerts Alerts, events eventstore.EventStore, assets Assets, db *database.DB) *Service {
-	return &Service{incidents: incidents, alerts: alerts, events: events, assets: assets, db: db}
+// NewService builds the evidence service. signer signs each pack's digest; it must be
+// non-nil (main wires a config key or an ephemeral dev key).
+func NewService(incidents Incidents, alerts Alerts, events eventstore.EventStore, assets Assets, db *database.DB, signer ed25519.PrivateKey) *Service {
+	return &Service{incidents: incidents, alerts: alerts, events: events, assets: assets, db: db, signer: signer}
+}
+
+// PublicKey returns the base64 Ed25519 public key that signs evidence packs, so it can
+// be published for recipients to verify exported packs out-of-band.
+func (s *Service) PublicKey() string {
+	if s.signer == nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(s.signer.Public().(ed25519.PublicKey))
 }
 
 // Build assembles the evidence pack for an incident in the caller's tenant, stamped
@@ -113,7 +127,7 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 		Assets:        assets,
 		Audit:         auditRows,
 	}
-	pack.Manifest = buildManifest(pack)
+	pack.Manifest = s.buildManifest(pack)
 	return pack, nil
 }
 
@@ -124,10 +138,10 @@ func checksum(v any) string {
 	return hex.EncodeToString(h[:])
 }
 
-// buildManifest computes per-section checksums, counts, and an overall pack checksum
-// over the (stably-ordered) section checksums.
-func buildManifest(p *Pack) Manifest {
-	sc := map[string]string{
+// sectionChecksums recomputes the per-section SHA-256 checksums for a pack (used both
+// when building and when verifying).
+func sectionChecksums(p *Pack) map[string]string {
+	return map[string]string{
 		"incident": checksum(p.Incident),
 		"timeline": checksum(p.Timeline),
 		"alerts":   checksum(p.Alerts),
@@ -135,6 +149,33 @@ func buildManifest(p *Pack) Manifest {
 		"assets":   checksum(p.Assets),
 		"audit":    checksum(p.Audit),
 	}
+}
+
+// digestInput is the canonical message that is signed: the ENVELOPE metadata folded
+// with the (stably-ordered) section checksums. Because it includes generated_at/by,
+// tenant and schema, altering any of those — not just a section — invalidates the
+// signature (R2 H-B, envelope was previously unhashed).
+func digestInput(schemaVersion, generatedBy string, generatedAt time.Time, tenantID uuid.UUID, sc map[string]string) []byte {
+	keys := make([]string, 0, len(sc))
+	for k := range sc {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b []byte
+	b = append(b, "schema="+schemaVersion+"\n"...)
+	b = append(b, "generated_at="+generatedAt.UTC().Format(time.RFC3339Nano)+"\n"...)
+	b = append(b, "generated_by="+generatedBy+"\n"...)
+	b = append(b, "tenant="+tenantID.String()+"\n"...)
+	for _, k := range keys {
+		b = append(b, k+":"+sc[k]+";"...)
+	}
+	return b
+}
+
+// buildManifest computes per-section checksums + counts, the canonical pack digest, and
+// an Ed25519 signature over that digest.
+func (s *Service) buildManifest(p *Pack) Manifest {
+	sc := sectionChecksums(p)
 	counts := map[string]int{
 		"timeline": len(p.Timeline),
 		"alerts":   len(p.Alerts),
@@ -142,20 +183,57 @@ func buildManifest(p *Pack) Manifest {
 		"assets":   len(p.Assets),
 		"audit":    len(p.Audit),
 	}
-	keys := make([]string, 0, len(sc))
-	for k := range sc {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	concat := ""
-	for _, k := range keys {
-		concat += k + ":" + sc[k] + ";"
-	}
-	h := sha256.Sum256([]byte(concat))
-	return Manifest{
+	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, sc)
+	digest := sha256.Sum256(msg)
+	m := Manifest{
 		Algorithm:       "sha256",
 		SectionChecksum: sc,
 		Counts:          counts,
-		PackChecksum:    hex.EncodeToString(h[:]),
+		PackDigest:      hex.EncodeToString(digest[:]),
 	}
+	if s.signer != nil {
+		sig := ed25519.Sign(s.signer, msg)
+		pub := s.signer.Public().(ed25519.PublicKey)
+		m.Signature = &Signature{
+			Algorithm: "ed25519",
+			PublicKey: base64.StdEncoding.EncodeToString(pub),
+			Value:     base64.StdEncoding.EncodeToString(sig),
+		}
+	}
+	return m
+}
+
+// Verify checks a pack's integrity independently: it recomputes each section checksum
+// from the section data (detecting any edited content), recomputes the canonical digest,
+// and verifies the Ed25519 signature against trustedPubKey — the platform's published
+// key, obtained OUT OF BAND. The public key embedded in the pack is NOT trusted for
+// verification (a tamperer could swap it); it is only a hint. Returns nil iff the pack
+// is authentic and unaltered.
+func Verify(p *Pack, trustedPubKey ed25519.PublicKey) error {
+	if p.Manifest.Signature == nil {
+		return errors.New("evidence: pack is unsigned")
+	}
+	// 1. Section content must match the recorded checksums (no edited section).
+	got := sectionChecksums(p)
+	for k, want := range p.Manifest.SectionChecksum {
+		if got[k] != want {
+			return errors.New("evidence: section '" + k + "' has been altered")
+		}
+	}
+	for k := range got {
+		if _, ok := p.Manifest.SectionChecksum[k]; !ok {
+			return errors.New("evidence: manifest is missing section '" + k + "'")
+		}
+	}
+	// 2. Recompute the signed message from the (verified) section checksums + envelope.
+	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, got)
+	// 3. Verify the signature against the TRUSTED key.
+	sig, err := base64.StdEncoding.DecodeString(p.Manifest.Signature.Value)
+	if err != nil {
+		return errors.New("evidence: malformed signature")
+	}
+	if !ed25519.Verify(trustedPubKey, msg, sig) {
+		return errors.New("evidence: signature verification failed")
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ package integrationtest
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"io"
@@ -50,21 +51,22 @@ type harness struct {
 	approver  auth.Principal // distinct senior (soc_manager) who approves — four-eyes
 	email     string
 
-	iamSvc   *iam.Service
-	ingest   *ingestion.Service
-	worker   *ingestion.Worker
-	alertSvc *alert.Service
-	incSvc   *incident.Service
-	connSvc  *connector.Service
-	soarSvc  *soar.Service
-	billSvc  *billing.Service
-	repSvc   *reporting.Service
-	corrSvc  *correlation.Service
-	events   eventstore.EventStore
-	evidence *evidence.Service
-	assetSvc *asset.Service
-	graphSvc *entitygraph.Service
-	aiSvc    *ai.Service
+	iamSvc         *iam.Service
+	ingest         *ingestion.Service
+	worker         *ingestion.Worker
+	alertSvc       *alert.Service
+	incSvc         *incident.Service
+	connSvc        *connector.Service
+	soarSvc        *soar.Service
+	billSvc        *billing.Service
+	repSvc         *reporting.Service
+	corrSvc        *correlation.Service
+	events         eventstore.EventStore
+	evidence       *evidence.Service
+	evidenceSigner ed25519.PrivateKey
+	assetSvc       *asset.Service
+	graphSvc       *entitygraph.Service
+	aiSvc          *ai.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -144,24 +146,26 @@ func newHarness(t *testing.T) *harness {
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 	assetSvc := asset.NewService(asset.NewRepository(db))
 	incSvc.WithAssetContext(assetSvc) // critical-asset escalation (§6.8/§6.15)
+	_, evidenceSigner, _ := ed25519.GenerateKey(rand.Reader)
 
 	return &harness{
 		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, approver: approver, email: email,
-		iamSvc:   iamSvc,
-		ingest:   ingestSvc,
-		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
-		alertSvc: alertSvc,
-		incSvc:   incSvc,
-		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
-		soarSvc:  soar.NewService(soar.NewRepository(db)),
-		billSvc:  billing.NewService(billing.NewRepository(db)),
-		repSvc:   reporting.NewService(db, events),
-		corrSvc:  corrSvc,
-		events:   events,
-		assetSvc: assetSvc,
-		evidence: evidence.NewService(incSvc, alertSvc, events, assetSvc, db),
-		graphSvc: entitygraph.NewService(alertSvc, incSvc, corrSvc, assetSvc),
-		aiSvc:    ai.NewService(ai.NewGateway("", "test-model"), alertSvc, db).WithIncidentContext(incSvc, assetSvc),
+		iamSvc:         iamSvc,
+		ingest:         ingestSvc,
+		worker:         ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
+		alertSvc:       alertSvc,
+		incSvc:         incSvc,
+		connSvc:        connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
+		soarSvc:        soar.NewService(soar.NewRepository(db)),
+		billSvc:        billing.NewService(billing.NewRepository(db)),
+		repSvc:         reporting.NewService(db, events),
+		corrSvc:        corrSvc,
+		events:         events,
+		assetSvc:       assetSvc,
+		evidence:       evidence.NewService(incSvc, alertSvc, events, assetSvc, db, evidenceSigner),
+		evidenceSigner: evidenceSigner,
+		graphSvc:       entitygraph.NewService(alertSvc, incSvc, corrSvc, assetSvc),
+		aiSvc:          ai.NewService(ai.NewGateway("", "test-model"), alertSvc, db).WithIncidentContext(incSvc, assetSvc),
 	}
 }
 
@@ -637,8 +641,20 @@ func TestIntegration(t *testing.T) {
 		if !foundAudit {
 			t.Fatal("pack must contain the incident's audit entry")
 		}
-		if pack.Manifest.PackChecksum == "" || pack.Manifest.SectionChecksum["events"] == "" {
-			t.Fatal("pack manifest checksums must be set")
+		if pack.Manifest.PackDigest == "" || pack.Manifest.SectionChecksum["events"] == "" {
+			t.Fatal("pack manifest digest/checksums must be set")
+		}
+		// The pack must carry a real Ed25519 signature that verifies against the signer's
+		// public key (R2 H-B), and tampering must break it.
+		if pack.Manifest.Signature == nil {
+			t.Fatal("pack must be signed")
+		}
+		if err := evidence.Verify(pack, h.evidenceSigner.Public().(ed25519.PublicKey)); err != nil {
+			t.Fatalf("signed pack must verify: %v", err)
+		}
+		pack.Incident.Title = pack.Incident.Title + " TAMPERED"
+		if err := evidence.Verify(pack, h.evidenceSigner.Public().(ed25519.PublicKey)); err == nil {
+			t.Fatal("tampered pack must fail verification")
 		}
 		if pack.Manifest.Counts["alerts"] != len(pack.Alerts) {
 			t.Fatalf("manifest alert count %d must match %d", pack.Manifest.Counts["alerts"], len(pack.Alerts))

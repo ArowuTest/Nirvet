@@ -35,6 +35,11 @@ type Config struct {
 	SecretMasterKey string
 	KMSKeyName      string // GCP KMS CryptoKey resource name; empty => use local cipher
 
+	// EvidenceSigningKey is a base64 32-byte Ed25519 seed used to sign exported evidence
+	// packs (R2 H-B). Empty => an ephemeral per-process key (dev): packs are still really
+	// signed, but cannot be verified across a restart. Required in production.
+	EvidenceSigningKey string
+
 	// Evidence/object storage (ADR-0002/0005). GCS bucket => cloud; else local dir.
 	GCSBucket string
 	BlobDir   string
@@ -73,30 +78,31 @@ type Config struct {
 // Load reads configuration from the environment, applying development defaults.
 func Load() (*Config, error) {
 	c := &Config{
-		Env:               env("NIRVET_ENV", "development"),
-		HTTPAddr:          env("NIRVET_HTTP_ADDR", ":8080"),
-		DatabaseURL:       env("NIRVET_DATABASE_URL", "postgres://nirvet_app:nirvet_app@localhost:5432/nirvet?sslmode=disable"),
-		JWTSecret:         env("NIRVET_JWT_SECRET", "dev-insecure-change-me"),
-		JWTIssuer:         env("NIRVET_JWT_ISSUER", "nirvet"),
-		CORSOrigin:        env("NIRVET_CORS_ORIGIN", "http://localhost:3000"),
-		TrustedProxyDepth: envInt("NIRVET_TRUSTED_PROXY_DEPTH", 1),
-		AccessTTL:         envDuration("NIRVET_ACCESS_TTL", 15*time.Minute),
-		RefreshTTL:        envDuration("NIRVET_REFRESH_TTL", 720*time.Hour),
-		SecretMasterKey:   env("NIRVET_SECRET_MASTER_KEY", ""),
-		KMSKeyName:        env("NIRVET_KMS_KEY_NAME", ""),
-		AnthropicAPIKey:   env("NIRVET_ANTHROPIC_API_KEY", ""),
-		AIModel:           env("NIRVET_AI_MODEL", "claude-sonnet-5"),
-		GCSBucket:         env("NIRVET_GCS_BUCKET", ""),
-		BlobDir:           env("NIRVET_BLOB_DIR", ""),
-		ClickHouseDSN:     env("NIRVET_CLICKHOUSE_DSN", ""),
-		OTLPEndpoint:      env("NIRVET_OTLP_ENDPOINT", env("OTEL_EXPORTER_OTLP_ENDPOINT", "")),
-		ServiceVer:        env("NIRVET_SERVICE_VERSION", "dev"),
-		RedisAddr:         env("NIRVET_REDIS_ADDR", ""),
-		NATSURL:           env("NIRVET_NATS_URL", ""),
-		IngestWorkers:     envInt("NIRVET_INGEST_WORKERS", 4),
-		InlineWorker:      env("NIRVET_INLINE_WORKER", "true") == "true",
-		BootstrapEmail:    env("NIRVET_BOOTSTRAP_EMAIL", "admin@nirvet.local"),
-		BootstrapPassword: env("NIRVET_BOOTSTRAP_PASSWORD", "ChangeMe123!"),
+		Env:                env("NIRVET_ENV", "development"),
+		HTTPAddr:           env("NIRVET_HTTP_ADDR", ":8080"),
+		DatabaseURL:        env("NIRVET_DATABASE_URL", "postgres://nirvet_app:nirvet_app@localhost:5432/nirvet?sslmode=disable"),
+		JWTSecret:          env("NIRVET_JWT_SECRET", "dev-insecure-change-me"),
+		JWTIssuer:          env("NIRVET_JWT_ISSUER", "nirvet"),
+		CORSOrigin:         env("NIRVET_CORS_ORIGIN", "http://localhost:3000"),
+		TrustedProxyDepth:  envInt("NIRVET_TRUSTED_PROXY_DEPTH", 1),
+		AccessTTL:          envDuration("NIRVET_ACCESS_TTL", 15*time.Minute),
+		RefreshTTL:         envDuration("NIRVET_REFRESH_TTL", 720*time.Hour),
+		SecretMasterKey:    env("NIRVET_SECRET_MASTER_KEY", ""),
+		KMSKeyName:         env("NIRVET_KMS_KEY_NAME", ""),
+		EvidenceSigningKey: env("NIRVET_EVIDENCE_SIGNING_KEY", ""),
+		AnthropicAPIKey:    env("NIRVET_ANTHROPIC_API_KEY", ""),
+		AIModel:            env("NIRVET_AI_MODEL", "claude-sonnet-5"),
+		GCSBucket:          env("NIRVET_GCS_BUCKET", ""),
+		BlobDir:            env("NIRVET_BLOB_DIR", ""),
+		ClickHouseDSN:      env("NIRVET_CLICKHOUSE_DSN", ""),
+		OTLPEndpoint:       env("NIRVET_OTLP_ENDPOINT", env("OTEL_EXPORTER_OTLP_ENDPOINT", "")),
+		ServiceVer:         env("NIRVET_SERVICE_VERSION", "dev"),
+		RedisAddr:          env("NIRVET_REDIS_ADDR", ""),
+		NATSURL:            env("NIRVET_NATS_URL", ""),
+		IngestWorkers:      envInt("NIRVET_INGEST_WORKERS", 4),
+		InlineWorker:       env("NIRVET_INLINE_WORKER", "true") == "true",
+		BootstrapEmail:     env("NIRVET_BOOTSTRAP_EMAIL", "admin@nirvet.local"),
+		BootstrapPassword:  env("NIRVET_BOOTSTRAP_PASSWORD", "ChangeMe123!"),
 	}
 	if c.IsProduction() && c.JWTSecret == "dev-insecure-change-me" {
 		return nil, fmt.Errorf("config: NIRVET_JWT_SECRET must be set in production")
@@ -114,6 +120,11 @@ func Load() (*Config, error) {
 	// is the supported path.
 	if c.IsProduction() && c.KMSKeyName == "" && c.SecretMasterKey == "" {
 		return nil, fmt.Errorf("config: set NIRVET_SECRET_MASTER_KEY (or NIRVET_KMS_KEY_NAME) in production; otherwise connector credentials and MFA secrets use an ephemeral key and are lost on restart")
+	}
+	// Evidence-pack signing key must be persistent in production, else exported packs
+	// signed before a restart can no longer be verified (R2 H-B).
+	if c.IsProduction() && c.EvidenceSigningKey == "" {
+		return nil, fmt.Errorf("config: NIRVET_EVIDENCE_SIGNING_KEY (base64 32-byte Ed25519 seed) must be set in production so exported evidence packs are verifiable across restarts")
 	}
 	return c, nil
 }

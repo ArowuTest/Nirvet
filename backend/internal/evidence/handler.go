@@ -36,3 +36,9 @@ func (h *Handler) Pack(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="evidence-`+id.String()+`.json"`)
 	httpx.JSON(w, http.StatusOK, pack)
 }
+
+// PublicKey handles GET /evidence/public-key — the Ed25519 public key that signs packs,
+// so operators can publish it for recipients to verify exported packs out-of-band.
+func (h *Handler) PublicKey(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]string{"algorithm": "ed25519", "public_key": h.svc.PublicKey()})
+}
