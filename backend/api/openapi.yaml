@@ -192,6 +192,7 @@ paths:
     post: { tags: [sso], summary: Create a SAML connection (IdP entityID/SSO URL/cert + SP entityID/ACS), responses: { '201': { description: created } } }
   /admin/sso/saml/{id}: { delete: { tags: [sso], summary: Delete a SAML connection, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
   /me: { get: { tags: [auth], summary: Current user, responses: { '200': { description: user, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } } } } }
+  /me/password: { post: { tags: [auth], summary: Change own password (verifies current), requestBody: { required: true, content: { application/json: { schema: { type: object, required: [current_password, new_password], properties: { current_password: { type: string }, new_password: { type: string, minLength: 8 } } } } } }, responses: { '200': { description: changed }, '401': { description: current password incorrect } } } }
   /mfa/enroll: { post: { tags: [mfa], summary: Begin TOTP enrollment (returns otpauth URI + secret once), responses: { '200': { description: enrolled } } } }
   /mfa/activate: { post: { tags: [mfa], summary: Activate MFA with a code, responses: { '200': { description: enabled }, '400': { description: invalid code } } } }
   /mfa/disable: { post: { tags: [mfa], summary: Disable MFA (verifies a code), responses: { '200': { description: disabled } } } }
@@ -225,7 +226,6 @@ paths:
       requestBody: { required: true, content: { application/x-yaml: { schema: { type: string } } } }
       responses: { '201': { description: rule created, content: { application/json: { schema: { $ref: '#/components/schemas/DetectionRule' } } } }, '400': { description: unsupported/invalid Sigma } }
   /detections/{id}/enabled: { post: { tags: [detection], summary: Enable/disable a rule, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok } } } }
-  /detections/import/sigma: { post: { tags: [detection], summary: Import a Sigma rule (YAML body) → native condition rule (detection_engineer), responses: { '201': { description: created }, '400': { description: unsupported/invalid Sigma } } } }
   /detections/cel:
     post:
       tags: [detection]

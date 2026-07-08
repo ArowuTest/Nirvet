@@ -80,10 +80,28 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 - **#10 Scale** — API and worker are stateless containers; the ingest worker is safe to run N-wide
   (`FOR UPDATE SKIP LOCKED`). Only rate-limit counters are per-instance (Redis for global limits — ADR-0005).
 
-## Gaps being closed (this pass)
+## Security posture
+
+A security review (Jul 2026) found and fixed 5 Criticals + several High/Med issues
+(audit immutability, SSO role escalation, ingest severity ordering, ingestion
+durability, production vault guard, SOAR four-eyes, worker panic recovery, self-service
+password change, login brute-force lockout). Full findings, fix commits, and the items
+**deferred to pre-go-live** are tracked in [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md).
+That file is authoritative for security status.
+
+## Test-coverage gaps closed (this pass)
 
 - **#8 OpenAPI** — DONE: `backend/api/openapi.yaml` embedded + served at `/openapi.yaml` + `/docs`.
 - **#9 Tracing** — DONE: OpenTelemetry in `internal/platform/tracing` (+ unit tests), wired into api & worker.
 - **#1/#2 tests** — DONE: ai (guardrails), threatintel (enricher), billing (quota), reporting (aggregates),
   tenant (validation), incident (heartbeat). alert is integration-covered (no standalone unit — DB-bound).
-  Every module now has meaningful unit and/or integration coverage; no silent gaps remain in the matrix.
+
+## Honest scope caveats (matrix ✅ = "built + tested", NOT "feature-complete")
+
+The matrix rates engineering DoD, not product completeness. Several modules are
+intentionally shallow and must not be read as full features (see SECURITY_REVIEW.md
+"Known functional gaps"): **threatintel** is watchlist-only (no STIX/TAXII),
+**notify** logs rather than delivering to real channels, **compliance** is static,
+**reporting** is JSON aggregates only. Not yet built: **customer-facing portal**,
+fine-grained **read-side RBAC** for customer viewers, incident **SLA timers**, and the
+**MFA login UI** (API + enforcement exist; front-end prompt pending designer HTML).
