@@ -136,6 +136,46 @@ func TestSeverityBands(t *testing.T) {
 	}
 }
 
+// TestNormalizeAzureSentinel maps a Sentinel alert (name, severity, entity, technique).
+func TestNormalizeAzureSentinel(t *testing.T) {
+	out := Normalize(IngestInput{
+		Source: "azure-sentinel",
+		Data: map[string]any{
+			"AlertName": "Suspicious sign-in", "AlertSeverity": "High",
+			"CompromisedEntity": "VM-APP-2", "Techniques": "T1078",
+		},
+	})
+	if out.ClassName != "Suspicious sign-in" || out.Severity != "high" || out.TargetRef != "host:VM-APP-2" {
+		t.Errorf("mapping wrong: class=%q sev=%q target=%q", out.ClassName, out.Severity, out.TargetRef)
+	}
+	if m, ok := out.Data["mitre"].([]string); !ok || m[0] != "T1078" {
+		t.Errorf("mitre not surfaced: %v", out.Data["mitre"])
+	}
+	if out.Data["vendor"] != "Microsoft" || out.Data["product"] != "Sentinel" {
+		t.Errorf("vendor/product wrong: %v/%v", out.Data["vendor"], out.Data["product"])
+	}
+}
+
+// TestNormalizeGCPSCC maps a Security Command Center finding (category, CRITICAL, resource).
+func TestNormalizeGCPSCC(t *testing.T) {
+	out := Normalize(IngestInput{
+		Source: "gcp-scc",
+		Data: map[string]any{
+			"category": "PERSISTENCE_IAM_ANOMALOUS_GRANT", "severity": "CRITICAL",
+			"resourceName": "//compute.googleapis.com/projects/p/instances/i", "state": "ACTIVE",
+		},
+	})
+	if out.ClassName != "PERSISTENCE_IAM_ANOMALOUS_GRANT" || out.Severity != "critical" {
+		t.Errorf("mapping wrong: class=%q sev=%q", out.ClassName, out.Severity)
+	}
+	if out.TargetRef == "" || out.Outcome != "active" {
+		t.Errorf("target/outcome wrong: target=%q outcome=%q", out.TargetRef, out.Outcome)
+	}
+	if out.Data["vendor"] != "Google Cloud" {
+		t.Errorf("vendor wrong: %v", out.Data["vendor"])
+	}
+}
+
 // TestUnknownSourceIsIdentity verifies an unregistered source passes through
 // (except canonical severity) and still gets vendor/product stamped (ADR-0006).
 func TestUnknownSourceIsIdentity(t *testing.T) {

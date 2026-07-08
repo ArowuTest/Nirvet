@@ -61,6 +61,8 @@ func Registry() []Descriptor {
 		{Key: "okta", Name: "Okta", Category: "Identity", Direction: DirectionRead, Phase: "V1"},
 		{Key: "palo-alto", Name: "Palo Alto Networks", Category: "Firewall", Direction: DirectionRead, Phase: "V1"},
 		{Key: "aws-guardduty", Name: "AWS GuardDuty", Category: "Cloud", Direction: DirectionRead, Phase: "V1"},
+		{Key: "azure-sentinel", Name: "Microsoft Sentinel", Category: "Cloud", Direction: DirectionRead, Phase: "V1"},
+		{Key: "gcp-scc", Name: "Google Security Command Center", Category: "Cloud", Direction: DirectionRead, Phase: "V1"},
 	}
 }
 

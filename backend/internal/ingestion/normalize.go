@@ -31,6 +31,10 @@ func init() {
 	RegisterMapper("panw", normalizePaloAlto)
 	RegisterMapper("aws-guardduty", normalizeGuardDuty)
 	RegisterMapper("guardduty", normalizeGuardDuty)
+	RegisterMapper("azure-sentinel", normalizeAzureSentinel)
+	RegisterMapper("sentinel", normalizeAzureSentinel)
+	RegisterMapper("gcp-scc", normalizeGCPSCC)
+	RegisterMapper("scc", normalizeGCPSCC)
 }
 
 // sourceMeta records the vendor + product a source belongs to, stamped into the
@@ -48,6 +52,10 @@ var sourceMeta = map[string][2]string{
 	"panw":               {"Palo Alto Networks", "NGFW"},
 	"aws-guardduty":      {"AWS", "GuardDuty"},
 	"guardduty":          {"AWS", "GuardDuty"},
+	"azure-sentinel":     {"Microsoft", "Sentinel"},
+	"sentinel":           {"Microsoft", "Sentinel"},
+	"gcp-scc":            {"Google Cloud", "Security Command Center"},
+	"scc":                {"Google Cloud", "Security Command Center"},
 }
 
 // Normalize applies the registered source mapper (identity fallback), canonicalises
@@ -231,6 +239,49 @@ func normalizeGuardDuty(in *IngestInput) {
 	if in.Action == "" {
 		if at := nestedStr(in.Data, "service", "action", "actionType"); at != "" {
 			in.Action = strings.ToLower(at)
+		}
+	}
+}
+
+// normalizeAzureSentinel maps a Microsoft Sentinel alert/incident: an alert name,
+// a named severity, a compromised entity, and MITRE tactics/techniques.
+func normalizeAzureSentinel(in *IngestInput) {
+	if in.ClassName == "" {
+		in.ClassName = firstStr(in.Data, "AlertName", "Title", "title", "DisplayName")
+	}
+	if in.Severity == "" {
+		in.Severity = firstStr(in.Data, "AlertSeverity", "severity", "Severity")
+	}
+	if in.TargetRef == "" {
+		if e := firstStr(in.Data, "CompromisedEntity", "compromisedEntity"); e != "" {
+			in.TargetRef = "host:" + e
+		}
+	}
+	if tech := firstStr(in.Data, "Techniques", "technique", "TechniqueId"); tech != "" {
+		in.Data["mitre"] = []string{tech}
+	}
+	if in.Action == "" {
+		in.Action = firstStr(in.Data, "Tactics", "tactic")
+	}
+}
+
+// normalizeGCPSCC maps a Google Security Command Center finding: a category, a
+// named severity (CRITICAL..LOW), a resource, and a state.
+func normalizeGCPSCC(in *IngestInput) {
+	if in.ClassName == "" {
+		in.ClassName = firstStr(in.Data, "category", "Category")
+	}
+	if in.Severity == "" {
+		in.Severity = firstStr(in.Data, "severity", "Severity") // CRITICAL/HIGH/... -> normalizeSeverity lowercases
+	}
+	if in.TargetRef == "" {
+		if r := firstStr(in.Data, "resourceName", "resource_name"); r != "" {
+			in.TargetRef = "resource:" + r
+		}
+	}
+	if in.Outcome == "" {
+		if st := firstStr(in.Data, "state", "State"); st != "" {
+			in.Outcome = strings.ToLower(st)
 		}
 	}
 }
