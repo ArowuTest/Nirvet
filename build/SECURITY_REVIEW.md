@@ -81,9 +81,11 @@ each gated + tested + green on both backends:
   bundles the case + timeline + linked alerts + underlying events + affected assets +
   audit trail with a SHA-256 checksum manifest (tamper-evident). Follow-on: signed/PDF
   export + object-store archival of generated packs.
-- **asset inventory (§6.15)** — slice 1 DONE (Jul 2026): tenant-scoped asset registry
-  (host/user/service/cloud) with business criticality, matched to cases by ref and
-  surfaced in the evidence pack (migration 0022, `internal/asset`). Follow-on:
-  vulnerability + exposure records, and criticality feeding incident severity/SLA.
+- **asset inventory (§6.15)** — slice 1 + 2 DONE (Jul 2026): tenant asset registry
+  (criticality, matched to cases by ref, feeds incident severity/SLA) + **vulnerability &
+  exposure** (`internal/vulnerability`, migration 0025): vulns mapped to assets by ref,
+  exposure summary, open vulns surfaced in the evidence pack (ASSET-004/002/006/007).
+  Follow-on: identity inventory (ASSET-003), auto priority-increase from exposure,
+  exceptions/accepted-risk workflow, scanner-pull connectors.
 
 See `MODULE_DEFINITION_OF_DONE.md` for the per-module test/RBAC/observability matrix.
