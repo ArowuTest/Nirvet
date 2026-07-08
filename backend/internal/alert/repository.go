@@ -108,6 +108,15 @@ func (r *Repository) Assign(ctx context.Context, tenantID, id, assignee uuid.UUI
 }
 
 // MarkPromoted links the alert to an incident.
+// SetCorrelation links an alert to its correlation cluster and records its
+// individual risk score (SRS §6.7). A nil correlationID clears the link.
+func (r *Repository) SetCorrelation(ctx context.Context, tenantID, id uuid.UUID, correlationID *uuid.UUID, risk int) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE alerts SET correlation_id=$2, risk_score=$3 WHERE id=$1`, id, correlationID, risk)
+		return err
+	})
+}
+
 func (r *Repository) MarkPromoted(ctx context.Context, tx pgx.Tx, id, incidentID uuid.UUID) error {
 	_, err := tx.Exec(ctx, `UPDATE alerts SET status='promoted', incident_id=$2 WHERE id=$1`, id, incidentID)
 	return err

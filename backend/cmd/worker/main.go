@@ -11,6 +11,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/connector"
+	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
@@ -69,7 +70,8 @@ func main() {
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	detEngine := detection.NewEngine(detection.NewRepository(db))
 	enricher := threatintel.NewEnricher(threatintel.NewRepository(db))
-	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log)
+	correlationSvc := correlation.NewService(correlation.NewRepository(db))
+	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc)
 
 	// Connector poller: pulls Microsoft Graph/Defender alerts through ingestion.
 	cipher, err := crypto.New(cfg.KMSKeyName, cfg.SecretMasterKey, log)

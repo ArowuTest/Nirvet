@@ -15,23 +15,34 @@ import (
 	"github.com/google/uuid"
 )
 
+// Correlator clusters a raised alert with related alerts and returns the cluster id
+// plus the alert's individual risk (SRS §6.7). Implemented by correlation.Service;
+// a narrow interface so ingestion does not depend on the correlation package.
+type Correlator interface {
+	Correlate(ctx context.Context, tenantID uuid.UUID, entity, severity string, mitre []string, confidence int) (correlationID uuid.UUID, alertRisk int, err error)
+}
+
 // Worker normalizes raw events into the EventStore and runs detection. It runs at
 // the system level (spans tenants); each job applies its own tenant context.
-// Pipeline per event: normalize -> enrich (threat intel) -> store -> detect.
+// Pipeline per event: normalize -> enrich (threat intel) -> store -> detect -> correlate.
 type Worker struct {
-	q        queue.Queue
-	events   eventstore.EventStore
-	enricher *threatintel.Enricher
-	detector *detection.Engine
-	alerts   *alert.Service
-	log      *slog.Logger
-	batch    int
+	q          queue.Queue
+	events     eventstore.EventStore
+	enricher   *threatintel.Enricher
+	detector   *detection.Engine
+	alerts     *alert.Service
+	correlator Correlator
+	log        *slog.Logger
+	batch      int
 }
 
 // NewWorker builds the ingestion worker.
 func NewWorker(q queue.Queue, events eventstore.EventStore, enricher *threatintel.Enricher, detector *detection.Engine, alerts *alert.Service, log *slog.Logger) *Worker {
 	return &Worker{q: q, events: events, enricher: enricher, detector: detector, alerts: alerts, log: log, batch: 20}
 }
+
+// WithCorrelator wires alert correlation + risk scoring (best-effort per alert).
+func (wk *Worker) WithCorrelator(c Correlator) *Worker { wk.correlator = c; return wk }
 
 // Start runs the worker loop until ctx is cancelled.
 func (wk *Worker) Start(ctx context.Context, interval time.Duration) {
@@ -183,13 +194,37 @@ func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) err
 			DetectionID: &ruleID,
 			MITRE:       m.MITRE,
 		}
-		_, inserted, err := wk.alerts.CreateFromEvent(ctx, ev, spec)
+		a, inserted, err := wk.alerts.CreateFromEvent(ctx, ev, spec)
 		if err != nil {
 			return err
 		}
 		if inserted {
 			metrics.AlertsRaised.Inc()
+			wk.correlate(ctx, ev, a)
 		}
 	}
 	return nil
+}
+
+// correlate clusters a newly-raised alert with related alerts on the same entity
+// and records the alert's risk (§6.7). Best-effort: a correlation failure never
+// blocks the detection pipeline.
+func (wk *Worker) correlate(ctx context.Context, ev eventstore.NormalizedEvent, a *alert.Alert) {
+	if wk.correlator == nil {
+		return
+	}
+	entity := ev.TargetRef
+	if entity == "" {
+		entity = ev.ActorRef
+	}
+	cid, risk, err := wk.correlator.Correlate(ctx, ev.TenantID, entity, a.Severity, a.MITRE, a.Confidence)
+	if err != nil {
+		wk.log.Warn("correlation failed", "alert", a.ID, "err", err)
+		return
+	}
+	var cptr *uuid.UUID
+	if cid != uuid.Nil {
+		cptr = &cid
+	}
+	_ = wk.alerts.SetCorrelation(ctx, ev.TenantID, a.ID, cptr, risk)
 }

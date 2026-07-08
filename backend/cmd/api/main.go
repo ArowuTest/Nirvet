@@ -19,6 +19,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/billing"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/connector"
+	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
@@ -124,6 +125,10 @@ func main() {
 
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	alertH := alert.NewHandler(alertSvc)
+
+	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
+	correlationSvc := correlation.NewService(correlation.NewRepository(db))
+	correlationH := correlation.NewHandler(correlationSvc)
 
 	detectionRepo := detection.NewRepository(db)
 	detEngine := detection.NewEngine(detectionRepo)
@@ -244,6 +249,9 @@ func main() {
 	mux.Handle("POST /ingest", authed(ingestH.Ingest))
 	mux.Handle("GET /events", provider(ingestH.Events))
 	// alerts (SOC)
+	// correlation (§6.7): risk-ranked clusters of related alerts
+	mux.Handle("GET /correlations", provider(correlationH.List))
+	mux.Handle("GET /correlations/{id}", provider(correlationH.Get))
 	mux.Handle("GET /alerts", provider(alertH.List))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
@@ -296,7 +304,7 @@ func main() {
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
 	if cfg.InlineWorker {
-		wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log)
+		wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc)
 		go wk.Start(workerCtx, time.Second)
 		poller := connector.NewPoller(connector.NewRepository(db), vault, ingestSvc, log)
 		go poller.Start(workerCtx, time.Minute)

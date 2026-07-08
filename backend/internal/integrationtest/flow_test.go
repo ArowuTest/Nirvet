@@ -18,6 +18,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/billing"
 	"github.com/ArowuTest/nirvet/internal/connector"
+	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
@@ -53,6 +54,7 @@ type harness struct {
 	soarSvc  *soar.Service
 	billSvc  *billing.Service
 	repSvc   *reporting.Service
+	corrSvc  *correlation.Service
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -118,18 +120,20 @@ func newHarness(t *testing.T) *harness {
 	detEng := detection.NewEngine(detection.NewRepository(db))
 	enr := threatintel.NewEnricher(threatintel.NewRepository(db))
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), q, nil, blobs)
+	corrSvc := correlation.NewService(correlation.NewRepository(db))
 
 	return &harness{
 		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, email: email,
 		iamSvc:   iamSvc,
 		ingest:   ingestSvc,
-		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log),
+		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
 		alertSvc: alertSvc,
 		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}),
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
 		billSvc:  billing.NewService(billing.NewRepository(db)),
 		repSvc:   reporting.NewService(db, events),
+		corrSvc:  corrSvc,
 	}
 }
 
@@ -394,6 +398,40 @@ func TestIntegration(t *testing.T) {
 		})
 		if audits < 1 {
 			t.Fatal("15. audit trail missing the login event")
+		}
+	})
+
+	t.Run("AlertCorrelationClustersByEntity", func(t *testing.T) {
+		// Two malware alerts on the SAME host must cluster into ONE risk-scored
+		// correlation (alert-fatigue reduction, §6.7) — proven through the real
+		// ingest → detect → alert → correlate worker path.
+		host := "host:CORR-" + uuid.NewString()
+		for _, nid := range []string{"c1-" + uuid.NewString(), "c2-" + uuid.NewString()} {
+			if _, err := h.ingest.Ingest(h.ctx, h.tenantID, ingestion.IngestInput{
+				Source: "corr-test", NativeID: nid, ClassName: "WinMalware.Gen", Severity: "critical", TargetRef: host,
+			}); err != nil {
+				t.Fatalf("ingest: %v", err)
+			}
+		}
+		if _, err := h.worker.RunOnce(h.ctx); err != nil {
+			t.Fatalf("worker: %v", err)
+		}
+		clusters, _ := h.corrSvc.List(h.ctx, h.tenantID, "open")
+		var found *correlation.Correlation
+		for i := range clusters {
+			if clusters[i].Entity == host {
+				found = &clusters[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("expected a correlation cluster for the shared host")
+		}
+		if found.AlertCount != 2 {
+			t.Fatalf("both alerts on the host should cluster: alert_count=%d", found.AlertCount)
+		}
+		if found.RiskScore <= 0 {
+			t.Fatalf("cluster should be risk-scored, got %d", found.RiskScore)
 		}
 	})
 

@@ -74,3 +74,8 @@ func (s *Service) Assign(ctx context.Context, tenantID, id, assignee uuid.UUID) 
 
 // Repo exposes the repository for cross-module transactional promotion (incident).
 func (s *Service) Repo() *Repository { return s.repo }
+
+// SetCorrelation links an alert to its correlation cluster and stores its risk (§6.7).
+func (s *Service) SetCorrelation(ctx context.Context, tenantID, id uuid.UUID, correlationID *uuid.UUID, risk int) error {
+	return s.repo.SetCorrelation(ctx, tenantID, id, correlationID, risk)
+}
