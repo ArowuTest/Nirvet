@@ -43,6 +43,14 @@ type EscalationResolver interface {
 	ResolveEscalation(ctx context.Context, tenantID uuid.UUID, severity string) ([]EscalationTarget, error)
 }
 
+// SLAResolver returns a tenant's admin-configured ack/resolve deadlines for a severity
+// (implemented by tenant.Service, §6.8). A nil resolver, an error, or a non-positive duration
+// means "not configured" → the service falls back to the built-in default policy (slaFor), so an
+// incident always gets a valid, non-zero SLA. Keeps incident decoupled from tenant governance.
+type SLAResolver interface {
+	ResolveSLA(ctx context.Context, tenantID uuid.UUID, severity string) (ack, resolve time.Duration, err error)
+}
+
 // Assignees resolves a candidate analyst within a tenant, returning their email.
 // It keeps incident decoupled from the iam package (implemented by iam.Service).
 // A membership miss (user in another tenant / not found) returns an error so an
@@ -77,6 +85,7 @@ type Service struct {
 	notifier   Notifier
 	enqueuer   Enqueuer
 	escalation EscalationResolver
+	sla        SLAResolver
 	assignees  Assignees
 	ticketer   Ticketer
 	assets     AssetContext
@@ -96,6 +105,22 @@ func (s *Service) WithEnqueuer(e Enqueuer) *Service { s.enqueuer = e; return s }
 // WithEscalation wires the tenant escalation-matrix resolver so breach notifications route to
 // the configured on-call contacts by severity (§6.1 TEN-006 → §6.16 routing, Phase 0).
 func (s *Service) WithEscalation(r EscalationResolver) *Service { s.escalation = r; return s }
+
+// WithSLA wires the tenant's admin-configurable SLA policy resolver (§6.8, Phase 0-D). When
+// unwired, due-times use the built-in default policy.
+func (s *Service) WithSLA(r SLAResolver) *Service { s.sla = r; return s }
+
+// resolveSLA returns the ack/resolve targets for a severity: the tenant's admin-configured SLA
+// when wired and present, else the built-in default policy — so an incident always gets a valid,
+// non-zero SLA even if the resolver is unwired, errors, or the tenant lacks a row (Phase 0-D).
+func (s *Service) resolveSLA(ctx context.Context, tenantID uuid.UUID, severity string) slaTarget {
+	if s.sla != nil {
+		if ack, resolve, err := s.sla.ResolveSLA(ctx, tenantID, severity); err == nil && ack > 0 && resolve > 0 {
+			return slaTarget{ack: ack, resolve: resolve}
+		}
+	}
+	return slaFor(severity)
+}
 
 // resolveTargets returns the escalation-matrix destinations for a severity (best-effort — a
 // resolver error or missing resolver yields no targets, and the caller falls back to log).
@@ -137,7 +162,7 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 	// SLA: an analyst promoted and owns this case, so it is acknowledged now; the
 	// ack/resolve deadlines follow the (possibly escalated) severity policy (§6.8).
 	now := time.Now()
-	ackDue, resolveDue := slaFor(severity).dueTimes(now)
+	ackDue, resolveDue := s.resolveSLA(ctx, p.TenantID, severity).dueTimes(now)
 	inc := &Incident{
 		ID:             uuid.New(),
 		TenantID:       p.TenantID,
@@ -220,7 +245,7 @@ func (s *Service) Assign(ctx context.Context, p auth.Principal, id, assigneeID u
 func (s *Service) OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, entity, severity string, risk int, techniques []string) (uuid.UUID, error) {
 	// SLA: system-opened and unassigned (no acknowledgement yet); ack/resolve
 	// deadlines follow the severity policy so a neglected auto-incident will breach.
-	ackDue, resolveDue := slaFor(severity).dueTimes(time.Now())
+	ackDue, resolveDue := s.resolveSLA(ctx, tenantID, severity).dueTimes(time.Now())
 	inc := &Incident{
 		ID: uuid.New(), TenantID: tenantID,
 		Title: "Correlated activity on " + entity, Severity: severity,

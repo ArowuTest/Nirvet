@@ -132,9 +132,26 @@ func (r *Repository) SeedGovernance(ctx context.Context, tenantID uuid.UUID) err
 		// Seeded catch-all is 'observe' — the most fail-closed mode: NO response action
 		// auto-executes until an admin configures otherwise (matches the platform's prior
 		// default and what SOAR consumes via ResolveAuthority; Phase 0 reconciliation).
-		_, err := tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO authority_policies (id, tenant_id, action_type, mode) VALUES ($1,$2,'*','observe')
-			 ON CONFLICT (tenant_id, action_type) DO NOTHING`, uuid.New(), tenantID)
+			 ON CONFLICT (tenant_id, action_type) DO NOTHING`, uuid.New(), tenantID); err != nil {
+			return err
+		}
+		// §6.8 SLA targets + §6.7 correlation policy: seed the admin-configurable defaults so
+		// no new tenant is unconfigured and the incident/correlation resolvers always find a row
+		// (Phase 0-D no-hardcoding). Values come from the Go seeded-default maps in policy.go.
+		for sev, secs := range defaultSLASeconds {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO sla_policies (tenant_id, severity, ack_seconds, resolve_seconds)
+				 VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, severity) DO NOTHING`,
+				tenantID, sev, secs[0], secs[1]); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO correlation_policies (tenant_id, window_seconds, promote_threshold, min_alerts_for_promotion)
+			 VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id) DO NOTHING`,
+			tenantID, defaultCorrelationWindowSeconds, defaultCorrelationPromote, defaultCorrelationMinAlerts)
 		return err
 	})
 }

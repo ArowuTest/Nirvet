@@ -167,10 +167,11 @@ func main() {
 	ticketingH := ticketing.NewHandler(ticketingSvc)
 
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
-		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc)
+		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc)
 	incidentH := incident.NewHandler(incidentSvc)
-	// High-risk correlation clusters auto-open an incident (§6.7).
-	correlationSvc.WithIncidenter(incidentSvc)
+	// High-risk correlation clusters auto-open an incident (§6.7); window/thresholds are the
+	// tenant's admin-configurable correlation policy (Phase 0-D no-hardcoding).
+	correlationSvc.WithIncidenter(incidentSvc).WithPolicy(tenantSvc)
 
 	// Asset inventory (§6.15): tenant-scoped assets with business criticality.
 	assetSvc := asset.NewService(asset.NewRepository(db), db)
@@ -367,6 +368,10 @@ func main() {
 	mux.Handle("DELETE /admin/tenants/{id}/escalation-contacts/{cid}", ssoAdmin(tenantH.DeleteEscalation))
 	mux.Handle("GET /admin/tenants/{id}/authority-policies", ssoAdmin(tenantH.ListAuthority))
 	mux.Handle("PUT /admin/tenants/{id}/authority-policies", ssoAdmin(tenantH.SetAuthority))
+	mux.Handle("GET /admin/tenants/{id}/sla-policies", ssoAdmin(tenantH.ListSLA))
+	mux.Handle("PUT /admin/tenants/{id}/sla-policies", ssoAdmin(tenantH.SetSLA))
+	mux.Handle("GET /admin/tenants/{id}/correlation-policy", ssoAdmin(tenantH.GetCorrelation))
+	mux.Handle("PUT /admin/tenants/{id}/correlation-policy", ssoAdmin(tenantH.SetCorrelation))
 	mux.Handle("GET /admin/tenants/{id}/history", ssoAdmin(tenantH.ListHistory))
 	// Service accounts + API keys (§6.2 IAM-001/005/008). Programmatic principals for
 	// connectors/customer scripts; the raw key is shown once at creation.

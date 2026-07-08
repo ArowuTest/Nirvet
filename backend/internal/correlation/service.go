@@ -14,10 +14,19 @@ type Incidenter interface {
 	OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, entity, severity string, risk int, techniques []string) (uuid.UUID, error)
 }
 
+// PolicyResolver returns a tenant's admin-configurable clustering window and auto-promotion
+// thresholds (§6.7, implemented by tenant.Service). A nil resolver or an error falls back to the
+// built-in defaults (Window/PromoteThreshold/MinAlertsForPromotion), so clustering always has a
+// non-zero window. Narrow interface so correlation does not depend on tenant governance.
+type PolicyResolver interface {
+	ResolveCorrelationPolicy(ctx context.Context, tenantID uuid.UUID) (window time.Duration, promoteThreshold, minAlerts int, err error)
+}
+
 // Service clusters alerts and scores risk.
 type Service struct {
 	repo       *Repository
 	incidenter Incidenter
+	policy     PolicyResolver
 }
 
 // NewService builds the service.
@@ -25,6 +34,33 @@ func NewService(repo *Repository) *Service { return &Service{repo: repo} }
 
 // WithIncidenter wires auto-promotion of high-risk clusters to incidents.
 func (s *Service) WithIncidenter(i Incidenter) *Service { s.incidenter = i; return s }
+
+// WithPolicy wires the tenant's admin-configurable correlation window/thresholds (§6.7 Phase 0-D).
+// When unwired, the built-in default constants are used.
+func (s *Service) WithPolicy(r PolicyResolver) *Service { s.policy = r; return s }
+
+// resolvePolicy returns the effective window + promotion thresholds for a tenant, falling back to
+// the built-in defaults when no resolver is wired, it errors, or a value is non-positive.
+func (s *Service) resolvePolicy(ctx context.Context, tenantID uuid.UUID) (window time.Duration, promoteThreshold, minAlerts int) {
+	window, promoteThreshold, minAlerts = Window, PromoteThreshold, MinAlertsForPromotion
+	if s.policy == nil {
+		return
+	}
+	w, th, mn, err := s.policy.ResolveCorrelationPolicy(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	if w > 0 {
+		window = w
+	}
+	if th > 0 {
+		promoteThreshold = th
+	}
+	if mn > 0 {
+		minAlerts = mn
+	}
+	return
+}
 
 // Correlate places an alert's signals into a correlation cluster for its entity
 // (creating one if none is open in the window), recomputes the cluster's aggregate
@@ -40,7 +76,8 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 	if entity == "" {
 		return uuid.Nil, individual, nil
 	}
-	since := time.Now().Add(-Window)
+	window, promoteThreshold, minAlerts := s.resolvePolicy(ctx, tenantID)
+	since := time.Now().Add(-window)
 	c, err := s.repo.UpdateActive(ctx, tenantID, entity, since, func(c *Correlation) {
 		c.AlertCount++
 		c.MaxSeverity = worseSeverity(c.MaxSeverity, severity)
@@ -60,7 +97,7 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 			return uuid.Nil, individual, err
 		}
 	}
-	s.maybePromote(ctx, tenantID, entity, c)
+	s.maybePromote(ctx, tenantID, entity, c, promoteThreshold, minAlerts)
 	return c.ID, individual, nil
 }
 
@@ -70,10 +107,11 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 // open an incident, and a cluster is never re-promoted (R2 H-C). Best-effort: a promotion
 // failure never breaks correlation; on incident-open failure the cluster stays 'promoted'
 // with no incident (it will not re-promote or spam) rather than looping forever.
-func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity string, c *Correlation) {
-	// Corroboration + threshold: an incident is auto-opened only when the cluster is
-	// both high-risk AND seen by >= MinAlertsForPromotion alerts (R2 M-A anti-spam).
-	if s.incidenter == nil || c.RiskScore < PromoteThreshold || c.AlertCount < MinAlertsForPromotion {
+func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity string, c *Correlation, promoteThreshold, minAlerts int) {
+	// Corroboration + threshold: an incident is auto-opened only when the cluster is both
+	// high-risk AND seen by >= minAlerts alerts (R2 M-A anti-spam). Both are the tenant's
+	// admin-configured values (§6.7 Phase 0-D), defaulting to the built-in constants.
+	if s.incidenter == nil || c.RiskScore < promoteThreshold || c.AlertCount < minAlerts {
 		return
 	}
 	// The in-memory status may be stale; the DB WHERE status='open' is authoritative.

@@ -147,9 +147,10 @@ func newHarness(t *testing.T) *harness {
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), q, nil, blobs)
 	outboxRepo := notify.NewOutboxRepository(db)
 	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
-	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}).WithEnqueuer(outboxRepo).WithEscalation(tenant.NewService(tenant.NewRepository(db)))
-	// High-risk correlation clusters auto-open an incident (§6.7).
-	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
+	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}).WithEnqueuer(outboxRepo).WithEscalation(tenant.NewService(tenant.NewRepository(db))).WithSLA(tenant.NewService(tenant.NewRepository(db)))
+	// High-risk correlation clusters auto-open an incident (§6.7); window/thresholds resolve
+	// from the tenant's admin-configurable correlation policy (Phase 0-D).
+	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc).WithPolicy(tenant.NewService(tenant.NewRepository(db)))
 	assetSvc := asset.NewService(asset.NewRepository(db), db)
 	incSvc.WithAssetContext(assetSvc) // critical-asset escalation (§6.8/§6.15)
 	vulnSvc := vulnerability.NewService(vulnerability.NewRepository(db))

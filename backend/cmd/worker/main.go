@@ -24,6 +24,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
+	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 )
 
@@ -72,8 +73,17 @@ func main() {
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	detEngine := detection.NewEngine(detection.NewRepository(db))
 	enricher := threatintel.NewEnricher(threatintel.NewRepository(db))
-	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notify.NewService(log))
-	correlationSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incidentSvc)
+	// The worker (not the api) owns the SLA sweeper in production, so it must wire the
+	// SAME durable-notification path the api does: an outbox-backed notify service, the
+	// enqueuer that writes breach notifications transactionally, and the tenant service
+	// that resolves the per-severity escalation matrix (§6.1/§6.8). Without WithEnqueuer
+	// the sweeper claims breaches but enqueues nothing — the prod bug this fixes.
+	outboxRepo := notify.NewOutboxRepository(db)
+	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
+	tenantSvc := tenant.NewService(tenant.NewRepository(db))
+	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
+		WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc)
+	correlationSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incidentSvc).WithPolicy(tenantSvc)
 	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc)
 
 	// Connector poller: pulls Microsoft Graph/Defender alerts through ingestion.
@@ -95,8 +105,11 @@ func main() {
 	go ingestSvc.StartReconciler(ctx, log, 30*time.Second, 60*time.Second, 100)
 	// SLA breach alerting (§6.8): notify + timeline once per breached deadline.
 	go incidentSvc.StartSLASweeper(ctx, log, time.Minute, 200)
+	// Deliver the durable notifications the sweeper enqueues (§6.16). The worker owns
+	// the dispatcher in production; the api runs it only in inline-worker (dev) mode.
+	go notifySvc.StartDispatcher(ctx, log, 15*time.Second, 200)
 
-	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper)")
+	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper + notify dispatcher)")
 	wk.Start(ctx, time.Second)
 	log.Info("nirvet worker stopped")
 }

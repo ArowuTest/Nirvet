@@ -62,23 +62,17 @@ func (s *localStore) Get(_ context.Context, uri string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(s.root, filepath.FromSlash(rel)))
 }
 
-// gcsStore is the GCP backend. TODO(ADR-0005): implement with
-// cloud.google.com/go/storage (bucket = cfg). Same interface, so wiring it in is
-// a one-line swap in New(); callers are unchanged.
-type gcsStore struct{ bucket string }
+// The GCP (GCS) backend is not yet implemented (ADR-0005). It is intentionally absent rather
+// than a runtime-erroring stub — New() fails fast when a bucket is configured (see below).
+// When implemented, add a gcsStore satisfying Store and return it from New().
 
-func (s *gcsStore) Backend() string { return "gcs" }
-func (s *gcsStore) Put(context.Context, uuid.UUID, string, []byte) (string, error) {
-	return "", fmt.Errorf("blobstore: GCS backend not yet implemented (ADR-0005)")
-}
-func (s *gcsStore) Get(context.Context, string) ([]byte, error) {
-	return nil, fmt.Errorf("blobstore: GCS backend not yet implemented (ADR-0005)")
-}
-
-// New selects the backend: GCS when a bucket is configured, else local.
+// New selects the backend: GCS when a bucket is configured, else local. The GCS backend is
+// not yet implemented (ADR-0005), so — like the KMS cipher — a configured-but-unimplemented
+// GCS bucket FAILS FAST at startup rather than returning a store that errors on every Put/Get
+// at runtime (which would silently break evidence capture in production).
 func New(gcsBucket, localDir string) (Store, error) {
 	if gcsBucket != "" {
-		return &gcsStore{bucket: gcsBucket}, nil
+		return nil, fmt.Errorf("blobstore: GCS backend not yet implemented (ADR-0005); unset NIRVET_GCS_BUCKET to use the local disk store, or wire the GCS backend before configuring a bucket")
 	}
 	return NewLocal(localDir)
 }

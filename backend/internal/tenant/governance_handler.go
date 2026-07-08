@@ -168,6 +168,72 @@ func (h *Handler) SetAuthority(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, ap)
 }
 
+// ListSLA handles GET /admin/tenants/{id}/sla-policies.
+func (h *Handler) ListSLA(w http.ResponseWriter, r *http.Request) {
+	_, id, ok := h.scoped(w, r)
+	if !ok {
+		return
+	}
+	ps, err := h.svc.ListSLAPolicies(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"policies": ps})
+}
+
+// SetSLA handles PUT /admin/tenants/{id}/sla-policies (upsert by severity).
+func (h *Handler) SetSLA(w http.ResponseWriter, r *http.Request) {
+	p, id, ok := h.scoped(w, r)
+	if !ok {
+		return
+	}
+	var in SLAInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	pol, err := h.svc.SetSLAPolicy(r.Context(), p, id, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pol)
+}
+
+// GetCorrelation handles GET /admin/tenants/{id}/correlation-policy.
+func (h *Handler) GetCorrelation(w http.ResponseWriter, r *http.Request) {
+	_, id, ok := h.scoped(w, r)
+	if !ok {
+		return
+	}
+	pol, err := h.svc.GetCorrelationPolicy(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pol)
+}
+
+// SetCorrelation handles PUT /admin/tenants/{id}/correlation-policy.
+func (h *Handler) SetCorrelation(w http.ResponseWriter, r *http.Request) {
+	p, id, ok := h.scoped(w, r)
+	if !ok {
+		return
+	}
+	var in CorrelationInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	pol, err := h.svc.SetCorrelationPolicy(r.Context(), p, id, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pol)
+}
+
 // ListHistory handles GET /admin/tenants/{id}/history.
 func (h *Handler) ListHistory(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := h.scoped(w, r)
