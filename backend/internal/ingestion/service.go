@@ -44,13 +44,14 @@ func (s *Service) Ingest(ctx context.Context, tenantID uuid.UUID, in IngestInput
 	if in.Source == "" {
 		return "", httpx.ErrBadRequest("source is required")
 	}
-	if in.Severity == "" {
-		in.Severity = "informational"
-	}
 	in.Severity = strings.ToLower(strings.TrimSpace(in.Severity))
-	// Reject invalid severity at the door (clear 400) rather than dead-lettering
-	// it later against the events severity CHECK constraint.
-	if !validSeverities[in.Severity] {
+	// A PROVIDED severity must be valid (reject at the door with a clear 400). An
+	// EMPTY severity is intentionally left empty so the source normalizer can derive
+	// it from vendor fields (e.g. CrowdStrike/GuardDuty numeric scales); Normalize
+	// finalizes any still-empty severity to "informational". Defaulting it here —
+	// before the mappers run — would make their `if severity == ""` derivation dead
+	// code and silently under-fire severity-gated detections.
+	if in.Severity != "" && !validSeverities[in.Severity] {
 		return "", httpx.ErrBadRequest("invalid severity: must be informational|low|medium|high|critical")
 	}
 	payload, err := json.Marshal(in)

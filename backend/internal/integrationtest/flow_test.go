@@ -55,6 +55,7 @@ type harness struct {
 	billSvc  *billing.Service
 	repSvc   *reporting.Service
 	corrSvc  *correlation.Service
+	events   eventstore.EventStore
 }
 
 // stubTicketer stands in for ticketing.Service (no HTTP) so the incident→ITSM
@@ -136,6 +137,7 @@ func newHarness(t *testing.T) *harness {
 		billSvc:  billing.NewService(billing.NewRepository(db)),
 		repSvc:   reporting.NewService(db, events),
 		corrSvc:  corrSvc,
+		events:   events,
 	}
 }
 
@@ -165,6 +167,25 @@ func TestIntegration(t *testing.T) {
 		})
 		if n < 1 {
 			t.Fatal("expected an auth.login audit record")
+		}
+	})
+
+	t.Run("AuditLogIsAppendOnly", func(t *testing.T) {
+		// The audit trail is the evidentiary spine — the app role must not be able to
+		// rewrite or erase it (SEC/NFR-003, migration 0017).
+		err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE audit_log SET action='tamper'`)
+			return e
+		})
+		if err == nil {
+			t.Fatal("app role must NOT be able to UPDATE audit_log")
+		}
+		err = h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `DELETE FROM audit_log`)
+			return e
+		})
+		if err == nil {
+			t.Fatal("app role must NOT be able to DELETE from audit_log")
 		}
 	})
 
@@ -498,10 +519,31 @@ func TestIntegration(t *testing.T) {
 			t.Fatal("CrowdStrike detection did not flow through the shared pipeline to an alert")
 		}
 		// The alert's TargetRef proves the CrowdStrike normalizer ran inside the real
-		// webhook→worker→detect path (alert severity itself is the RULE's severity, not
-		// the event's — the 1-100→critical banding is covered by the unit test).
+		// webhook→worker→detect path (alert severity itself is the RULE's severity).
 		if found.TargetRef != "host:EC2-WEB-3" {
 			t.Errorf("normalizer did not map the Falcon device through the pipeline: target=%q", found.TargetRef)
+		}
+		// REGRESSION GUARD (severity-at-the-door bug): the ingest door must NOT default
+		// severity before the mapper runs, or the CrowdStrike 1-100 score→band
+		// derivation is dead code. The stored event's severity must be the derived
+		// "critical" (score 90), not "informational".
+		evs, qerr := h.events.Query(h.ctx, h.tenantID, eventstore.Query{Search: "CobaltStrike", Limit: 20})
+		if qerr != nil {
+			t.Fatalf("query events: %v", qerr)
+		}
+		var csEvent *eventstore.NormalizedEvent
+		for i := range evs {
+			if evs[i].Source == "crowdstrike-falcon" {
+				csEvent = &evs[i]
+				break
+			}
+		}
+		if csEvent == nil {
+			t.Fatal("CrowdStrike event not found in the event store")
+		}
+		if csEvent.Severity != "critical" {
+			t.Fatalf("CrowdStrike score 90 must derive to severity=critical through the ingest door, got %q "+
+				"(severity-at-the-door regression)", csEvent.Severity)
 		}
 	})
 

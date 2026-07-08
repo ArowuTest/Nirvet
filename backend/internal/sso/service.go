@@ -48,6 +48,9 @@ func (s *Service) CreateConnection(ctx context.Context, tenantID uuid.UUID, in C
 	if in.DefaultRole == "" {
 		in.DefaultRole = string(auth.RoleCustomerViewer)
 	}
+	if !ValidSSORole(in.DefaultRole) {
+		return nil, httpx.ErrBadRequest("default_role must be a customer role (customer_viewer or customer_admin)")
+	}
 	sealed, err := s.cipher.Encrypt(tenantID, []byte(in.ClientSecret))
 	if err != nil {
 		return nil, httpx.ErrInternal("could not seal client secret")

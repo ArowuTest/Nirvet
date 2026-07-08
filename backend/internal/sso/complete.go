@@ -12,6 +12,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// allowedSSORoles are the ONLY roles a tenant SSO connection may JIT-provision.
+// Provider/privileged roles (platform_admin, soc_manager, analysts, detection_eng)
+// are excluded so a tenant's customer_admin — who can manage that tenant's SSO —
+// cannot register an IdP with default_role=platform_admin and mint a super-admin
+// (privilege-escalation guard). Provider-role provisioning is a separate,
+// platform-admin-only flow (not via customer SSO).
+var allowedSSORoles = map[string]bool{
+	string(auth.RoleCustomerViewer): true,
+	string(auth.RoleCustomerAdmin):  true,
+}
+
+// ValidSSORole reports whether a role is safe to use as an SSO default_role.
+func ValidSSORole(role string) bool { return allowedSSORoles[role] }
+
 // completeSSO is the shared, security-critical tail of any SSO login (OIDC or
 // SAML): link an existing user — which MUST belong to the connection's tenant — or
 // JIT-provision one with the connection's default role, issue the Nirvet session

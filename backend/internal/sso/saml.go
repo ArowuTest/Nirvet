@@ -51,6 +51,9 @@ func (s *SAMLService) CreateConnection(ctx context.Context, tenantID uuid.UUID, 
 	if in.DefaultRole == "" {
 		in.DefaultRole = string(auth.RoleCustomerViewer)
 	}
+	if !ValidSSORole(in.DefaultRole) {
+		return nil, httpx.ErrBadRequest("default_role must be a customer role (customer_viewer or customer_admin)")
+	}
 	c := &SAMLConnection{
 		ID: uuid.New(), TenantID: tenantID,
 		IDPEntityID: strings.TrimSpace(in.IDPEntityID), IDPSSOURL: strings.TrimSpace(in.IDPSSOURL),
