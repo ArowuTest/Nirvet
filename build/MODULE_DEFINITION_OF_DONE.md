@@ -33,12 +33,12 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | incident | ✅³ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | connector (+poller) | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | soar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| ai | ✅⁴ | ⬜ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ai | ✅⁴ | ✅¹¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | threatintel | ✅ | ◑ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | reporting | — | ✅⁷ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | compliance | — | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | billing | ⬜ | ✅⁵ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| notify | ⬜ | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| notify (+ outbox) | ⬜ | ✅¹² | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ticketing (SN/Jira) | ✅⁹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | eventstore (PG + ClickHouse) | — | ✅¹⁰ | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅ |
 | crypto / ratelimit / blobstore | ✅ | — | — | ✅ | — | ✅ | ✅ | — | ✅ | ✅² |
@@ -67,6 +67,11 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 ¹⁰ eventstore has two backends behind one interface (ADR-0002): Postgres (default) + ClickHouse. Verified against
   a real ClickHouse: append idempotency, tenant isolation on query, severity filter — AND the full heartbeat runs
   end-to-end on ClickHouse (interface swap proven). Gated on NIRVET_CLICKHOUSE_DSN.
+¹¹ ai integration = AICopilotIncidentTriage (grounded triage over incident+alerts+asset criticality+SLA; assistive
+  wording; audited output via auditMeta) in the flow suite.
+¹² notify integration = the durable outbox (SLABreachSweepAlertsOnce asserts enqueue→deliver pending→sent;
+  SLANotifyOutboxRetryAndDeadLetter asserts retry→dead-letter, never dropped). Transport is still the log channel —
+  real email/Teams/Slack channels remain the open slice (see caveats).
 
 ## Cross-cutting notes
 
@@ -101,9 +106,10 @@ That file is authoritative for security status.
 The matrix rates engineering DoD, not product completeness. Several modules are
 intentionally shallow and must not be read as full features (see SECURITY_REVIEW.md
 "Known functional gaps"): **threatintel** is watchlist-only (no STIX/TAXII),
-**notify** logs rather than delivering to real channels, **compliance** is static,
-**reporting** is JSON aggregates only. Not yet built: **customer-facing portal**,
-fine-grained **read-side RBAC** for customer viewers, and the **MFA login UI** (API +
-enforcement exist; front-end prompt pending designer HTML). Incident **SLA timers** are
-now implemented (per-severity ack/resolve targets + derived breach flags); proactive
-breach alerting is the remaining follow-on.
+**notify** now delivers durably via the outbox but only to the **log channel** (no
+real email/Teams/Slack transport yet), **compliance** is static, **reporting** is JSON
+aggregates only. Not yet built: **customer-facing portal**, fine-grained **read-side
+RBAC** for customer viewers, the **MFA login UI** (API + enforcement exist; front-end
+prompt pending designer HTML), and a **syslog listener** (webhook + Defender pull exist).
+Incident **SLA timers** AND proactive **breach alerting** are now implemented
+(per-severity ack/resolve targets + derived breach flags + durable-outbox notification).
