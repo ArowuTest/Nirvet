@@ -244,9 +244,13 @@ func TestCorrelation_SuppressionStormMetrics(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set storm threshold: %v", err)
 	}
-	// Open several more distinct-entity clusters so the last-hour count clears the threshold of 5.
+	// Open several more PROMOTABLE clusters (2 corroborating alerts each, so alert_count>=2) so the
+	// last-hour count clears the threshold of 5. Single-alert clusters no longer count toward storm
+	// (R5-H4), so each entity gets two low-severity alerts (still below the promote threshold).
 	for i := 0; i < 5; i++ {
-		svc.Correlate(ctx, tn.ID, "host:"+uuid.NewString(), "low", nil, 10)
+		e := "host:" + uuid.NewString()
+		svc.Correlate(ctx, tn.ID, e, "low", []string{"T1"}, 10)
+		svc.Correlate(ctx, tn.ID, e, "low", []string{"T1"}, 10)
 	}
 	st, err := svc.Storm(ctx, tn.ID)
 	if err != nil {
@@ -257,6 +261,29 @@ func TestCorrelation_SuppressionStormMetrics(t *testing.T) {
 	}
 	if !st.InStorm {
 		t.Fatalf("expected storm mode with %d clusters >= threshold %d", st.ClustersLastHour, st.Threshold)
+	}
+
+	// R5-H4 during storm: a non-critical corroborated cluster is WITHHELD and visibly flagged
+	// (suppressed + reason), NOT silently dropped.
+	openedBefore := inc.opened
+	hi := "host:" + uuid.NewString()
+	// Three alerts so the aggregate risk clears the promote threshold (else it wouldn't promote anyway).
+	svc.Correlate(ctx, tn.ID, hi, "high", []string{"T1486", "T1490"}, 95)
+	svc.Correlate(ctx, tn.ID, hi, "high", []string{"T1059"}, 95)
+	hiID, _, _ := svc.Correlate(ctx, tn.ID, hi, "high", []string{"T1071"}, 95)
+	if inc.opened != openedBefore {
+		t.Fatal("a non-critical cluster must be withheld under storm")
+	}
+	hc, _ := svc.Get(ctx, tn.ID, hiID)
+	if !hc.Suppressed || hc.SuppressionReason == "" {
+		t.Fatalf("storm-withheld cluster must be flagged visibly: %+v", hc)
+	}
+	// A CRITICAL cluster must break through storm and still auto-open an incident.
+	crit := "host:" + uuid.NewString()
+	svc.Correlate(ctx, tn.ID, crit, "critical", []string{"T1486", "T1490"}, 95)
+	svc.Correlate(ctx, tn.ID, crit, "critical", []string{"T1059"}, 95)
+	if inc.opened != openedBefore+1 {
+		t.Fatalf("a critical cluster must break through storm mode, opened=%d want=%d", inc.opened, openedBefore+1)
 	}
 
 	// COR-010: over-correlation metrics are populated.

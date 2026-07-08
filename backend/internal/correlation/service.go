@@ -126,9 +126,14 @@ func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity s
 		return
 	}
 	// COR-008 alert-storm / incident-command mode: during a storm the platform stops auto-opening an
-	// incident per cluster (the SOC works the storm as one incident-command effort). Best-effort: a
-	// storm-check error does not block promotion.
-	if st, err := s.Storm(ctx, tenantID); err == nil && st.InStorm {
+	// incident per cluster (the SOC works the storm as one incident-command effort). Round-5 H4: a
+	// CRITICAL cluster must always break through (silent loss of a critical detection is unacceptable),
+	// and a withheld cluster is FLAGGED (suppressed + reason) so it is visible in the queue rather than
+	// silently dropped. Best-effort: a storm-check error does not block promotion.
+	if st, err := s.Storm(ctx, tenantID); err == nil && st.InStorm && c.MaxSeverity != "critical" {
+		const reason = "withheld: alert-storm (incident-command mode)"
+		_ = s.repo.markSuppressed(ctx, tenantID, c.ID, reason)
+		c.Suppressed, c.SuppressionReason = true, reason
 		return
 	}
 	// The in-memory status may be stale; the DB WHERE status='open' is authoritative.

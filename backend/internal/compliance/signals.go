@@ -32,11 +32,11 @@ var signals = map[string]resolver{
 	"platform_capability": func(_ context.Context, _ *Repository, _ uuid.UUID, cfg map[string]any) signalResult {
 		return signalResult{Status: StatusMet, Note: noteOf(cfg, "Platform capability present.")}
 	},
-	// Detection coverage: the platform ships a global detection catalogue plus tenant rules; met if any
-	// enabled rule is visible, else gap.
+	// Detection coverage: measures the TENANT's OWN posture (Round-5 M3) — the global seed catalogue
+	// must not auto-satisfy a control for a tenant that authored zero rules.
 	"detection_coverage": func(ctx context.Context, r *Repository, tid uuid.UUID, _ map[string]any) signalResult {
-		return metIfPositive(ctx, r, tid, `SELECT count(*) FROM detection_rules WHERE enabled = true`,
-			"enabled detection rule(s) in coverage", "no enabled detection rules")
+		return metIfPositive(ctx, r, tid, `SELECT count(*) FROM detection_rules WHERE enabled = true AND tenant_id = app_current_tenant()`,
+			"enabled detection rule(s) in coverage", "no enabled tenant detection rules")
 	},
 	// Incident response: case-management capability is present platform-wide.
 	"incident_response": func(_ context.Context, _ *Repository, _ uuid.UUID, _ map[string]any) signalResult {
@@ -45,7 +45,7 @@ var signals = map[string]resolver{
 	// Response automation: met if the tenant has an enabled playbook (global or own), else partial (manual
 	// response still available, automation not configured).
 	"soar_automation": func(ctx context.Context, r *Repository, tid uuid.UUID, _ map[string]any) signalResult {
-		n, err := r.count(ctx, tid, `SELECT count(*) FROM playbooks WHERE enabled = true`)
+		n, err := r.count(ctx, tid, `SELECT count(*) FROM playbooks WHERE enabled = true AND tenant_id = app_current_tenant()`)
 		if err != nil {
 			return signalResult{Status: StatusGap, Note: "could not evaluate playbook coverage"}
 		}
@@ -57,8 +57,8 @@ var signals = map[string]resolver{
 	// Threat intelligence: met if any STIX object or watchlist indicator is visible (global feed + own).
 	"threat_intel": func(ctx context.Context, r *Repository, tid uuid.UUID, _ map[string]any) signalResult {
 		n, err := r.count(ctx, tid,
-			`SELECT (SELECT count(*) FROM stix_objects WHERE NOT revoked)
-			      + (SELECT count(*) FROM threat_indicators)`)
+			`SELECT (SELECT count(*) FROM stix_objects WHERE NOT revoked AND tenant_id = app_current_tenant())
+			      + (SELECT count(*) FROM threat_indicators WHERE tenant_id = app_current_tenant())`)
 		if err != nil {
 			return signalResult{Status: StatusGap, Note: "could not evaluate threat-intel coverage"}
 		}
@@ -69,7 +69,7 @@ var signals = map[string]resolver{
 	},
 	// Asset inventory: per-tenant — gap until the tenant onboards assets.
 	"asset_inventory": func(ctx context.Context, r *Repository, tid uuid.UUID, _ map[string]any) signalResult {
-		return metIfPositive(ctx, r, tid, `SELECT count(*) FROM assets`,
+		return metIfPositive(ctx, r, tid, `SELECT count(*) FROM assets WHERE tenant_id = app_current_tenant()`,
 			"asset(s) in inventory", "no assets inventoried")
 	},
 	// Explicitly-unbuilt capability → honest gap.

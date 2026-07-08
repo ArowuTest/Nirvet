@@ -134,10 +134,16 @@ func (r *Repository) stormThreshold(ctx context.Context, tenantID uuid.UUID) (in
 	return th, nil
 }
 
+// countRecentClusters counts PROMOTABLE clusters opened since `since` — those with enough corroboration
+// to auto-open an incident (alert_count >= MinAlertsForPromotion). Round-5 H4: single-alert clusters
+// (which can never auto-promote) are excluded, so a noise flood across many distinct entities cannot
+// trip storm mode with clusters that were never going to open incidents anyway.
 func (r *Repository) countRecentClusters(ctx context.Context, tenantID uuid.UUID, since time.Time) (int, error) {
 	n := 0
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FROM correlations WHERE created_at >= $1`, since).Scan(&n)
+		return tx.QueryRow(ctx,
+			`SELECT count(*) FROM correlations WHERE created_at >= $1 AND alert_count >= $2`,
+			since, MinAlertsForPromotion).Scan(&n)
 	})
 	return n, err
 }

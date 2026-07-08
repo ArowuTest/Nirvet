@@ -462,7 +462,7 @@ func main() {
 	mux.Handle("GET /compliance/frameworks", provider(complianceH.Frameworks))
 	mux.Handle("GET /compliance/controls", provider(complianceH.Controls))
 	mux.Handle("GET /compliance/coverage", provider(complianceH.Coverage))
-	mux.Handle("PUT /compliance/status", senior(complianceH.SetStatus))
+	mux.Handle("PUT /compliance/status", manager(complianceH.SetStatus)) // R5-M4: auditor-facing attestation is manager-gated
 	// billing / entitlements
 	mux.Handle("GET /billing/entitlements", provider(billingH.Get))
 	mux.Handle("PUT /billing/entitlements", padmin(billingH.Set))

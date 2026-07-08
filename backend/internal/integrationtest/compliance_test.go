@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/compliance"
+	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
@@ -47,7 +48,8 @@ func TestIntegration_ComplianceAssessment(t *testing.T) {
 		t.Fatalf("expected seeded global frameworks, got %+v", fws)
 	}
 
-	// Assess NIST CSF: produces 6 functions, a numeric score, and honest per-control status.
+	// R5-M3: auto-signals measure the tenant's OWN posture, not the global seed catalogue. A fresh
+	// tenant with no own detection rules → DETECT gap.
 	cov, err := svc.Assess(ctx, tnA.ID, "nist_csf_2_0")
 	if err != nil {
 		t.Fatalf("assess: %v", err)
@@ -55,15 +57,28 @@ func TestIntegration_ComplianceAssessment(t *testing.T) {
 	if len(cov.Functions) != 6 {
 		t.Fatalf("expected 6 NIST functions, got %d", len(cov.Functions))
 	}
-	// RECOVER maps to not_implemented → its children are gap, function rolls up to gap.
 	rc := functionByRef(cov, "RC")
 	if rc == nil || rc.Status != compliance.StatusGap {
 		t.Fatalf("RECOVER should roll up to gap (not_implemented), got %+v", rc)
 	}
-	// DETECT maps to detection_coverage; the platform ships a global rule catalogue → met.
+	if de := functionByRef(cov, "DE"); de == nil || de.Status != compliance.StatusGap {
+		t.Fatalf("DETECT should be gap for a tenant with no OWN detection rules (M3), got %+v", de)
+	}
+
+	// After the tenant authors its OWN enabled detection rule, DETECT becomes met (own-posture signal).
+	detSvc := detection.NewService(detection.NewRepository(db), detection.NewEngine(detection.NewRepository(db)))
+	if _, err := detSvc.CreateCELRule(ctx, tnA.ID, detection.CELRuleInput{
+		Name: "own-rule", Severity: "high", Confidence: 70, Expression: `event.severity == "high"`,
+	}); err != nil {
+		t.Fatalf("create own detection rule: %v", err)
+	}
+	cov, err = svc.Assess(ctx, tnA.ID, "nist_csf_2_0")
+	if err != nil {
+		t.Fatalf("re-assess: %v", err)
+	}
 	de := functionByRef(cov, "DE")
 	if de == nil || de.Status != compliance.StatusMet {
-		t.Fatalf("DETECT should be met via detection coverage, got %+v", de)
+		t.Fatalf("DETECT should be met once the tenant has its own detection rule, got %+v", de)
 	}
 
 	// Manual override wins over the auto signal and persists. Override RC.RP → met.
