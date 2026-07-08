@@ -909,6 +909,34 @@ func TestIntegration(t *testing.T) {
 		if sum.EventsLast24h < 1 {
 			t.Fatalf("expected EventsLast24h >=1 from the EventStore, got %d", sum.EventsLast24h)
 		}
+		// SLA posture (§6.8) is populated; the just-promoted incident is open + on-track.
+		if sum.SLA.OpenIncidents < 1 {
+			t.Fatalf("SLA posture must count the open incident, got %d", sum.SLA.OpenIncidents)
+		}
+
+		// Now force a resolve-deadline breach and confirm the posture reflects it.
+		ev2 := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: "high", Source: "repsla"}
+		a2, ins2, err := h.alertSvc.CreateFromEvent(h.ctx, ev2, alert.Spec{Title: "repsla-alert", Severity: "high", DedupeKey: ev2.ID.String() + ":repsla"})
+		if err != nil || !ins2 {
+			t.Fatalf("seed sla alert: %v", err)
+		}
+		inc2, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a2.ID)
+		if err != nil {
+			t.Fatalf("promote sla incident: %v", err)
+		}
+		if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			_, e := tx.Exec(ctx, `UPDATE incidents SET resolve_due_at = now() - interval '1 hour' WHERE id=$1`, inc2.ID)
+			return e
+		}); err != nil {
+			t.Fatalf("backdate resolve due: %v", err)
+		}
+		sum2, err := h.repSvc.Summary(h.ctx, h.tenantID)
+		if err != nil {
+			t.Fatalf("summary2: %v", err)
+		}
+		if sum2.SLA.ResolveBreaching < 1 {
+			t.Fatalf("SLA posture must count the resolve-breaching incident, got %d", sum2.SLA.ResolveBreaching)
+		}
 	})
 
 	t.Run("BillingIngestQuota", func(t *testing.T) {

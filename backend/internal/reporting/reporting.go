@@ -18,14 +18,23 @@ import (
 
 // Summary is a point-in-time operational report for a tenant.
 type Summary struct {
-	TenantID         uuid.UUID      `json:"tenant_id"`
-	GeneratedAt      time.Time      `json:"generated_at"`
-	AlertsBySeverity map[string]int `json:"alerts_by_severity"`
-	OpenAlerts       int            `json:"open_alerts"`
+	TenantID         uuid.UUID               `json:"tenant_id"`
+	GeneratedAt      time.Time               `json:"generated_at"`
+	AlertsBySeverity map[string]int          `json:"alerts_by_severity"`
+	OpenAlerts       int                     `json:"open_alerts"`
 	IncidentsByStage map[string]int          `json:"incidents_by_stage"`
 	OpenIncidents    int                     `json:"open_incidents"`
 	EventsLast24h    int                     `json:"events_last_24h"`
 	TopMITRE         []eventstore.MITRECount `json:"top_mitre"` // ATT&CK coverage (v1.1)
+	SLA              SLAPosture              `json:"sla"`       // §6.8 SLA posture
+}
+
+// SLAPosture summarises the tenant's incident SLA health (SRS §6.8).
+type SLAPosture struct {
+	OpenIncidents    int `json:"open_incidents"`    // not yet closed
+	AckBreaching     int `json:"ack_breaching"`     // open, past ack deadline, unacknowledged
+	ResolveBreaching int `json:"resolve_breaching"` // open, past resolve deadline
+	ResolvedLate     int `json:"resolved_late"`     // closed after the resolve deadline
 }
 
 // Service computes reports. Alerts/incidents come from the Postgres system of
@@ -55,7 +64,18 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID) (*Summary, er
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM alerts WHERE status IN ('new','assigned')`).Scan(&sum.OpenAlerts); err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE stage <> 'closed'`).Scan(&sum.OpenIncidents)
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE stage <> 'closed'`).Scan(&sum.OpenIncidents); err != nil {
+			return err
+		}
+		// SLA posture (§6.8) in one pass over incidents.
+		return tx.QueryRow(ctx,
+			`SELECT
+			   count(*) FILTER (WHERE closed_at IS NULL),
+			   count(*) FILTER (WHERE closed_at IS NULL AND ack_due_at < now() AND acknowledged_at IS NULL),
+			   count(*) FILTER (WHERE closed_at IS NULL AND resolve_due_at < now()),
+			   count(*) FILTER (WHERE closed_at IS NOT NULL AND resolve_due_at IS NOT NULL AND closed_at > resolve_due_at)
+			 FROM incidents`,
+		).Scan(&sum.SLA.OpenIncidents, &sum.SLA.AckBreaching, &sum.SLA.ResolveBreaching, &sum.SLA.ResolvedLate)
 	})
 	if err != nil {
 		return nil, err
