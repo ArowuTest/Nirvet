@@ -245,6 +245,36 @@ reviewer's order, each gated + tested + green on both backends.
   per-tenant debounce; SSO re-validates role at login; gosec+govulncheck in CI; vault
   key-version byte.
 
+## Gate: Vulnerability & exposure management — §6.15 slice 2 (Jul 2026)
+
+- **SRS §6.15:** ASSET-004 (ingest vulnerabilities and map them to assets, criticality,
+  exploitability, active-exploitation intel), ASSET-002 (assets carry vulnerabilities +
+  related incidents), ASSET-006 (attack-surface / exposure view), ASSET-007 (correlate
+  alerts with exposed vulns to increase priority/context). Builds directly on the asset
+  registry (slice 1). Fits the flow at *Asset context → Incident/Investigation/Evidence*.
+- **Design / contracts:** a `vulnerability` package (entity→repo→service→handler). A vuln
+  maps to an asset by the same canonical `ref` the event pipeline + asset registry use
+  (host:FIN-01 / user:jane@…), so no new join table — the ref is the key. Fields:
+  cve, title, severity, cvss (numeric), exploited (KEV/active-exploitation flag), status
+  (open|remediating|accepted|resolved), remediation_due. Register is an UPSERT on
+  (tenant, ref, cve) so re-ingesting a scan updates in place (idempotent, mirrors asset
+  upsert). Exposure summary aggregates open vulns (by severity, exploited-open, past-due).
+- **Enrichment (ASSET-002/007):** the evidence pack and the AI triage context surface the
+  affected assets' OPEN vulnerabilities, so an analyst/copilot sees exposure alongside the
+  case — read-only composition (evidence already gathers the incident's asset refs).
+- **Data:** `vulnerabilities` table (migration 0025, tenant RLS + FORCE, unique on
+  (tenant, ref, cve), index on (tenant, status)). Postgres is SoR.
+- **Invariants:** tenant isolation (RLS); WRITES gated to the `manager` tier (like asset
+  criticality — vulns drive exposure/priority), reads to `provider`; UPSERT idempotent;
+  severity/status validated to the canonical set; no destructive action.
+- **Deferred (logged):** identity inventory (ASSET-003), automatic incident-priority
+  increase from exposure (ASSET-007 full — kept as analyst/AI context this slice to avoid
+  coupling the promotion path), exceptions/accepted-risk/compensating-controls +
+  remediation target workflow (ASSET-008), asset confidence scoring (ASSET-009),
+  data-quality customer tasks (ASSET-010), vuln-scanner *connector* ingest (ASSET-001 —
+  register via API now; scanner pull is per-vendor auth work), attack-surface dashboards
+  (ASSET-006 full — summary endpoint now, UI later).
+
 ## Next gates (before starting)
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 ## Gate: SAML 2.0 SSO (SP-initiated) — §6.2 IAM-001 — reviewed Jul 2026

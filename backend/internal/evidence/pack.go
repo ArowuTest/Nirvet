@@ -14,6 +14,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
+	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
 
@@ -22,17 +23,18 @@ const PackSchemaVersion = "1.0"
 
 // Pack is a complete evidence bundle for a single incident.
 type Pack struct {
-	SchemaVersion string                       `json:"schema_version"`
-	GeneratedAt   time.Time                    `json:"generated_at"`
-	GeneratedBy   string                       `json:"generated_by"`
-	TenantID      uuid.UUID                    `json:"tenant_id"`
-	Incident      *incident.Incident           `json:"incident"`
-	Timeline      []incident.TimelineEntry     `json:"timeline"`
-	Alerts        []alert.Alert                `json:"alerts"`
-	Events        []eventstore.NormalizedEvent `json:"events"`
-	Assets        []asset.Asset                `json:"assets"` // affected assets (§6.15), matched by alert refs
-	Audit         []audit.LogEntry             `json:"audit"`
-	Manifest      Manifest                     `json:"manifest"`
+	SchemaVersion   string                       `json:"schema_version"`
+	GeneratedAt     time.Time                    `json:"generated_at"`
+	GeneratedBy     string                       `json:"generated_by"`
+	TenantID        uuid.UUID                    `json:"tenant_id"`
+	Incident        *incident.Incident           `json:"incident"`
+	Timeline        []incident.TimelineEntry     `json:"timeline"`
+	Alerts          []alert.Alert                `json:"alerts"`
+	Events          []eventstore.NormalizedEvent `json:"events"`
+	Assets          []asset.Asset                `json:"assets"`          // affected assets (§6.15), matched by alert refs
+	Vulnerabilities []vulnerability.Vuln         `json:"vulnerabilities"` // open vulns on those assets (§6.15 ASSET-002/007)
+	Audit           []audit.LogEntry             `json:"audit"`
+	Manifest        Manifest                     `json:"manifest"`
 }
 
 // Manifest carries integrity metadata: per-section SHA-256 checksums and counts, a

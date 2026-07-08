@@ -19,6 +19,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
 
@@ -39,6 +40,11 @@ type Assets interface {
 	FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]asset.Asset, error)
 }
 
+// Vulns resolves the open vulnerabilities on a set of asset refs (exposure context).
+type Vulns interface {
+	FindOpenByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]vulnerability.Vuln, error)
+}
+
 // Service assembles evidence packs read-only from the case, alert, event, asset and
 // audit stores. Every read is tenant-scoped, so a pack can only ever contain the
 // caller's own tenant data.
@@ -47,14 +53,15 @@ type Service struct {
 	alerts    Alerts
 	events    eventstore.EventStore
 	assets    Assets
+	vulns     Vulns
 	db        *database.DB
 	signer    ed25519.PrivateKey // signs the pack digest (R2 H-B)
 }
 
 // NewService builds the evidence service. signer signs each pack's digest; it must be
 // non-nil (main wires a config key or an ephemeral dev key).
-func NewService(incidents Incidents, alerts Alerts, events eventstore.EventStore, assets Assets, db *database.DB, signer ed25519.PrivateKey) *Service {
-	return &Service{incidents: incidents, alerts: alerts, events: events, assets: assets, db: db, signer: signer}
+func NewService(incidents Incidents, alerts Alerts, events eventstore.EventStore, assets Assets, vulns Vulns, db *database.DB, signer ed25519.PrivateKey) *Service {
+	return &Service{incidents: incidents, alerts: alerts, events: events, assets: assets, vulns: vulns, db: db, signer: signer}
 }
 
 // PublicKey returns the base64 Ed25519 public key that signs evidence packs, so it can
@@ -111,21 +118,27 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read assets")
 	}
+	// Exposure: the open vulnerabilities on those same affected assets (§6.15 ASSET-002/007).
+	vulns, err := s.vulns.FindOpenByRefs(ctx, p.TenantID, refs)
+	if err != nil {
+		return nil, httpx.ErrInternal("could not read vulnerabilities")
+	}
 	auditRows, err := audit.FindByActionContains(ctx, s.db, p.TenantID, incidentID.String(), 500)
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read audit trail")
 	}
 	pack := &Pack{
-		SchemaVersion: PackSchemaVersion,
-		GeneratedAt:   now,
-		GeneratedBy:   p.Email,
-		TenantID:      p.TenantID,
-		Incident:      inc,
-		Timeline:      timeline,
-		Alerts:        alerts,
-		Events:        events,
-		Assets:        assets,
-		Audit:         auditRows,
+		SchemaVersion:   PackSchemaVersion,
+		GeneratedAt:     now,
+		GeneratedBy:     p.Email,
+		TenantID:        p.TenantID,
+		Incident:        inc,
+		Timeline:        timeline,
+		Alerts:          alerts,
+		Events:          events,
+		Assets:          assets,
+		Vulnerabilities: vulns,
+		Audit:           auditRows,
 	}
 	pack.Manifest = s.buildManifest(pack)
 	return pack, nil
@@ -142,12 +155,13 @@ func checksum(v any) string {
 // when building and when verifying).
 func sectionChecksums(p *Pack) map[string]string {
 	return map[string]string{
-		"incident": checksum(p.Incident),
-		"timeline": checksum(p.Timeline),
-		"alerts":   checksum(p.Alerts),
-		"events":   checksum(p.Events),
-		"assets":   checksum(p.Assets),
-		"audit":    checksum(p.Audit),
+		"incident":        checksum(p.Incident),
+		"timeline":        checksum(p.Timeline),
+		"alerts":          checksum(p.Alerts),
+		"events":          checksum(p.Events),
+		"assets":          checksum(p.Assets),
+		"vulnerabilities": checksum(p.Vulnerabilities),
+		"audit":           checksum(p.Audit),
 	}
 }
 
@@ -177,11 +191,12 @@ func digestInput(schemaVersion, generatedBy string, generatedAt time.Time, tenan
 func (s *Service) buildManifest(p *Pack) Manifest {
 	sc := sectionChecksums(p)
 	counts := map[string]int{
-		"timeline": len(p.Timeline),
-		"alerts":   len(p.Alerts),
-		"events":   len(p.Events),
-		"assets":   len(p.Assets),
-		"audit":    len(p.Audit),
+		"timeline":        len(p.Timeline),
+		"alerts":          len(p.Alerts),
+		"events":          len(p.Events),
+		"assets":          len(p.Assets),
+		"vulnerabilities": len(p.Vulnerabilities),
+		"audit":           len(p.Audit),
 	}
 	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, sc)
 	digest := sha256.Sum256(msg)

@@ -50,6 +50,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/ArowuTest/nirvet/internal/ticketing"
+	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -172,6 +173,10 @@ func main() {
 	// A critical affected asset escalates incident severity + tightens SLA (§6.8/§6.15).
 	incidentSvc.WithAssetContext(assetSvc)
 
+	// Vulnerability & exposure (§6.15 slice 2): open vulns mapped to assets by ref.
+	vulnSvc := vulnerability.NewService(vulnerability.NewRepository(db))
+	vulnH := vulnerability.NewHandler(vulnSvc)
+
 	// Entity graph (§6.9): read-only blast-radius view composing alerts/incidents/
 	// correlations/asset for an entity ref.
 	entityGraphH := entitygraph.NewHandler(entitygraph.NewService(alertSvc, incidentSvc, correlationSvc, assetSvc))
@@ -196,7 +201,7 @@ func main() {
 	}
 	// Evidence-pack export (§6.13): composes case + alert + event + asset + audit reads,
 	// with an Ed25519 signature over the pack digest (R2 H-B).
-	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, db, evidenceSigner))
+	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, vulnSvc, db, evidenceSigner))
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
 	billingH := billing.NewHandler(billingSvc)
@@ -375,6 +380,11 @@ func main() {
 	mux.Handle("POST /assets", manager(assetH.Create))
 	mux.Handle("GET /assets", provider(assetH.List))
 	mux.Handle("GET /assets/{id}", provider(assetH.Get))
+	// Vulnerability & exposure (§6.15). Writes drive exposure/priority → manager-gated.
+	mux.Handle("POST /vulnerabilities", manager(vulnH.Create))
+	mux.Handle("GET /vulnerabilities", provider(vulnH.List))
+	mux.Handle("GET /vulnerabilities/{id}", provider(vulnH.Get))
+	mux.Handle("GET /exposure/summary", provider(vulnH.Exposure))
 	// Entity graph (§6.9)
 	mux.Handle("GET /entities/graph", provider(entityGraphH.Graph))
 	mux.Handle("POST /incidents/{id}/assign", provider(incidentH.Assign))

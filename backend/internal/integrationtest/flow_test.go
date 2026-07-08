@@ -39,6 +39,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
+	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -65,6 +66,7 @@ type harness struct {
 	evidence       *evidence.Service
 	evidenceSigner ed25519.PrivateKey
 	assetSvc       *asset.Service
+	vulnSvc        *vulnerability.Service
 	graphSvc       *entitygraph.Service
 	aiSvc          *ai.Service
 }
@@ -146,6 +148,7 @@ func newHarness(t *testing.T) *harness {
 	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 	assetSvc := asset.NewService(asset.NewRepository(db))
 	incSvc.WithAssetContext(assetSvc) // critical-asset escalation (§6.8/§6.15)
+	vulnSvc := vulnerability.NewService(vulnerability.NewRepository(db))
 	_, evidenceSigner, _ := ed25519.GenerateKey(rand.Reader)
 
 	return &harness{
@@ -162,7 +165,8 @@ func newHarness(t *testing.T) *harness {
 		corrSvc:        corrSvc,
 		events:         events,
 		assetSvc:       assetSvc,
-		evidence:       evidence.NewService(incSvc, alertSvc, events, assetSvc, db, evidenceSigner),
+		vulnSvc:        vulnSvc,
+		evidence:       evidence.NewService(incSvc, alertSvc, events, assetSvc, vulnSvc, db, evidenceSigner),
 		evidenceSigner: evidenceSigner,
 		graphSvc:       entitygraph.NewService(alertSvc, incSvc, corrSvc, assetSvc),
 		aiSvc:          ai.NewService(ai.NewGateway("", "test-model"), alertSvc, db).WithIncidentContext(incSvc, assetSvc),
@@ -615,6 +619,39 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("VulnerabilityRegistryAndExposure", func(t *testing.T) {
+		// §6.15 slice 2: register a vuln (upsert on ref+cve), exposure summary reflects it.
+		ref := "host:vulnbox"
+		in := vulnerability.CreateInput{Ref: ref, CVE: "CVE-2026-1000", Title: "RCE in widget", Severity: "critical", CVSS: 9.8, Exploited: true}
+		v1, err := h.vulnSvc.Create(h.ctx, h.tenantID, in)
+		if err != nil {
+			t.Fatalf("create vuln: %v", err)
+		}
+		in.Severity = "high" // re-ingest with a lower severity → upsert in place
+		v2, err := h.vulnSvc.Create(h.ctx, h.tenantID, in)
+		if err != nil {
+			t.Fatalf("upsert vuln: %v", err)
+		}
+		if v2.ID != v1.ID {
+			t.Fatal("re-registering the same ref+cve must update in place")
+		}
+		got, _ := h.vulnSvc.Get(h.ctx, h.tenantID, v1.ID)
+		if got.Severity != "high" {
+			t.Fatalf("upsert must update severity, got %q", got.Severity)
+		}
+		ex, err := h.vulnSvc.ExposureSummary(h.ctx, h.tenantID)
+		if err != nil {
+			t.Fatalf("exposure: %v", err)
+		}
+		if ex.OpenTotal < 1 || ex.ExploitedOpen < 1 {
+			t.Fatalf("exposure must count the open exploited vuln: open=%d exploited=%d", ex.OpenTotal, ex.ExploitedOpen)
+		}
+		// Invalid severity rejected.
+		if _, err := h.vulnSvc.Create(h.ctx, h.tenantID, vulnerability.CreateInput{Ref: "x", Title: "x", Severity: "bogus"}); err == nil {
+			t.Fatal("invalid severity must be rejected")
+		}
+	})
+
 	t.Run("EvidencePackAssembly", func(t *testing.T) {
 		// SRS §6.13: an evidence pack bundles the case + its alerts + the underlying
 		// events + the audit trail, with a tamper-evident checksum manifest.
@@ -626,9 +663,13 @@ func TestIntegration(t *testing.T) {
 		if err != nil || !ins {
 			t.Fatalf("seed alert: %v ins=%v", err, ins)
 		}
-		// Register the affected asset so the pack carries asset context (§6.15).
+		// Register the affected asset + an open vuln on it so the pack carries asset +
+		// exposure context (§6.15).
 		if _, err := h.assetSvc.Create(h.ctx, h.tenantID, asset.CreateInput{Ref: "host:e", Name: "Evidence Host", Kind: "host", Criticality: "high"}); err != nil {
 			t.Fatalf("register asset: %v", err)
+		}
+		if _, err := h.vulnSvc.Create(h.ctx, h.tenantID, vulnerability.CreateInput{Ref: "host:e", CVE: "CVE-2026-2000", Title: "Evidence-host RCE", Severity: "critical", CVSS: 9.1, Exploited: true}); err != nil {
+			t.Fatalf("register vuln: %v", err)
 		}
 		inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
 		if err != nil {
@@ -699,6 +740,16 @@ func TestIntegration(t *testing.T) {
 		}
 		if !foundAsset {
 			t.Fatal("pack must contain the affected asset (host:e, high criticality)")
+		}
+		// Exposure context: the affected asset's open vuln must surface in the pack (§6.15).
+		foundVuln := false
+		for _, vv := range pack.Vulnerabilities {
+			if vv.Ref == "host:e" && vv.CVE == "CVE-2026-2000" {
+				foundVuln = true
+			}
+		}
+		if !foundVuln {
+			t.Fatal("pack must contain the affected asset's open vulnerability")
 		}
 	})
 
