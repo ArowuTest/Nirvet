@@ -229,7 +229,9 @@ func main() {
 	bootstrap(ctx, log, tenantSvc, iamSvc, cfg.BootstrapEmail, cfg.BootstrapPassword)
 
 	// --- routing ---
-	authn := auth.Authenticate(tokens)
+	// Authn accepts a JWT or a service-account API key (nvt_…) — the resolved Principal is
+	// identical downstream, so RBAC + RLS + audit apply unchanged (§6.2 IAM-001).
+	authn := auth.AuthenticateWithAPIKeys(tokens, iamSvc)
 	// Rate limits. In-memory (per-instance) by default; global across replicas when
 	// NIRVET_REDIS_ADDR is set (reviewer: introduce Redis at first horizontal scale-out).
 	var redisClient *redis.Client
@@ -347,6 +349,13 @@ func main() {
 	mux.Handle("GET /admin/tenants/{id}/authority-policies", ssoAdmin(tenantH.ListAuthority))
 	mux.Handle("PUT /admin/tenants/{id}/authority-policies", ssoAdmin(tenantH.SetAuthority))
 	mux.Handle("GET /admin/tenants/{id}/history", ssoAdmin(tenantH.ListHistory))
+	// Service accounts + API keys (§6.2 IAM-001/005/008). Programmatic principals for
+	// connectors/customer scripts; the raw key is shown once at creation.
+	mux.Handle("POST /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.CreateServiceAccount))
+	mux.Handle("GET /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.ListServiceAccounts))
+	mux.Handle("POST /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.CreateAPIKey))
+	mux.Handle("GET /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.ListAPIKeys))
+	mux.Handle("DELETE /admin/tenants/{id}/api-keys/{kid}", ssoAdmin(iamH.RevokeAPIKey))
 	mux.Handle("POST /admin/users", padmin(iamH.Create))
 	// ingestion (any authenticated principal for the scaffold)
 	mux.Handle("POST /ingest", authed(ingestH.Ingest))

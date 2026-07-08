@@ -1,16 +1,47 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 )
 
+// apiKeyScheme prefixes raw API keys (nvt_…). Kept here so the middleware can distinguish an
+// API key from a JWT without importing the iam package (which would be a cycle).
+const apiKeyScheme = "nvt_"
+
+// APIKeyResolver authenticates a raw API key to a Principal. Implemented by iam.Service and
+// injected at wiring time — the auth package must not depend on iam.
+type APIKeyResolver interface {
+	ResolveAPIKey(ctx context.Context, rawKey string) (Principal, error)
+}
+
 // Authenticate verifies the Bearer token and injects the Principal into context.
-func Authenticate(m *Manager) httpx.Middleware {
+func Authenticate(m *Manager) httpx.Middleware { return authenticate(m, nil) }
+
+// AuthenticateWithAPIKeys accepts EITHER a JWT (Authorization: Bearer <jwt>) or an API key
+// (Authorization: Bearer nvt_… or X-API-Key: nvt_…), resolving the API key via the resolver.
+// A resolved key yields a normal Principal, so all downstream RBAC + RLS apply unchanged.
+func AuthenticateWithAPIKeys(m *Manager, resolver APIKeyResolver) httpx.Middleware {
+	return authenticate(m, resolver)
+}
+
+func authenticate(m *Manager, resolver APIKeyResolver) httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if resolver != nil {
+				if raw := apiKeyFromRequest(r); raw != "" {
+					p, err := resolver.ResolveAPIKey(r.Context(), raw)
+					if err != nil {
+						httpx.Error(w, httpx.ErrUnauthorized("invalid api key"))
+						return
+					}
+					next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
+					return
+				}
+			}
 			h := r.Header.Get("Authorization")
 			if !strings.HasPrefix(h, "Bearer ") {
 				httpx.Error(w, httpx.ErrUnauthorized("missing bearer token"))
@@ -24,6 +55,18 @@ func Authenticate(m *Manager) httpx.Middleware {
 			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 		})
 	}
+}
+
+// apiKeyFromRequest returns a raw API key from the X-API-Key header or an Authorization:
+// Bearer nvt_… token, or "" if the request carries no API key.
+func apiKeyFromRequest(r *http.Request) string {
+	if k := r.Header.Get("X-API-Key"); strings.HasPrefix(k, apiKeyScheme) {
+		return k
+	}
+	if t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); strings.HasPrefix(t, apiKeyScheme) {
+		return t
+	}
+	return ""
 }
 
 // RequireRole allows the request only if the principal holds one of the roles.

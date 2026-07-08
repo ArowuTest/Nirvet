@@ -789,6 +789,50 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("ServiceAccountsAndAPIKeys", func(t *testing.T) {
+		// §6.2 IAM-001/005/008: a service account + hashed API key authenticates as a normal
+		// Principal; platform_admin is refused; wrong/revoked keys fail closed.
+		if _, err := h.iamSvc.CreateServiceAccount(h.ctx, h.principal, h.tenantID, iam.SACreateInput{
+			Name: "sa-admin", Role: auth.RolePlatformAdmin}); err == nil {
+			t.Fatal("a service account must not be allowed to hold platform_admin")
+		}
+		sa, err := h.iamSvc.CreateServiceAccount(h.ctx, h.principal, h.tenantID, iam.SACreateInput{
+			Name: "connector-sa", Role: auth.RoleAnalystT1})
+		if err != nil {
+			t.Fatalf("create service account: %v", err)
+		}
+		key, raw, err := h.iamSvc.CreateAPIKey(h.ctx, h.principal, h.tenantID, sa.ID, iam.KeyCreateInput{Label: "ci"})
+		if err != nil {
+			t.Fatalf("create api key: %v", err)
+		}
+		if raw == "" || key.Role != auth.RoleAnalystT1 {
+			t.Fatalf("raw key must be returned once and inherit the SA role, got role=%s", key.Role)
+		}
+
+		// Resolve the raw key → a Principal scoped to the SA's tenant + role.
+		p, err := h.iamSvc.ResolveAPIKey(h.ctx, raw)
+		if err != nil {
+			t.Fatalf("resolve valid api key: %v", err)
+		}
+		if p.TenantID != h.tenantID || p.Role != auth.RoleAnalystT1 || p.UserID != sa.ID {
+			t.Fatalf("resolved principal mismatch: %+v", p)
+		}
+		// A tampered/malformed key fails closed.
+		if _, err := h.iamSvc.ResolveAPIKey(h.ctx, raw+"x"); err == nil {
+			t.Fatal("a tampered api key must not resolve")
+		}
+		if _, err := h.iamSvc.ResolveAPIKey(h.ctx, "not-a-key"); err == nil {
+			t.Fatal("a malformed api key must not resolve")
+		}
+		// Revoke → the key no longer resolves.
+		if err := h.iamSvc.RevokeAPIKey(h.ctx, h.principal, h.tenantID, key.ID); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		if _, err := h.iamSvc.ResolveAPIKey(h.ctx, raw); err == nil {
+			t.Fatal("a revoked api key must not resolve")
+		}
+	})
+
 	t.Run("TenantGovernance", func(t *testing.T) {
 		// §6.1: profile is seeded to a default, changes are audited to the append-only change
 		// history, status transitions are guarded, escalation matrix + authority-to-act are

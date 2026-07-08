@@ -240,6 +240,13 @@ paths:
     get: { tags: [admin], summary: List authority-to-act policies (TEN-006/SOAR-003), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policies } } }
     put: { tags: [admin], summary: Upsert an authority-to-act policy (fail-closed default), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: policy } } }
   /admin/tenants/{id}/history: { get: { tags: [admin], summary: Tenant change history (append-only, TEN-010), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: history } } } }
+  /admin/tenants/{id}/service-accounts:
+    get: { tags: [admin], summary: List service accounts (IAM-001), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: service accounts } } }
+    post: { tags: [admin], summary: Create a service account (non-human principal; not platform_admin), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created } } }
+  /admin/tenants/{id}/service-accounts/{sid}/keys:
+    get: { tags: [admin], summary: List API key metadata (never the secret), parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: sid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: keys } } }
+    post: { tags: [admin], summary: Mint an API key (raw key returned ONCE), parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: sid, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created with one-time key } } }
+  /admin/tenants/{id}/api-keys/{kid}: { delete: { tags: [admin], summary: Revoke an API key (fail-closed on next use), parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: kid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: revoked } } } }
   /admin/users: { post: { tags: [admin], summary: Create user (platform_admin), responses: { '201': { description: created } } } }
   /ingest:
     post:

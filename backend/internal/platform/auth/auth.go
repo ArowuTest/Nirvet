@@ -18,14 +18,14 @@ import (
 type Role string
 
 const (
-	RolePlatformAdmin   Role = "platform_admin"
-	RoleSOCManager      Role = "soc_manager"
-	RoleAnalystT1       Role = "analyst_t1"
-	RoleAnalystT2       Role = "analyst_t2"
-	RoleAnalystT3       Role = "analyst_t3"
-	RoleDetectionEng    Role = "detection_engineer"
-	RoleCustomerAdmin   Role = "customer_admin"
-	RoleCustomerViewer  Role = "customer_viewer"
+	RolePlatformAdmin  Role = "platform_admin"
+	RoleSOCManager     Role = "soc_manager"
+	RoleAnalystT1      Role = "analyst_t1"
+	RoleAnalystT2      Role = "analyst_t2"
+	RoleAnalystT3      Role = "analyst_t3"
+	RoleDetectionEng   Role = "detection_engineer"
+	RoleCustomerAdmin  Role = "customer_admin"
+	RoleCustomerViewer Role = "customer_viewer"
 )
 
 // Principal is the authenticated actor for a request.

@@ -383,3 +383,30 @@ reviewer's order, each gated + tested + green on both backends.
 - **Deferred (tracked tasks, not code TODOs)**: TEN-001 tenant hierarchy/MSSP downstream, TEN-003 onboarding
   templates, TEN-008 white-label branding, TEN-009 offboarding/export/cert-of-destruction — each its own §6.1/E15
   slice.
+
+## Gate — §6.2 IAM slice A: service accounts + API keys — IAM-001/005/008
+
+- **SRS section / requirement**: §6.2 — IAM-001 (service accounts + API keys as first-class principals),
+  IAM-005 (least-privilege scopes + rotation for programmatic credentials), IAM-008 (lifecycle: create → rotate →
+  revoke). Enables programmatic/connector/customer-API access (E09 US-035) without a human password.
+- **Contract / interfaces**: extend `internal/iam`. A **service account** is a non-human, non-loginable principal
+  (tenant + limited role). An **API key** authenticates as its service account. Key format `nvt_<prefix>_<secret>`;
+  only `sha256(rawKey)` + the public `prefix` are stored — the secret is shown **once** at creation, never
+  retrievable. New `auth.APIKeyResolver` interface (implemented by `iam.Service.ResolveAPIKey`) injected into a new
+  `auth.AuthenticateWithAPIKeys(mgr, resolver)` middleware: `Authorization: Bearer nvt_…` (or `X-API-Key`) resolves
+  to a `Principal`; anything else falls through to JWT. Endpoints (platform_admin / customer_admin own-tenant):
+  `POST/GET /admin/service-accounts`, `POST/GET/DELETE /admin/service-accounts/{id}/keys`.
+- **Invariants**: (1) secret never stored/logged — sha256 only; constant-time compare; high-entropy random secret
+  (API keys are not passwords → sha256 is correct, not bcrypt). (2) tenant isolation — pre-auth lookup via a
+  SECURITY DEFINER `auth_find_api_key_by_prefix` (mirrors `auth_find_user_by_email`); all management is tenant-RLS.
+  (3) a resolved key Principal carries the service account's tenant + role, so **all downstream RBAC + RLS apply
+  unchanged**. (4) revoked/expired keys fail closed; `last_used_at` updated best-effort. (5) least privilege — a
+  service-account role cannot be `platform_admin` (guarded at create). (6) every create/rotate/revoke audited.
+- **Data model**: migration `0029` — `service_accounts` (tenant-RLS) + `api_keys` (tenant-RLS: prefix UNIQUE,
+  key_hash, role denormalized for fast auth, expires_at/last_used_at/revoked_at) + SECURITY DEFINER lookup fn.
+- **End-to-end fit**: a connector/customer script calls `/ingest` with `Authorization: Bearer nvt_…`; the
+  middleware resolves the service-account Principal; ingestion + RLS + audit proceed exactly as for a JWT user.
+  Heartbeat unaffected (additive; JWT path untouched).
+- **Deferred (tracked tasks)**: per-key **scopes** beyond role (fine-grained endpoint allowlist), automatic key
+  **rotation reminders** (→ §6.18 ADMIN-009), user-owned personal API keys — next §6.2 slices. PAM/break-glass +
+  session policy = §6.2 slice B; invitations + access reviews + ABAC = slice C.
