@@ -209,6 +209,42 @@ FR-006 timeline, FR-007 evidence, FR-008 SLA).
   Normalize→Detect stage. *Deferred:* aggregation/threshold rules (brute-force needs a
   windowed count the per-event condition model can't express), coverage heatmap.
 
+## Gate: Round-2 security remediation (NFR-001/003/009; reviewer Jul 2026)
+
+Round-2 external review (Claude Fable 5, read-only, to HEAD 86afcbd) found no new Critical
+and confirmed tenant isolation airtight, but 5 Highs + Mediums concentrated in two root
+causes. Owner directive: fix ALL now (no deferrals) for a clean pass. Fixed in the
+reviewer's order, each gated + tested + green on both backends.
+
+- **Root cause 1 — concurrency/idempotency/panic-safety under the multi-process topology
+  (worker runs in-API *and* standalone).** House pattern adopted: **claim-then-act**
+  (`UPDATE … WHERE <still-unclaimed> RETURNING`, act only if a row was claimed) for every
+  idempotent action, and **recover-log-continue** around every long-lived loop (mirrors the
+  per-job `processGuarded`). Covers H-C (correlation promotion), M-B (SLA notify), M-C
+  (alert_count += 1 in SQL), H-E (poller/reconciler/SLA-sweeper panic guards).
+- **Root cause 2 — BFLA on the flat `provider` tier.** Add a `senior` gate
+  (platform_admin/soc_manager/analyst_t2/analyst_t3) for destructive/sensitive routes
+  (connector create+delete, playbook run, incident close, alert promote, asset writes,
+  threat-intel write, evidence-pack export); T1 keeps read + triage/assign/note. Audit
+  before/after on asset criticality (M-D). Invariant: least privilege on top of the
+  already-solid tenant isolation.
+- **AI (H-A/M-F):** fence all event-derived text in an unguessable-sentinel data block
+  (strip the sentinel from values, bound lengths) so injected instructions in customer
+  telemetry can't steer the copilot; persist the AI output for audit (GuardFullAudit).
+  Assistive-only + tenant-scoped retrieval already held.
+- **Evidence integrity (H-B):** real Ed25519 signature over a digest that folds the
+  envelope metadata (GeneratedAt/By/TenantID/SchemaVersion) + section checksums; ship
+  signature + public key + timestamp + a verify path. Key from config now (vault/KMS-backed
+  is the go-live step) — but the crypto is real, not a bare sha256.
+- **Evidence tables (H-Res):** extend the C1 immutability from audit_log to the evidence
+  tables — REVOKE DELETE on raw_events + events, REVOKE UPDATE on events, and a
+  column-scoped trigger on raw_events allowing only `enqueued_at` to change (it legitimately
+  needs that one UPDATE for the durability marker).
+- **M-E/M-A/lows:** entity-graph batches incident fetch (`incident.GetByIDs`, no N+1);
+  correlation requires corroboration (≥2 alerts) before single-event auto-promotion +
+  per-tenant debounce; SSO re-validates role at login; gosec+govulncheck in CI; vault
+  key-version byte.
+
 ## Next gates (before starting)
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
 ## Gate: SAML 2.0 SSO (SP-initiated) — §6.2 IAM-001 — reviewed Jul 2026

@@ -13,6 +13,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
+	"github.com/ArowuTest/nirvet/internal/platform/safe"
 	"github.com/google/uuid"
 )
 
@@ -161,11 +162,13 @@ func (s *Service) StartReconciler(ctx context.Context, log *slog.Logger, interva
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := s.Reconcile(ctx, grace, limit); err != nil {
-				log.Warn("ingest reconcile failed", "err", err)
-			} else if n > 0 {
-				log.Warn("ingest reconcile re-enqueued orphaned raw events", "count", n)
-			}
+			safe.Do(log, "ingest-reconciler", func() {
+				if n, err := s.Reconcile(ctx, grace, limit); err != nil {
+					log.Warn("ingest reconcile failed", "err", err)
+				} else if n > 0 {
+					log.Warn("ingest reconcile re-enqueued orphaned raw events", "count", n)
+				}
+			})
 		}
 	}
 }

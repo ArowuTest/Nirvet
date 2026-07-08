@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/platform/safe"
 )
 
 // Poller pulls telemetry from enabled Microsoft pull connectors on a schedule and
@@ -46,11 +47,13 @@ func (p *Poller) Start(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := p.RunOnce(ctx); err != nil {
-				p.log.Error("poller error", "err", err)
-			} else if n > 0 {
-				p.log.Info("poller ingested", "count", n)
-			}
+			safe.Do(p.log, "connector-poller", func() {
+				if n, err := p.RunOnce(ctx); err != nil {
+					p.log.Error("poller error", "err", err)
+				} else if n > 0 {
+					p.log.Info("poller ingested", "count", n)
+				}
+			})
 		}
 	}
 }

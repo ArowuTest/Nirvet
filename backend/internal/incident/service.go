@@ -10,6 +10,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/safe"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -238,11 +239,13 @@ func (s *Service) StartSLASweeper(ctx context.Context, log *slog.Logger, interva
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if n, err := s.SweepSLABreaches(ctx, time.Now(), limit); err != nil {
-				log.Warn("sla breach sweep failed", "err", err)
-			} else if n > 0 {
-				log.Info("sla breach sweep alerted incidents", "count", n)
-			}
+			safe.Do(log, "sla-breach-sweeper", func() {
+				if n, err := s.SweepSLABreaches(ctx, time.Now(), limit); err != nil {
+					log.Warn("sla breach sweep failed", "err", err)
+				} else if n > 0 {
+					log.Info("sla breach sweep alerted incidents", "count", n)
+				}
+			})
 		}
 	}
 }
