@@ -514,6 +514,15 @@ func TestIntegration(t *testing.T) {
 		if !haveCustomer {
 			t.Fatal("customer timeline missing the customer-facing note")
 		}
+		// Reopen BFLA (Round-4 residual): reopening a senior-closed incident requires senior parity —
+		// an analyst_t1 must NOT reverse a senior close; a senior (h.principal is analyst_t2) may.
+		t1 := auth.Principal{UserID: h.principal.UserID, TenantID: h.tenantID, Role: auth.RoleAnalystT1, Email: "t1@acme.test"}
+		if _, err := h.incSvc.Transition(h.ctx, t1, inc.ID, incident.StageInvestigating, "reopen"); err == nil {
+			t.Fatal("analyst_t1 must NOT be able to reopen a closed incident (reopen BFLA)")
+		}
+		if _, err := h.incSvc.Transition(h.ctx, h.principal, inc.ID, incident.StageInvestigating, "reopen"); err != nil {
+			t.Fatalf("a senior must be able to reopen a closed incident: %v", err)
+		}
 	})
 
 	t.Run("IncidentAtRiskQueue", func(t *testing.T) {

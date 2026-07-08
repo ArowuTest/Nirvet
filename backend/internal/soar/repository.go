@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -83,6 +82,16 @@ func (r *Repository) updateRunTx(ctx context.Context, tx pgx.Tx, run *PlaybookRu
 	_, err := tx.Exec(ctx,
 		`UPDATE playbook_runs SET status=$2, steps_result=$3, approved_by=$4, completed_at=$5 WHERE id=$1`,
 		run.ID, run.Status, steps, run.ApprovedBy, completed)
+	return err
+}
+
+// lockRunKeyTx takes a transaction-scoped advisory lock keyed on (playbook, incident) so concurrent
+// Runs for the same pair serialise (Round-4 R-1): the fully-auto path writes a TERMINAL row that the
+// active-status partial unique index (0038) does not cover, so without this two truly-concurrent
+// auto-runs could both pass the idempotency check and double-dispatch. Held until the tx ends.
+func (r *Repository) lockRunKeyTx(ctx context.Context, tx pgx.Tx, playbookID, incidentID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		playbookID.String()+":"+incidentID.String())
 	return err
 }
 
@@ -171,23 +180,6 @@ func (r *Repository) ListRuns(ctx context.Context, tenantID uuid.UUID) ([]Playbo
 		return rows.Err()
 	})
 	return out, err
-}
-
-// UpdateRun persists status/steps/approval/completion and its audit entry atomically (SOAR-006).
-func (r *Repository) UpdateRun(ctx context.Context, run *PlaybookRun, entry audit.Entry) error {
-	steps, _ := json.Marshal(run.Steps)
-	var completed any
-	if run.CompletedAt != nil {
-		completed = *run.CompletedAt
-	}
-	return r.db.WithTenant(ctx, run.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx,
-			`UPDATE playbook_runs SET status=$2, steps_result=$3, approved_by=$4, completed_at=$5 WHERE id=$1`,
-			run.ID, run.Status, steps, run.ApprovedBy, completed); err != nil {
-			return err
-		}
-		return audit.Record(ctx, tx, entry)
-	})
 }
 
 func scanPlaybook(row pgx.Row) (Playbook, error) {

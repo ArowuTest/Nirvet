@@ -176,6 +176,14 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 	run := &PlaybookRun{ID: uuid.New(), TenantID: p.TenantID, PlaybookID: pb.ID, IncidentID: incidentID, RequestedBy: &p.UserID}
 	var existing *PlaybookRun
 	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// Round-4 R-1 (concurrent fully-auto): serialise concurrent Runs for the same (playbook,
+		// incident) with a tx-scoped advisory lock, so the idempotency check below can't be raced by a
+		// second run whose terminal-status insert the 0038 partial index doesn't cover. Released at tx end.
+		if incidentID != nil {
+			if e := s.repo.lockRunKeyTx(ctx, tx, pb.ID, *incidentID); e != nil {
+				return e
+			}
+		}
 		if ex, e := s.repo.activeRunForTx(ctx, tx, p.TenantID, pb.ID, incidentID); e != nil {
 			return e
 		} else if ex != nil {
@@ -341,7 +349,9 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 	return run, nil
 }
 
-// Reject rejects a pending run without executing further.
+// Reject rejects a pending run without executing further. Like Approve it CLAIMS the run in-tx
+// (Round-4 residual: a concurrent Approve+Reject on one run must be serialised — the loser gets 409,
+// so a run can't be both approved and rejected).
 func (s *Service) Reject(ctx context.Context, p auth.Principal, runID uuid.UUID) (*PlaybookRun, error) {
 	run, err := s.repo.GetRun(ctx, p.TenantID, runID)
 	if err != nil {
@@ -350,20 +360,37 @@ func (s *Service) Reject(ctx context.Context, p auth.Principal, runID uuid.UUID)
 	if run.Status != RunPendingApproval {
 		return nil, httpx.ErrBadRequest("run is not pending approval")
 	}
-	for i := range run.Steps {
-		if run.Steps[i].Status == StatusAwaitingApproval {
-			run.Steps[i].Status = StatusSkipped
-			run.Steps[i].Note = "rejected by " + p.Email
+	claimed := false
+	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ok, e := s.repo.claimPendingTx(ctx, tx, run.ID)
+		if e != nil {
+			return e
 		}
-	}
-	run.ApprovedBy = &p.UserID
-	run.Status = RunRejected
-	now := time.Now()
-	run.CompletedAt = &now
-	entry := audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_reject",
-		Target: "run:" + run.ID.String()}
-	if err := s.repo.UpdateRun(ctx, run, entry); err != nil {
+		if !ok {
+			return nil // a concurrent Approve/Reject claimed it first
+		}
+		claimed = true
+		for i := range run.Steps {
+			if run.Steps[i].Status == StatusAwaitingApproval {
+				run.Steps[i].Status = StatusSkipped
+				run.Steps[i].Note = "rejected by " + p.Email
+			}
+		}
+		run.ApprovedBy = &p.UserID
+		run.Status = RunRejected
+		now := time.Now()
+		run.CompletedAt = &now
+		if e := s.repo.updateRunTx(ctx, tx, run); e != nil {
+			return e
+		}
+		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_reject",
+			Target: "run:" + run.ID.String()})
+	})
+	if err != nil {
 		return nil, httpx.ErrInternal("could not reject run")
+	}
+	if !claimed {
+		return nil, httpx.ErrConflict("run is no longer pending approval (already decided)")
 	}
 	return run, nil
 }

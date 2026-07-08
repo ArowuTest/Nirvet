@@ -453,6 +453,12 @@ func (s *Service) Transition(ctx context.Context, p auth.Principal, id uuid.UUID
 	if cur.Stage == to {
 		return cur, nil // idempotent
 	}
+	// Round-4 residual (reopen BFLA): a transition FROM 'closed' (reopen → investigating, or → PIR)
+	// reverses a senior-gated close and restarts SLA exposure, so it needs the SAME senior authority
+	// as closing. The transition route is provider-gated (incl. analyst_t1); this closes the parity gap.
+	if cur.Stage == StageClosed && !auth.IsSenior(p.Role) {
+		return nil, httpx.ErrForbidden("reopening or reviewing a closed incident requires a senior role")
+	}
 	if !canTransition(cur.Stage, to) {
 		return nil, httpx.ErrBadRequest(fmt.Sprintf("illegal stage transition %s -> %s", cur.Stage, to))
 	}

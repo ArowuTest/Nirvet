@@ -167,3 +167,19 @@ var roleRank = map[Role]int{
 
 // RoleRank returns a role's privilege tier (unknown roles rank 0).
 func RoleRank(r Role) int { return roleRank[r] }
+
+// seniorRoleSet are the provider roles trusted with destructive/senior actions (close incident,
+// promote alert, create connector, reopen a closed case). Excludes analyst_t1 and detection_engineer.
+// Single source of truth — cmd/api wires the route middleware from SeniorRoles(), and domain services
+// (e.g. incident reopen) gate with IsSenior, so the two can't drift.
+var seniorRoleSet = map[Role]bool{
+	RolePlatformAdmin: true, RoleSOCManager: true, RoleAnalystT2: true, RoleAnalystT3: true,
+}
+
+// IsSenior reports whether a role is trusted with senior/destructive actions.
+func IsSenior(r Role) bool { return seniorRoleSet[r] }
+
+// SeniorRoles returns the senior role list (for RequireRole wiring).
+func SeniorRoles() []Role {
+	return []Role{RolePlatformAdmin, RoleSOCManager, RoleAnalystT2, RoleAnalystT3}
+}

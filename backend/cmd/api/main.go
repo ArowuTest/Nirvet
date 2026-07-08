@@ -63,7 +63,7 @@ var (
 		auth.RolePlatformAdmin, auth.RoleSOCManager,
 		auth.RoleAnalystT1, auth.RoleAnalystT2, auth.RoleAnalystT3, auth.RoleDetectionEng,
 	}
-	seniorRoles  = []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleAnalystT2, auth.RoleAnalystT3}
+	seniorRoles  = auth.SeniorRoles() // single source of truth (auth.IsSenior gates the same set)
 	managerRoles = []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager}
 )
 
