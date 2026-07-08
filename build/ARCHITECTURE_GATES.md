@@ -756,3 +756,60 @@ audit on manual add/import; TLP respected in output (a match carries its TLP so 
 extraction from a simple pattern, TLP validation. Integration: import a small STIX bundle (indicator +
 malware + relationship) → stored; an event entity matching a STIX indicator enriches with confidence+TLP+
 labels; global object visible to a tenant, tenant object isolated. Heartbeat green; build/vet/gofmt clean.
+
+---
+
+## Gate — §6.14 compliance → config-driven control framework + real assessment, slice A (COMP-001/002/004) — reviewed Jul 2026
+
+**Why now.** §6.14 is a 52-line hardcoded static struct: 6 NIST-CSF functions with fixed status strings,
+identical for every tenant, no DB, no tenant scope, no evidence linkage. A textbook no-hardcoding
+violation (owner rule). This slice replaces it with a config-driven framework/control model + a real
+per-tenant assessment derived from live platform state, with manual override.
+
+**SRS grounding.** COMP-001 map detections/incidents/evidence/actions → framework controls; COMP-002
+framework templates (NIST CSF 2.0, CIS v8.1, ISO 27001) as config not code; COMP-004 evidence/assessment
+with owners + status. Frameworks per [[reference-appsec-standards-2025]] (NIST CSF 2.0 functions
+GV/ID/PR/DE/RS/RC).
+
+**Config boundary (the key rule).** The framework catalogue, its controls, and each control's *mapping*
+to a platform signal are DB CONFIG (seeded global defaults, tenant-overridable). The *signal resolvers*
+(the code that inspects real state — is immutable audit present, is RLS enforced, does the tenant have
+detection coverage, incident MTTR) are CODE, because they must query live state. So: WHAT proves a control
+= config; HOW a proof is measured = code. A control with no auto-signal defaults to `gap` until manually
+assessed — we never fabricate "met".
+
+**In scope (slice A).**
+1. `compliance_frameworks` (global seed: nist_csf_2_0, cis_v8_1, iso_27001_2022; + tenant-custom) — RLS
+   global+own per-command.
+2. `compliance_controls` (global seed: NIST CSF 2.0 functions + core categories, control_ref + parent_ref
+   hierarchy, weight, `auto_signal` key + `auto_config` jsonb = the seeded mapping) — RLS global+own.
+3. `compliance_control_status` (per-tenant: status met|partial|gap|not_applicable, score, source auto|
+   manual, note, evidence_incident_id/evidence_ref, assessed_by/at; UNIQUE(tenant,framework,control_ref))
+   — tenant RLS. Holds manual overrides + cached auto assessments.
+4. Signal registry (code): resolver per `auto_signal` (capability-present, detection-coverage,
+   incident-process, audit-immutability, …) → (status, note). Honest: unbuilt domains resolve to gap.
+5. Service: ListFrameworks, ListControls(framework), Assess(tenant, framework) (manual status wins, else
+   resolve auto_signal; roll up weighted score + per-function summary), SetControlStatus (manual override,
+   audited). Coverage endpoint re-backed by the real assessment (no route break).
+6. Handler + routes: GET /compliance/frameworks, GET /compliance/controls, GET /compliance/coverage
+   (real, tenant-scoped), PUT /compliance/controls/{ref}/status (senior, audited).
+
+**Out of scope (later).** COMP-003 country/sovereign packs (Ghana) as config; COMP-008 audit-readiness
+dashboards; COMP-009 retention/deletion by jurisdiction; evidence-request workflow with owners/due dates;
+scheduled attestation; auto-mapping detections→controls by ATT&CK. Full CIS/ISO control bodies seeded
+minimally (framework rows + a few controls) — full catalogues are a data-load task, not logic.
+
+**Entities/enums/RLS.** frameworks + controls: nullable tenant_id (NULL=global), per-command policies
+(global+own read, own-only write) — same guardrail as detection_rules/stix_objects so a tenant can't
+re-home/delete a global template. status: tenant-scoped single-policy RLS. Enums: status
+met|partial|gap|not_applicable, source auto|manual. Indexes: controls(framework_key, tenant_id),
+status UNIQUE(tenant, framework_key, control_ref).
+
+**Invariants.** Tenant isolation (global templates readable, tenant status private); no fabricated "met"
+(missing signal → gap); manual override always wins over auto and is audited with actor; assessment is a
+read that never writes through a GET (RLS aborted-tx rule); weighted rollup deterministic.
+
+**Verify.** Unit: signal resolver honesty (unbuilt → gap), manual-over-auto precedence, weighted rollup.
+Integration: seeded frameworks/controls visible to a tenant (global), Assess produces per-control status
+from live state, manual override persists + wins + is audited, tenant B can't see tenant A's status,
+global template not writable by a tenant. Heartbeat green; build/vet/gofmt clean.

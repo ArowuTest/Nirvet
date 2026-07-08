@@ -234,7 +234,7 @@ func main() {
 	aiSvc.WithIncidentContext(incidentSvc, assetSvc)
 	aiH := ai.NewHandler(aiSvc)
 	reportingH := reporting.NewHandler(reporting.NewService(db, events))
-	complianceH := compliance.NewHandler()
+	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
 	// --- bootstrap first-run provider tenant + platform admin ---
 	bootstrap(ctx, log, tenantSvc, iamSvc, cfg.BootstrapEmail, cfg.BootstrapPassword)
@@ -442,8 +442,11 @@ func main() {
 	mux.Handle("POST /threat-intel/stix/bundle", senior(threatH.ImportBundle))
 	// reporting
 	mux.Handle("GET /reports/summary", provider(reportingH.SummaryHTTP))
-	// compliance
+	// compliance (§6.14): config-driven frameworks + real per-tenant assessment; manual override is senior.
+	mux.Handle("GET /compliance/frameworks", provider(complianceH.Frameworks))
+	mux.Handle("GET /compliance/controls", provider(complianceH.Controls))
 	mux.Handle("GET /compliance/coverage", provider(complianceH.Coverage))
+	mux.Handle("PUT /compliance/status", senior(complianceH.SetStatus))
 	// billing / entitlements
 	mux.Handle("GET /billing/entitlements", provider(billingH.Get))
 	mux.Handle("PUT /billing/entitlements", padmin(billingH.Set))
