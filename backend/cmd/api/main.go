@@ -144,6 +144,8 @@ func main() {
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
 		WithAssignees(iamSvc).WithTicketer(ticketingSvc)
 	incidentH := incident.NewHandler(incidentSvc)
+	// High-risk correlation clusters auto-open an incident (§6.7).
+	correlationSvc.WithIncidenter(incidentSvc)
 
 	billingSvc := billing.NewService(billing.NewRepository(db))
 	billingH := billing.NewHandler(billingSvc)

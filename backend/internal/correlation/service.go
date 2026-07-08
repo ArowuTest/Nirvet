@@ -8,11 +8,23 @@ import (
 	"github.com/google/uuid"
 )
 
+// Incidenter opens an incident for a high-risk correlation cluster. Implemented by
+// incident.Service; a narrow interface so correlation does not depend on incident.
+type Incidenter interface {
+	OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, entity, severity string, risk int, techniques []string) (uuid.UUID, error)
+}
+
 // Service clusters alerts and scores risk.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo       *Repository
+	incidenter Incidenter
+}
 
 // NewService builds the service.
 func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+
+// WithIncidenter wires auto-promotion of high-risk clusters to incidents.
+func (s *Service) WithIncidenter(i Incidenter) *Service { s.incidenter = i; return s }
 
 // Correlate places an alert's signals into a correlation cluster for its entity
 // (creating one if none is open in the window), recomputes the cluster's aggregate
@@ -28,10 +40,11 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 	if entity == "" {
 		return uuid.Nil, individual, nil
 	}
-	existing, err := s.repo.FindOpen(ctx, tenantID, entity, time.Now().Add(-Window))
+	existing, err := s.repo.FindActive(ctx, tenantID, entity, time.Now().Add(-Window))
 	if err != nil {
 		return uuid.Nil, individual, err
 	}
+	var c *Correlation
 	if existing != nil {
 		existing.AlertCount++
 		existing.MaxSeverity = worseSeverity(existing.MaxSeverity, severity)
@@ -40,17 +53,35 @@ func (s *Service) Correlate(ctx context.Context, tenantID uuid.UUID, entity, sev
 		if err := s.repo.Update(ctx, existing); err != nil {
 			return uuid.Nil, individual, err
 		}
-		return existing.ID, individual, nil
+		c = existing
+	} else {
+		c = &Correlation{
+			ID: uuid.New(), TenantID: tenantID, Entity: entity, Status: StatusOpen,
+			AlertCount: 1, MaxSeverity: severity, Techniques: mergeTechniques(nil, mitre),
+			RiskScore: RiskScore(severity, 1, len(mitre), confidence),
+		}
+		if err := s.repo.Create(ctx, c); err != nil {
+			return uuid.Nil, individual, err
+		}
 	}
-	c := &Correlation{
-		ID: uuid.New(), TenantID: tenantID, Entity: entity, Status: StatusOpen,
-		AlertCount: 1, MaxSeverity: severity, Techniques: mergeTechniques(nil, mitre),
-		RiskScore: RiskScore(severity, 1, len(mitre), confidence),
-	}
-	if err := s.repo.Create(ctx, c); err != nil {
-		return uuid.Nil, individual, err
-	}
+	s.maybePromote(ctx, tenantID, entity, c)
 	return c.ID, individual, nil
+}
+
+// maybePromote opens an incident for a cluster once its aggregate risk crosses the
+// promote threshold (once — an already-promoted cluster is skipped). Best-effort:
+// a promotion failure never breaks correlation, and the cluster still holds its risk.
+func (s *Service) maybePromote(ctx context.Context, tenantID uuid.UUID, entity string, c *Correlation) {
+	if s.incidenter == nil || c.Status != StatusOpen || c.IncidentID != nil || c.RiskScore < PromoteThreshold {
+		return
+	}
+	incID, err := s.incidenter.OpenFromCorrelation(ctx, tenantID, entity, c.MaxSeverity, c.RiskScore, c.Techniques)
+	if err != nil {
+		return
+	}
+	c.IncidentID = &incID
+	c.Status = StatusPromoted
+	_ = s.repo.Update(ctx, c)
 }
 
 // List returns a tenant's correlations (highest risk first).

@@ -2,6 +2,8 @@ package incident
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -124,6 +126,31 @@ func (s *Service) Assign(ctx context.Context, p auth.Principal, id, assigneeID u
 		return httpx.ErrNotFound("incident not assignable")
 	}
 	return nil
+}
+
+// OpenFromCorrelation opens a system-initiated incident for a high-risk
+// correlation cluster (§6.7 auto-promotion). Unassigned (an analyst picks it up),
+// severity carried from the cluster, and the customer is notified (best-effort).
+// Satisfies correlation.Incidenter.
+func (s *Service) OpenFromCorrelation(ctx context.Context, tenantID uuid.UUID, entity, severity string, risk int, techniques []string) (uuid.UUID, error) {
+	inc := &Incident{
+		ID: uuid.New(), TenantID: tenantID,
+		Title: "Correlated activity on " + entity, Severity: severity,
+		Category: "correlation", Stage: StageTriage,
+	}
+	seed := &TimelineEntry{
+		ID: uuid.New(), Author: "system", Kind: "status",
+		Note: fmt.Sprintf("Auto-opened from correlation (risk %d; techniques %s)", risk, strings.Join(techniques, ", ")),
+	}
+	if err := s.repo.CreateWithSeed(ctx, tenantID, inc, seed); err != nil {
+		return uuid.Nil, httpx.ErrInternal("could not open incident from correlation")
+	}
+	if s.notifier != nil {
+		_ = s.notifier.NotifyIncident(ctx, tenantID,
+			"Incident opened: "+inc.Title,
+			fmt.Sprintf("A %s incident was auto-opened from a correlated cluster (risk %d) on %s.", severity, risk, entity))
+	}
+	return inc.ID, nil
 }
 
 // List returns incidents.

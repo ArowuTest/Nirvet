@@ -120,7 +120,9 @@ func newHarness(t *testing.T) *harness {
 	detEng := detection.NewEngine(detection.NewRepository(db))
 	enr := threatintel.NewEnricher(threatintel.NewRepository(db))
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), q, nil, blobs)
-	corrSvc := correlation.NewService(correlation.NewRepository(db))
+	incSvc := incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{})
+	// High-risk correlation clusters auto-open an incident (§6.7).
+	corrSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incSvc)
 
 	return &harness{
 		ctx: ctx, db: db, tenantID: tn.ID, principal: principal, email: email,
@@ -128,7 +130,7 @@ func newHarness(t *testing.T) *harness {
 		ingest:   ingestSvc,
 		worker:   ingestion.NewWorker(q, events, enr, detEng, alertSvc, log).WithCorrelator(corrSvc),
 		alertSvc: alertSvc,
-		incSvc:   incident.NewService(incident.NewRepository(db), alertSvc, nil).WithAssignees(iamSvc).WithTicketer(stubTicketer{}),
+		incSvc:   incSvc,
 		connSvc:  connector.NewService(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc),
 		soarSvc:  soar.NewService(soar.NewRepository(db)),
 		billSvc:  billing.NewService(billing.NewRepository(db)),

@@ -136,6 +136,19 @@ func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID, e *Timel
 	})
 }
 
+// CreateWithSeed atomically creates an incident and seeds its timeline. Used for
+// system-opened incidents (e.g. auto-promoted from a high-risk correlation) that
+// are not tied to a single alert.
+func (r *Repository) CreateWithSeed(ctx context.Context, tenantID uuid.UUID, i *Incident, seed *TimelineEntry) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if err := r.CreateTx(ctx, tx, i); err != nil {
+			return err
+		}
+		seed.IncidentID = i.ID
+		return r.AddTimelineTx(ctx, tx, seed)
+	})
+}
+
 // CreateFromAlertTx runs the promote-to-incident write atomically: create the
 // incident, mark the alert promoted, and seed the timeline. The caller supplies
 // a promote callback so the alert repo stays the owner of its own table.

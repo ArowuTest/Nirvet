@@ -76,7 +76,63 @@ func TestCorrelation_ClustersByEntity(t *testing.T) {
 
 	// The list is risk-ranked; the critical cluster ranks above the low one.
 	list, _ := svc.List(ctx, tn.ID, "open")
-	if len(list) < 2 || list[0].RiskScore < list[len(list)-1].RiskScore {
-		t.Fatalf("list must be risk-ranked desc: %+v", list)
+	for i := 1; i < len(list); i++ {
+		if list[i-1].RiskScore < list[i].RiskScore {
+			t.Fatalf("list must be risk-ranked desc: %+v", list)
+		}
+	}
+}
+
+// stubIncidenter records the incidents a correlation would auto-open.
+type stubIncidenter struct{ opened int }
+
+func (s *stubIncidenter) OpenFromCorrelation(_ context.Context, _ uuid.UUID, _, _ string, _ int, _ []string) (uuid.UUID, error) {
+	s.opened++
+	return uuid.New(), nil
+}
+
+func TestCorrelation_AutoPromotesHighRisk(t *testing.T) {
+	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NIRVET_TEST_DATABASE_URL to run correlation integration tests")
+	}
+	ctx := context.Background()
+	db, err := database.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(db.Close)
+	tn, _ := tenant.NewService(tenant.NewRepository(db)).Create(ctx, tenant.CreateInput{Name: "corr-promo-" + uuid.NewString()})
+
+	inc := &stubIncidenter{}
+	svc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(inc)
+	host := "host:" + uuid.NewString()
+
+	// A single critical alert with breadth is above the promote threshold → auto-incident.
+	cid, _, err := svc.Correlate(ctx, tn.ID, host, "critical", []string{"T1486", "T1490", "T1059"}, 90)
+	if err != nil {
+		t.Fatalf("correlate: %v", err)
+	}
+	if inc.opened != 1 {
+		t.Fatalf("a high-risk cluster should auto-open exactly one incident, got %d", inc.opened)
+	}
+	got, _ := svc.Get(ctx, tn.ID, cid)
+	if got.Status != correlation.StatusPromoted || got.IncidentID == nil {
+		t.Fatalf("cluster should be marked promoted with an incident: status=%s incident=%v", got.Status, got.IncidentID)
+	}
+	// A further alert on the same (now promoted) cluster must NOT open a second incident.
+	if _, _, err := svc.Correlate(ctx, tn.ID, host, "critical", []string{"T1055"}, 90); err != nil {
+		t.Fatalf("second correlate: %v", err)
+	}
+	if inc.opened != 1 {
+		t.Fatalf("an already-promoted cluster must not re-promote, opened=%d", inc.opened)
+	}
+
+	// A low-risk cluster stays open (below threshold) — no incident.
+	if _, _, err := svc.Correlate(ctx, tn.ID, "host:"+uuid.NewString(), "low", nil, 0); err != nil {
+		t.Fatalf("low correlate: %v", err)
+	}
+	if inc.opened != 1 {
+		t.Fatalf("a low-risk cluster must not promote, opened=%d", inc.opened)
 	}
 }

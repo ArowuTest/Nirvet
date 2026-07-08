@@ -12,11 +12,11 @@ import (
 type Stage string
 
 const (
-	StageNew          Stage = "new"
-	StageTriage       Stage = "triage"
+	StageNew           Stage = "new"
+	StageTriage        Stage = "triage"
 	StageInvestigating Stage = "investigating"
-	StageContained    Stage = "contained"
-	StageClosed       Stage = "closed"
+	StageContained     Stage = "contained"
+	StageClosed        Stage = "closed"
 )
 
 // Incident is a security case.

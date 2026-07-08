@@ -15,16 +15,19 @@ type Repository struct{ db *database.DB }
 // NewRepository builds the repository.
 func NewRepository(db *database.DB) *Repository { return &Repository{db: db} }
 
-// FindOpen returns the open correlation for an entity whose last_seen is within
-// the window, or (nil, nil) if none — the caller then creates a new cluster.
-func (r *Repository) FindOpen(ctx context.Context, tenantID uuid.UUID, entity string, since time.Time) (*Correlation, error) {
+// FindActive returns the active (open OR already-promoted) correlation for an
+// entity whose last_seen is within the window, or (nil, nil) if none — the caller
+// then creates a new cluster. A promoted cluster keeps absorbing related alerts so
+// an ongoing campaign on one entity stays a single cluster/incident (it is NOT
+// re-promoted). A closed cluster is resolved and never re-opened.
+func (r *Repository) FindActive(ctx context.Context, tenantID uuid.UUID, entity string, since time.Time) (*Correlation, error) {
 	var c Correlation
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return scanOne(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, entity, status, alert_count, max_severity, risk_score, techniques,
 			        incident_id, first_seen, last_seen, created_at
 			   FROM correlations
-			  WHERE entity=$1 AND status='open' AND last_seen >= $2
+			  WHERE entity=$1 AND status IN ('open','promoted') AND last_seen >= $2
 			  ORDER BY last_seen DESC LIMIT 1`, entity, since), &c)
 	})
 	if err != nil {
