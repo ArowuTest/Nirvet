@@ -88,6 +88,7 @@ type Service struct {
 	assignees  Assignees
 	ticketer   Ticketer
 	assets     AssetContext
+	blobs      BlobPutter
 }
 
 // NewService builds the service. notifier and assignees may be nil.

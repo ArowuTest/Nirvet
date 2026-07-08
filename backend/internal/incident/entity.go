@@ -122,6 +122,33 @@ var validTaskStatus = map[string]bool{
 	TaskOpen: true, TaskInProgress: true, TaskDone: true, TaskCancelled: true,
 }
 
+// Attachment is an evidence file attached to an incident with chain-of-custody (CASE-008): the bytes
+// live in the blob store, and SHA256 pins what was ingested so a later retrieval can be verified.
+type Attachment struct {
+	ID          uuid.UUID  `json:"id"`
+	IncidentID  uuid.UUID  `json:"incident_id"`
+	Filename    string     `json:"filename"`
+	ContentType string     `json:"content_type"`
+	SizeBytes   int64      `json:"size_bytes"`
+	SHA256      string     `json:"sha256"`
+	BlobURI     string     `json:"blob_uri"`
+	Note        string     `json:"note,omitempty"`
+	UploadedBy  *uuid.UUID `json:"uploaded_by,omitempty"`
+	UploadedAt  time.Time  `json:"uploaded_at"`
+}
+
+// KBArticle is a knowledge-base article / runbook (CASE-010). Global (tenant nil) or tenant-owned.
+type KBArticle struct {
+	ID        uuid.UUID  `json:"id"`
+	TenantID  *uuid.UUID `json:"tenant_id,omitempty"`
+	Title     string     `json:"title"`
+	Body      string     `json:"body,omitempty"`
+	URL       string     `json:"url,omitempty"`
+	Category  string     `json:"category,omitempty"`
+	Tags      []string   `json:"tags"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
 // Category is a configurable incident category template (CASE-007). Global (tenant nil) or tenant-custom.
 type Category struct {
 	ID              uuid.UUID  `json:"id"`

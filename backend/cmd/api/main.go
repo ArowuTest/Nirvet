@@ -167,7 +167,7 @@ func main() {
 	ticketingH := ticketing.NewHandler(ticketingSvc)
 
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
-		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc)
+		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc).WithBlobStore(blobs)
 	incidentH := incident.NewHandler(incidentSvc)
 	// High-risk correlation clusters auto-open an incident (§6.7); window/thresholds are the
 	// tenant's admin-configurable correlation policy (Phase 0-D no-hardcoding).
@@ -482,6 +482,13 @@ func main() {
 	mux.Handle("GET /incidents/{id}/children", provider(incidentH.Children))
 	mux.Handle("POST /incidents/{id}/parent", provider(incidentH.LinkParent))
 	mux.Handle("PUT /incidents/{id}/major", senior(incidentH.SetMajor)) // declaring a major incident is significant
+	// §6.8 slice C: attachments/chain-of-custody (CASE-008), knowledge-base links (CASE-010).
+	mux.Handle("GET /incidents/{id}/attachments", provider(incidentH.ListAttachments))
+	mux.Handle("POST /incidents/{id}/attachments", provider(incidentH.AddAttachment))
+	mux.Handle("GET /incidents/{id}/kb-links", provider(incidentH.ListKBLinks))
+	mux.Handle("POST /incidents/{id}/kb-links", provider(incidentH.LinkKB))
+	mux.Handle("GET /knowledge-base", provider(incidentH.ListKB))
+	mux.Handle("POST /knowledge-base", provider(incidentH.CreateKB))
 	mux.Handle("POST /incidents/{id}/close", senior(incidentH.Close))
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))

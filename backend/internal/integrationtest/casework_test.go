@@ -2,6 +2,8 @@ package integrationtest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"testing"
 
@@ -125,4 +127,102 @@ func TestIntegration_CaseworkSliceB(t *testing.T) {
 		t.Fatalf("tenant B must not see tenant A tasks, got %+v", bTasks)
 	}
 	_ = pB
+}
+
+// fakeBlob is an in-memory BlobPutter for the attachment test.
+type fakeBlob struct{ n int }
+
+func (f *fakeBlob) Put(_ context.Context, tenantID uuid.UUID, key string, _ []byte) (string, error) {
+	f.n++
+	return "mem://" + tenantID.String() + "/" + key, nil
+}
+
+// TestIntegration_CaseworkSliceC exercises §6.8 slice C: attachment chain-of-custody (CASE-008) and
+// knowledge-base links (CASE-010).
+func TestIntegration_CaseworkSliceC(t *testing.T) {
+	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
+	}
+	ctx := context.Background()
+	db, err := database.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(db.Close)
+
+	tenSvc := tenant.NewService(tenant.NewRepository(db))
+	tnA, _ := tenSvc.Create(ctx, tenant.CreateInput{Name: "casec-A-" + uuid.NewString()})
+	tnB, _ := tenSvc.Create(ctx, tenant.CreateInput{Name: "casec-B-" + uuid.NewString()})
+
+	repo := incident.NewRepository(db)
+	svc := incident.NewService(repo, nil, nil).WithBlobStore(&fakeBlob{})
+	pA := auth.Principal{UserID: uuid.New(), TenantID: tnA.ID, Role: auth.RoleAnalystT1, Email: "a@t"}
+
+	inc := &incident.Incident{ID: uuid.New(), TenantID: tnA.ID, Title: "Case", Severity: "high",
+		Category: "uncategorised", Stage: incident.StageTriage}
+	if err := repo.CreateWithSeed(ctx, tnA.ID, inc, &incident.TimelineEntry{ID: uuid.New(), Author: "system", Kind: "status", Note: "opened"}); err != nil {
+		t.Fatalf("create incident: %v", err)
+	}
+
+	// CASE-008: attachment records a sha256 chain-of-custody digest.
+	body := []byte("pcap-bytes-here")
+	att, err := svc.RegisterAttachment(ctx, pA, inc.ID, "capture.pcap", "application/vnd.tcpdump.pcap", body, "from EDR")
+	if err != nil {
+		t.Fatalf("register attachment: %v", err)
+	}
+	// sha256("pcap-bytes-here") is deterministic; assert the stored digest matches.
+	sum := sha256.Sum256(body)
+	if att.SHA256 != hex.EncodeToString(sum[:]) || att.SizeBytes != int64(len(body)) {
+		t.Fatalf("chain-of-custody digest/size wrong: %+v", att)
+	}
+	atts, _ := svc.ListAttachments(ctx, tnA.ID, inc.ID)
+	if len(atts) != 1 || atts[0].BlobURI == "" {
+		t.Fatalf("expected 1 stored attachment, got %+v", atts)
+	}
+	// Empty body rejected.
+	if _, err := svc.RegisterAttachment(ctx, pA, inc.ID, "x", "", nil, ""); err == nil {
+		t.Fatal("empty attachment must be rejected")
+	}
+
+	// CASE-010: seeded global runbooks are visible; link one; it shows on the incident.
+	arts, err := svc.ListArticles(ctx, tnA.ID)
+	if err != nil || len(arts) < 3 {
+		t.Fatalf("expected >=3 global articles, got %d (%v)", len(arts), err)
+	}
+	if err := svc.LinkArticle(ctx, pA, inc.ID, arts[0].ID); err != nil {
+		t.Fatalf("link article: %v", err)
+	}
+	linked, _ := svc.LinkedArticles(ctx, tnA.ID, inc.ID)
+	if len(linked) != 1 || linked[0].ID != arts[0].ID {
+		t.Fatalf("expected linked article, got %+v", linked)
+	}
+	// A tenant-owned article + link.
+	own, err := svc.CreateArticle(ctx, pA, incident.ArticleInput{Title: "Internal SOP", Category: "phishing"})
+	if err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+	if err := svc.LinkArticle(ctx, pA, inc.ID, own.ID); err != nil {
+		t.Fatalf("link own article: %v", err)
+	}
+	// Unlink.
+	if err := svc.UnlinkArticle(ctx, pA, inc.ID, arts[0].ID); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	linked, _ = svc.LinkedArticles(ctx, tnA.ID, inc.ID)
+	if len(linked) != 1 || linked[0].ID != own.ID {
+		t.Fatalf("expected only the own article after unlink, got %+v", linked)
+	}
+
+	// Tenant isolation: tenant B cannot see tenant A's attachments or its tenant-owned article.
+	bAtts, _ := svc.ListAttachments(ctx, tnB.ID, inc.ID)
+	if len(bAtts) != 0 {
+		t.Fatalf("tenant B must not see tenant A attachments, got %+v", bAtts)
+	}
+	bArts, _ := svc.ListArticles(ctx, tnB.ID)
+	for _, a := range bArts {
+		if a.ID == own.ID {
+			t.Fatal("tenant B must not see tenant A's own article")
+		}
+	}
 }

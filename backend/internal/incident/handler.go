@@ -1,12 +1,16 @@
 package incident
 
 import (
+	"io"
 	"net/http"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 )
+
+// maxAttachmentBytes caps an evidence upload (CASE-008).
+const maxAttachmentBytes = 25 << 20 // 25 MiB
 
 // Handler exposes incident endpoints.
 type Handler struct{ svc *Service }
@@ -347,4 +351,110 @@ func (h *Handler) Children(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"children": kids})
+}
+
+// AddAttachment handles POST /incidents/{id}/attachments — raw body is the evidence file; filename and
+// content-type come from query/header (CASE-008 chain-of-custody).
+func (h *Handler) AddAttachment(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxAttachmentBytes))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("could not read attachment"))
+		return
+	}
+	filename := r.URL.Query().Get("filename")
+	contentType := r.Header.Get("Content-Type")
+	a, err := h.svc.RegisterAttachment(r.Context(), p, id, filename, contentType, data, r.URL.Query().Get("note"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, a)
+}
+
+// ListAttachments handles GET /incidents/{id}/attachments.
+func (h *Handler) ListAttachments(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	xs, err := h.svc.ListAttachments(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list attachments"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"attachments": xs})
+}
+
+// ListKB handles GET /knowledge-base — global + tenant articles.
+func (h *Handler) ListKB(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	xs, err := h.svc.ListArticles(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list knowledge base"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"articles": xs})
+}
+
+// CreateKB handles POST /knowledge-base.
+func (h *Handler) CreateKB(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in ArticleInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	a, err := h.svc.CreateArticle(r.Context(), p, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, a)
+}
+
+// LinkKB handles POST /incidents/{id}/kb-links with {"article_id":"..."}.
+func (h *Handler) LinkKB(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		ArticleID string `json:"article_id"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	articleID, err := uuid.Parse(in.ArticleID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid article_id"))
+		return
+	}
+	if err := h.svc.LinkArticle(r.Context(), p, id, articleID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "linked"})
+}
+
+// ListKBLinks handles GET /incidents/{id}/kb-links.
+func (h *Handler) ListKBLinks(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	xs, err := h.svc.LinkedArticles(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list linked articles"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"articles": xs})
 }
