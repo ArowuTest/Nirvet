@@ -6,14 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 // Directory looks up and just-in-time provisions users for SSO. Implemented by
@@ -172,41 +170,9 @@ func (s *Service) Callback(ctx context.Context, code, state string) (*LoginResul
 		}
 	}
 
-	// JIT provisioning: link an existing user (must be in the connection's tenant)
-	// or create one with the connection's default role.
-	created := false
-	uid, tid, role, ok, err := s.dir.LookupForSSO(ctx, claims.Email)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, httpx.ErrInternal("directory lookup failed")
-	}
-	if ok {
-		if tid != conn.TenantID {
-			return nil, httpx.ErrForbidden("user belongs to a different tenant")
-		}
-	} else {
-		newID, err := s.dir.ProvisionForSSO(ctx, conn.TenantID, claims.Email, conn.DefaultRole)
-		if err != nil {
-			return nil, httpx.ErrInternal("could not provision user")
-		}
-		uid, tid, role, created = newID, conn.TenantID, conn.DefaultRole, true
-	}
-
-	p := auth.Principal{UserID: uid, TenantID: tid, Role: auth.Role(role), Email: claims.Email}
-	token, err := s.tokens.Issue(p)
-	if err != nil {
-		return nil, httpx.ErrInternal("could not issue session")
-	}
-
-	// Audit the SSO login inside the tenant context (IAM-010).
-	_ = s.db.WithTenant(ctx, conn.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		return audit.Record(ctx, tx, audit.Entry{
-			ActorID: uid, ActorEmail: claims.Email, Action: "auth.sso_login",
-			Target:   "connection:" + conn.ID.String(),
-			Metadata: map[string]any{"issuer": conn.Issuer, "jit_created": created},
-		})
-	})
-
-	return &LoginResult{Token: token, Email: claims.Email, TenantID: tid, Created: created}, nil
+	// JIT provisioning + session issue + audit (shared with SAML — one tested path).
+	return completeSSO(ctx, s.dir, s.tokens, s.db, conn.TenantID, claims.Email, conn.DefaultRole,
+		"auth.sso_login", "connection:"+conn.ID.String(), map[string]any{"issuer": conn.Issuer})
 }
 
 func (s *Service) signState(connID uuid.UUID, nonce, verifier string) (string, error) {

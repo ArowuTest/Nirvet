@@ -24,7 +24,7 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
 | Module | 1 Unit | 2 Integ | 3 Audit | 4 Tenant | 5 RBAC | 6 Errors | 7 Docs | 8 OpenAPI | 9 Observe | 10 Scale |
 |---|---|---|---|---|---|---|---|---|---|---|
 | auth/iam (+MFA) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| sso (OIDC) | — | ✅⁸ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| sso (OIDC + SAML) | — | ✅⁸ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | tenant | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | ingestion + normalize | ✅ | ✅ | ✅¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | detection | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -55,8 +55,11 @@ Legend: ✅ yes · ◑ partial · ⬜ gap · — n/a
   mapping, promotion linkage — is covered by AlertDedupe, IncidentPromotion, Heartbeat and Reporting integration.
 ⁷ reporting aggregates covered by ReportingSummaryAggregates (severity/stage/open counts under RLS).
   tenant now has a unit test (name validation) + integration coverage (harness creates tenants w/ defaults).
-⁸ sso covered by TestSSO_OIDCFlow against a mock IdP: happy path (JIT provision + session + re-login links),
-  plus fail-closed cases — nonce mismatch, wrong audience, disallowed email domain, forged state.
+⁸ sso covered by mock-IdP integration tests. OIDC (TestSSO_OIDCFlow): JIT provision + session + re-login,
+  plus fail-closed nonce/audience/domain/forged-state. SAML (TestSAML_Flow) against a goxmldsig-SIGNED mock IdP:
+  happy path + 7 fail-closed controls — tampered assertion, untrusted IdP cert, expired, wrong audience, wrong
+  issuer, InResponseTo replay/CSRF, forged RelayState. XML dsig is NOT hand-rolled (gosaml2/goxmldsig); flagged
+  for pre-go-live expert security review. OIDC + SAML share one tested login tail (completeSSO).
 ⁹ ticketing covered by mock-endpoint tests (ServiceNow + Jira create, basic auth, project-key guard) + the
   MirrorIncident DB path (no-op when unconfigured) + an integration test asserting the incident timeline records
   the external ticket ref on open.

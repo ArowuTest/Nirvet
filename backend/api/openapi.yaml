@@ -162,7 +162,34 @@ paths:
   /admin/sso:
     get: { tags: [sso], summary: List tenant SSO connections (tenant/platform admin), responses: { '200': { description: connections } } }
     post: { tags: [sso], summary: Create an OIDC connection (client secret sealed in vault), responses: { '201': { description: created } } }
-  /admin/sso/{id}: { delete: { tags: [sso], summary: Delete an SSO connection, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
+  /admin/sso/{id}: { delete: { tags: [sso], summary: Delete an OIDC SSO connection, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
+  /auth/sso/saml/start:
+    get:
+      tags: [sso]
+      security: []
+      summary: Begin SP-initiated SAML login (302 to the IdP with an AuthnRequest). Rate-limited.
+      parameters:
+        - { name: connection, in: query, schema: { type: string, format: uuid } }
+        - { name: domain, in: query, schema: { type: string } }
+      responses: { '302': { description: redirect to IdP }, '400': { description: missing connection/domain }, '404': { description: no connection } }
+  /auth/sso/saml/acs:
+    post:
+      tags: [sso]
+      security: []
+      summary: SAML Assertion Consumer Service — validates the signed SAML Response (signature/conditions/audience/InResponseTo, all fail-closed) and issues a session
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { type: object, required: [SAMLResponse, RelayState], properties: { SAMLResponse: { type: string }, RelayState: { type: string } } }
+      responses:
+        '200': { description: session issued, content: { application/json: { schema: { $ref: '#/components/schemas/LoginResult' } } } }
+        '401': { description: assertion validation failed }
+        '403': { description: email domain not permitted }
+  /admin/sso/saml:
+    get: { tags: [sso], summary: List SAML connections (tenant/platform admin), responses: { '200': { description: connections } } }
+    post: { tags: [sso], summary: Create a SAML connection (IdP entityID/SSO URL/cert + SP entityID/ACS), responses: { '201': { description: created } } }
+  /admin/sso/saml/{id}: { delete: { tags: [sso], summary: Delete a SAML connection, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
   /me: { get: { tags: [auth], summary: Current user, responses: { '200': { description: user, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } } } } }
   /mfa/enroll: { post: { tags: [mfa], summary: Begin TOTP enrollment (returns otpauth URI + secret once), responses: { '200': { description: enrolled } } } }
   /mfa/activate: { post: { tags: [mfa], summary: Activate MFA with a code, responses: { '200': { description: enabled }, '400': { description: invalid code } } } }

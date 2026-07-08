@@ -112,6 +112,10 @@ func main() {
 	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, cfg.JWTSecret)
 	ssoH := sso.NewHandler(ssoSvc)
 
+	// SAML 2.0 SSO (§6.2 IAM-001). Signed-assertion validation via gosaml2.
+	samlSvc := sso.NewSAMLService(sso.NewSAMLRepository(db), iamSvc, tokens, db, cfg.JWTSecret)
+	samlH := sso.NewSAMLHandler(samlSvc)
+
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	alertH := alert.NewHandler(alertSvc)
 
@@ -211,6 +215,12 @@ func main() {
 	mux.Handle("POST /admin/sso", ssoAdmin(ssoH.CreateConnection))
 	mux.Handle("GET /admin/sso", ssoAdmin(ssoH.ListConnections))
 	mux.Handle("DELETE /admin/sso/{id}", ssoAdmin(ssoH.DeleteConnection))
+	// SAML 2.0 — public SP-initiated start + ACS (rate-limited); admin connection mgmt.
+	mux.Handle("GET /auth/sso/saml/start", httpx.Chain(http.HandlerFunc(samlH.Start), loginLimit))
+	mux.Handle("POST /auth/sso/saml/acs", httpx.Chain(http.HandlerFunc(samlH.ACS), loginLimit))
+	mux.Handle("POST /admin/sso/saml", ssoAdmin(samlH.CreateConnection))
+	mux.Handle("GET /admin/sso/saml", ssoAdmin(samlH.ListConnections))
+	mux.Handle("DELETE /admin/sso/saml/{id}", ssoAdmin(samlH.DeleteConnection))
 	// Outbound ticketing (ServiceNow/Jira) connection management.
 	mux.Handle("POST /admin/ticketing", ssoAdmin(ticketingH.Create))
 	mux.Handle("GET /admin/ticketing", ssoAdmin(ticketingH.List))

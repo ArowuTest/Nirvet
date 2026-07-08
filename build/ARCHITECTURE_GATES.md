@@ -163,7 +163,35 @@ behind interfaces that already exist — not up front:
 
 ## Next gates (before starting)
 - **Azure Sentinel / GCP SCC source mappers** (§6.5): same normalizer-registry pattern as CrowdStrike/Okta.
-- **SAML 2.0 SSO** (§6.2): AuthnRequest + signed assertion validation (XML dsig) — separate gate after OIDC.
+## Gate: SAML 2.0 SSO (SP-initiated) — §6.2 IAM-001 — reviewed Jul 2026
+
+- **SRS:** IAM-001 (SSO via SAML/OIDC), IAM-008 (JIT provisioning), IAM-010 (log SSO logins). Same front-door
+  seam as OIDC: SAML is an alternate path to the same Nirvet session JWT.
+- **SECURITY DECISION (deliberate):** XML canonicalization + signature verification is where SAML goes fatally
+  wrong (XML Signature Wrapping, canonicalization bugs). We do **NOT** hand-roll it. We use the vetted
+  `russellhaering/gosaml2` (+ `goxmldsig`, + `mattermost/xml-roundtrip-validator` for XSW defense). This gate is
+  still explicitly flagged for the **pre-go-live expert security review** — SAML is the highest-risk auth surface.
+- **Flow (SP-initiated only; IdP-initiated is rejected):** `GET /auth/sso/saml/start?connection={id}` builds a
+  SAML AuthnRequest, signs {connection_id, request_id} into RelayState (HMAC, 10-min TTL), and redirects to the
+  IdP. The IdP POSTs a signed Response to `POST /auth/sso/saml/acs`.
+- **Controls enforced at the ACS — ALL fail-closed:**
+  1. **Signature required + valid** — assertion signed and verified against the connection's IdP certificate
+     (`gosaml2.RetrieveAssertionInfo` errors on invalid/unsigned; `SkipSignatureValidation=false`).
+  2. **Conditions time window** — NotBefore / NotOnOrAfter (`WarningInfo.InvalidTime` → reject).
+  3. **Audience restriction** — assertion audience == our SP entityID (`WarningInfo.NotInAudience` → reject).
+  4. **Recipient** — SubjectConfirmationData.Recipient == our ACS URL (gosaml2 checks against ACS).
+  5. **Issuer** — assertion Issuer == connection IdP entityID.
+  6. **InResponseTo binding** — the assertion's InResponseTo must equal the request_id we signed into RelayState
+     (replay / CSRF / IdP-initiated-injection defense).
+  7. **Email domain allowlist** — same as OIDC.
+- **Data:** `saml_connections` (migration 0013, RLS+FORCE): idp_entity_id, idp_sso_url, idp_certificate (PEM,
+  public — not a secret, no vault), sp_entity_id, acs_url, email_attribute (empty = NameID), default_role,
+  email_domain. Unauthenticated ACS resolves the connection cross-tenant via SECURITY DEFINER
+  `saml_get_connection(id)` (mirrors OIDC). JIT provisioning + session issue + audit reuse the shared completeSSO
+  path (same as OIDC — one tested code path for the security-critical bit).
+- **Deferred (logged):** signed AuthnRequests (SP private key in vault) and encrypted assertions — many IdPs don't
+  require them; the critical direction (validating the IdP's signed response) is covered. SLO single-logout,
+  SP-metadata publishing endpoint.
 - **Pluggable detection DSLs** (§6.6, reviewer): **Sigma import DONE** (`detection.ImportSigma` → native Condition
   model; POST /detections/import/sigma; supports selections/`and`, contains/startswith/endswith/re modifiers,
   list=OR, level→severity, attack.t* tags→MITRE; unsupported constructs error). Remaining: YARA/CEL/custom-DSL
