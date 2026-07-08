@@ -6,7 +6,29 @@ older "done" label elsewhere, this file wins. A formal expert security-architect
 is still required **pre-go-live** (build-phase sign-off only — see memory
 `feedback_nirvet_signoff`).
 
-## Fixed (committed, tested)
+## Round 2 (Jul 2026) — all findings fixed, no deferrals
+
+Second external review (to HEAD 86afcbd) found no new Critical and confirmed tenant
+isolation airtight. Owner directive: fix everything now for a clean next pass. All done,
+each gated + tested + green on both backends:
+
+| Finding | Fix | Commit |
+|---|---|---|
+| H-E background loops no recover() | `platform/safe.Do` wraps poller/reconciler/SLA-sweeper ticks | `ca7386e` |
+| H-C correlation promotion non-atomic → dup/unbounded incidents | claim-then-create (ClaimForPromotion + SetIncident) | `70691f4` |
+| M-C alert_count lost update | UpdateActive (SELECT … FOR UPDATE) | `70691f4` |
+| M-B SLA breach TOCTOU (dup emails) | ClaimBreach before notify (exactly-once) | `70691f4` |
+| H-D BFLA flat provider tier | senior + manager tiers on destructive routes | `e685caf` |
+| M-D asset criticality writable by T1 | asset writes gated to manager (admin/soc_manager) | `e685caf` |
+| H-A AI prompt injection unfenced | sentinel-fenced data block + system-prompt rule | `3af74ed` |
+| M-F AI output not audited | persist output text + sha256 | `3af74ed` |
+| H-B evidence pack tamper-evidence cosmetic | real Ed25519 signature over envelope+sections + Verify | `7b0ca80` |
+| H-Res raw_events/events still mutable | REVOKE DELETE/UPDATE + column-scoped triggers (migration 0024) | `3482c69` |
+| M-E entity-graph N+1 pool exhaustion | incident.GetByIDs batch | `5c8cd64` |
+| M-A single-event auto-promotion spam | corroboration (≥2 alerts) before auto-promote | `5c8cd64` |
+| lows: SSO role re-validate, vault key-version byte, gosec+govulncheck CI | — | `2c65037` |
+
+## Fixed — Round 1 (committed, tested)
 
 | # | Severity | Finding | Fix | Commit |
 |---|---|---|---|---|
