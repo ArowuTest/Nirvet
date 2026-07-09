@@ -224,6 +224,9 @@ func main() {
 
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), jobs, billingSvc, blobs)
 	ingestH := ingestion.NewHandler(ingestSvc, events)
+	// §6.5: normalization data-quality recorder (shared with the embedded worker) + dashboard.
+	normQ := ingestion.NewNormQuality(db)
+	normH := ingestion.NewNormHandler(normQ)
 
 	connectorH := connector.NewHandler(connector.NewService(connector.NewRepository(db), vault, ingestSvc))
 	// SOAR resolves authority-to-act per action from the tenant's authority_policies
@@ -474,6 +477,10 @@ func main() {
 	// §6.10 slice B: per-tenant decay/sighting tuning (read provider-wide, write senior).
 	mux.Handle("GET /threat-intel/settings", provider(threatH.GetSettings))
 	mux.Handle("PUT /threat-intel/settings", senior(threatH.SetSettings))
+	// §6.5 slice A: normalization data-quality dashboard + drift (read provider, write senior).
+	mux.Handle("GET /normalization/quality", provider(normH.Quality))
+	mux.Handle("GET /normalization/settings", provider(normH.GetSettings))
+	mux.Handle("PUT /normalization/settings", senior(normH.SetSettings))
 	// reporting
 	mux.Handle("GET /reports/summary", provider(reportingH.SummaryHTTP))
 	// compliance (§6.14): config-driven frameworks + real per-tenant assessment; manual override is senior.
@@ -540,7 +547,7 @@ func main() {
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
 	if cfg.InlineWorker {
-		wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc)
+		wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc).WithNormQuality(normQ)
 		go wk.Start(workerCtx, time.Second)
 		poller := connector.NewPoller(connector.NewRepository(db), vault, ingestSvc, log)
 		go poller.Start(workerCtx, time.Minute)

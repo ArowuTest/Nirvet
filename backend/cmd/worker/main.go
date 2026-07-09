@@ -84,7 +84,7 @@ func main() {
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
 		WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc)
 	correlationSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incidentSvc).WithPolicy(tenantSvc)
-	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc)
+	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc).WithNormQuality(ingestion.NewNormQuality(db))
 
 	// Connector poller: pulls Microsoft Graph/Defender alerts through ingestion.
 	cipher, err := crypto.New(cfg.KMSKeyName, cfg.SecretMasterKey, log)

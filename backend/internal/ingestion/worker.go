@@ -34,6 +34,7 @@ type Worker struct {
 	detector   *detection.Engine
 	alerts     *alert.Service
 	correlator Correlator
+	quality    *NormQuality // §6.5: normalization data-quality recorder (optional)
 	log        *slog.Logger
 	batch      int
 }
@@ -42,6 +43,9 @@ type Worker struct {
 func NewWorker(q queue.Queue, events eventstore.EventStore, enricher *threatintel.Enricher, detector *detection.Engine, alerts *alert.Service, log *slog.Logger) *Worker {
 	return &Worker{q: q, events: events, enricher: enricher, detector: detector, alerts: alerts, log: log, batch: 20}
 }
+
+// WithNormQuality wires the normalization data-quality recorder (NORM-003/009).
+func (wk *Worker) WithNormQuality(q *NormQuality) *Worker { wk.quality = q; return wk }
 
 // WithCorrelator wires alert correlation + risk scoring (best-effort per alert).
 func (wk *Worker) WithCorrelator(c Correlator) *Worker { wk.correlator = c; return wk }
@@ -80,6 +84,13 @@ func (wk *Worker) RunOnce(ctx context.Context) (int, error) {
 			continue
 		}
 		_ = wk.q.Complete(ctx, j.ID)
+	}
+	// §6.5: flush the batch's accumulated normalization-quality deltas once (not per event).
+	// Best-effort — a failed flush re-accumulates and retries on the next batch.
+	if wk.quality != nil && len(jobs) > 0 {
+		if err := wk.quality.Flush(ctx); err != nil {
+			wk.log.Warn("normalization quality flush failed", "err", err)
+		}
 	}
 	return len(jobs), nil
 }
@@ -210,6 +221,14 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 	// at-least-once delivery.
 	if inserted == 0 {
 		return nil
+	}
+	// §6.5: record this (genuinely new) event's normalization quality — parser + how completely it
+	// mapped (stamped by Normalize). Accumulated in memory; flushed once per RunOnce batch.
+	if wk.quality != nil {
+		parser, _ := in.Data["parser"].(string)
+		pv, _ := in.Data["parser_version"].(int)
+		conf, _ := in.Data["normalization_confidence"].(int)
+		wk.quality.Record(j.TenantID, in.Source, parser, pv, conf)
 	}
 	// Detection runs the rule catalogue (module: detection) via the injected
 	// evaluator, producing zero or more alerts (each idempotent on its dedupe key).

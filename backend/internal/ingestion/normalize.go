@@ -10,31 +10,42 @@ import (
 // never panic on a missing or oddly-typed field.
 type Mapper func(*IngestInput)
 
+// mapperInfo pairs a mapper with its identity: a stable parser name + an integer version
+// (NORM-003). The version is bumped whenever a mapper's field logic changes, so a canonical
+// event records exactly which parser build produced it and a schema-drift change is visible.
+type mapperInfo struct {
+	fn      Mapper
+	name    string
+	version int
+}
+
 // mappers is the source-normalizer registry. Every connector plugs into the SAME
 // downstream pipeline (detection/correlation/AI work off canonical fields only),
 // so adding a vendor is one mapper + a registry entry — no pipeline change.
-var mappers = map[string]Mapper{}
+var mappers = map[string]mapperInfo{}
 
-// RegisterMapper adds (or overrides) a source mapper. Sources are matched
-// case-insensitively. Call from init or wiring; safe to alias multiple keys.
-func RegisterMapper(source string, m Mapper) { mappers[strings.ToLower(source)] = m }
+// RegisterMapper adds (or overrides) a source mapper with its parser name + version. Sources are
+// matched case-insensitively. Call from init or wiring; safe to alias multiple keys to one parser.
+func RegisterMapper(source, name string, version int, m Mapper) {
+	mappers[strings.ToLower(source)] = mapperInfo{fn: m, name: name, version: version}
+}
 
 func init() {
-	RegisterMapper("microsoft-defender", normalizeDefender)
-	RegisterMapper("defender", normalizeDefender)
-	RegisterMapper("microsoft-365", normalizeM365)
-	RegisterMapper("m365", normalizeM365)
-	RegisterMapper("crowdstrike", normalizeCrowdStrike)
-	RegisterMapper("crowdstrike-falcon", normalizeCrowdStrike)
-	RegisterMapper("okta", normalizeOkta)
-	RegisterMapper("palo-alto", normalizePaloAlto)
-	RegisterMapper("panw", normalizePaloAlto)
-	RegisterMapper("aws-guardduty", normalizeGuardDuty)
-	RegisterMapper("guardduty", normalizeGuardDuty)
-	RegisterMapper("azure-sentinel", normalizeAzureSentinel)
-	RegisterMapper("sentinel", normalizeAzureSentinel)
-	RegisterMapper("gcp-scc", normalizeGCPSCC)
-	RegisterMapper("scc", normalizeGCPSCC)
+	RegisterMapper("microsoft-defender", "microsoft-defender", 1, normalizeDefender)
+	RegisterMapper("defender", "microsoft-defender", 1, normalizeDefender)
+	RegisterMapper("microsoft-365", "microsoft-365", 1, normalizeM365)
+	RegisterMapper("m365", "microsoft-365", 1, normalizeM365)
+	RegisterMapper("crowdstrike", "crowdstrike-falcon", 1, normalizeCrowdStrike)
+	RegisterMapper("crowdstrike-falcon", "crowdstrike-falcon", 1, normalizeCrowdStrike)
+	RegisterMapper("okta", "okta", 1, normalizeOkta)
+	RegisterMapper("palo-alto", "palo-alto", 1, normalizePaloAlto)
+	RegisterMapper("panw", "palo-alto", 1, normalizePaloAlto)
+	RegisterMapper("aws-guardduty", "aws-guardduty", 1, normalizeGuardDuty)
+	RegisterMapper("guardduty", "aws-guardduty", 1, normalizeGuardDuty)
+	RegisterMapper("azure-sentinel", "azure-sentinel", 1, normalizeAzureSentinel)
+	RegisterMapper("sentinel", "azure-sentinel", 1, normalizeAzureSentinel)
+	RegisterMapper("gcp-scc", "gcp-scc", 1, normalizeGCPSCC)
+	RegisterMapper("scc", "gcp-scc", 1, normalizeGCPSCC)
 }
 
 // sourceMeta records the vendor + product a source belongs to, stamped into the
@@ -65,8 +76,10 @@ func Normalize(in IngestInput) IngestInput {
 	if in.Data == nil {
 		in.Data = map[string]any{}
 	}
-	if m, ok := mappers[strings.ToLower(in.Source)]; ok {
-		m(&in) // may set a vendor severity (incl. numeric bands) into in.Severity
+	parser, parserVersion := "identity", 0
+	if mi, ok := mappers[strings.ToLower(in.Source)]; ok {
+		mi.fn(&in) // may set a vendor severity (incl. numeric bands) into in.Severity
+		parser, parserVersion = mi.name, mi.version
 	}
 	in.Severity = normalizeSeverity(in.Severity)
 	// Canonical vendor/product (ADR-0006). Known sources get a friendly vendor +
@@ -81,7 +94,37 @@ func Normalize(in IngestInput) IngestInput {
 			in.Data["product"] = in.Source
 		}
 	}
+	// NORM-003/006: record which parser (+version) produced this event and how completely it
+	// populated the canonical fields, so a vendor schema change is observable, not silent.
+	in.Data["parser"] = parser
+	in.Data["parser_version"] = parserVersion
+	in.Data["normalization_confidence"] = NormalizationConfidence(in)
 	return in
+}
+
+// NormalizationConfidence scores 0-100 how completely a mapper populated the canonical fields — a
+// data-quality signal (NORM-006), NOT a detection weight. Weighted so the fields that matter most to
+// downstream detection/correlation count more. class_name + a mapped entity are the backbone; a
+// still-empty class_name (mapper fell through) is the strongest drift signal.
+func NormalizationConfidence(in IngestInput) int {
+	score, total := 0, 0
+	add := func(weight int, present bool) {
+		total += weight
+		if present {
+			score += weight
+		}
+	}
+	add(30, in.ClassName != "")
+	add(25, in.ActorRef != "" || in.TargetRef != "")
+	add(15, in.Action != "")
+	add(10, in.Outcome != "")
+	add(10, in.ActivityName != "")
+	_, hasMitre := in.Data["mitre"]
+	add(10, hasMitre)
+	if total == 0 {
+		return 0
+	}
+	return score * 100 / total
 }
 
 // normalizeDefender maps a Microsoft Defender alert to canonical fields.

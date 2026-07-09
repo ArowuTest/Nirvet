@@ -1021,3 +1021,36 @@ Rather than keep patching instances, three mechanical guards now fail CI on the 
 
 Net: a new plain outbound client, a new tenant-natural-key without tenant_id, or an enum/CHECK drift can no
 longer merge silently — each is a red build, not a future review finding.
+
+---
+
+## Gate — §6.5 normalization slice A — reviewed Jul 2026
+
+Drive §6.5 PARTIAL→depth. Done: canonical OCSF-inspired event, 8 vendor mappers in a source-normalizer
+registry, enrichment (asset/TI), entity-resolution basics. Slice A makes the normalization MEASURABLE and
+VERSIONED so a vendor schema change is visible instead of silent — the NORM-003/006/009 cluster. (Alias/
+entity resolution NORM-005 and redaction/masking NORM-010 → slice B.)
+
+**Parser versioning (NORM-003).** Each mapper carries a name + integer version (registry gains a parallel
+metadata map, set at registration). Normalize stamps `data.parser` + `data.parser_version` into every event
+so which mapper (and version) produced a canonical event is queryable and a version bump is observable.
+
+**Normalization confidence (NORM-006).** A pure completeness scorer: how many canonical fields the mapper
+populated (class_name, severity≠informational-default, actor_ref|target_ref, action, outcome, mitre),
+weighted → 0-100, stamped as `data.normalization_confidence`. Distinct from the vendor's detection
+Confidence. A low score means the payload barely mapped — a coverage/drift signal, not a detection weight.
+
+**Data-quality + drift (NORM-003/009).** A per-(tenant, source, day) `normalization_quality` aggregate
+(events, sum_confidence, last parser+version) maintained by the worker via an in-memory accumulator flushed
+once per RunOnce batch (not per event — no hot-row contention / write amplification). GET
+/normalization/quality reports per source: events, avg_confidence, active parser+version, and a `drift` flag
+when avg_confidence over the window falls below the tenant's configured `min_confidence` — i.e. a vendor
+whose payloads stopped populating canonical fields lights up. Config = normalization_settings (min_confidence,
+window_days), tenant-scoped RLS, lazy default. PUT /normalization/settings (senior).
+
+**Invariants.** Scorer + drift flag are pure functions (deterministic, unit-tested); confidence is metadata,
+never overwrites detection Confidence or gates firing; quality aggregation is best-effort and off the ingest
+hot path (worker-batched); settings/quality tenant-scoped; reads are GET. Verify: unit (confidence scorer
+across full/partial/empty mappings, drift-flag threshold) + integration (worker normalizes events → flush →
+quality reflects avg confidence + parser version, a low-confidence source is flagged drift, settings
+round-trip, tenant isolation). Heartbeat green.
