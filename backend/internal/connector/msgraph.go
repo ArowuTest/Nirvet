@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 )
 
 // graphClient talks to Microsoft Graph using the OAuth2 client-credentials flow.
@@ -27,7 +29,7 @@ type graphClient struct {
 
 func newGraphClient(tokenURL, graphURL, clientID, secret string, hc *http.Client) *graphClient {
 	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
+		hc = netsafe.SafeClient(30 * time.Second) // SSRF-safe: a misconfigured token/graph URL can't reach internal hosts (R6)
 	}
 	return &graphClient{tokenURL: tokenURL, graphURL: strings.TrimRight(graphURL, "/"), clientID: clientID, secret: secret, http: hc}
 }

@@ -25,11 +25,11 @@ const (
 
 // Descriptor describes a connector type in the catalogue (backlog: Integration Roadmap).
 type Descriptor struct {
-	Key       string    // "microsoft-365", "entra-id", "defender", ...
+	Key       string // "microsoft-365", "entra-id", "defender", ...
 	Name      string
-	Category  string    // Identity | EDR | Cloud | Firewall | Ticketing | Generic
+	Category  string // Identity | EDR | Cloud | Firewall | Ticketing | Generic
 	Direction Direction
-	Phase     string    // MVP | V1 | V2
+	Phase     string // MVP | V1 | V2
 }
 
 // Puller pulls events from a source into the platform (feeds ingestion → EventStore).

@@ -24,6 +24,7 @@ import (
 )
 
 func TestServiceNowProvider(t *testing.T) {
+	defer ticketing.SetHTTPClient(&http.Client{})() // reach the loopback mock (SafeClient blocks it)
 	var gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/now/table/incident" || r.Method != http.MethodPost {
@@ -57,6 +58,7 @@ func TestServiceNowProvider(t *testing.T) {
 }
 
 func TestJiraProvider(t *testing.T) {
+	defer ticketing.SetHTTPClient(&http.Client{})() // reach the loopback mock (SafeClient blocks it)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/rest/api/3/issue" || r.Method != http.MethodPost {
 			w.WriteHeader(404)
@@ -102,22 +104,36 @@ func TestMirrorIncident_DBPath(t *testing.T) {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	cipher, _ := crypto.NewLocal(base64.StdEncoding.EncodeToString(key), nil)
-	svc := ticketing.NewService(ticketing.NewRepository(db), cipher)
+	repo := ticketing.NewRepository(db)
+	svc := ticketing.NewService(repo, cipher)
 
 	// No connection yet → MirrorIncident is a no-op (empty ref, no error).
 	if ref, _, err := svc.MirrorIncident(ctx, tn.ID, "t", "high", "b"); err != nil || ref != "" {
 		t.Fatalf("no-connection mirror should be a no-op: ref=%q err=%v", ref, err)
 	}
 
-	// Configure a ServiceNow connection pointing at a mock server, then mirror.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]string{"sys_id": "s1", "number": "INC55"}})
 	}))
 	defer srv.Close()
+
+	// R6 SEC-carry: CreateConnection rejects a non-https / internal base_url up front (the mock is
+	// loopback http → both). This is the SSRF guard at save time.
 	if _, err := svc.CreateConnection(ctx, tn.ID, ticketing.CreateInput{
 		Provider: ticketing.ProviderServiceNow, BaseURL: srv.URL, AuthUser: "svc", Credential: "secret",
+	}); err == nil {
+		t.Fatal("CreateConnection must reject a loopback/non-https base_url (SSRF guard)")
+	}
+
+	// To exercise the delivery path against the loopback mock, insert the connection via the repo
+	// (bypassing the save-time guard) and swap in a plain client (SafeClient blocks loopback).
+	defer ticketing.SetHTTPClient(&http.Client{})()
+	sealed, _ := cipher.Encrypt(tn.ID, []byte("secret"))
+	if err := repo.Create(ctx, &ticketing.Connection{
+		ID: uuid.New(), TenantID: tn.ID, Provider: ticketing.ProviderServiceNow, BaseURL: srv.URL,
+		AuthUser: "svc", Credential: sealed, Config: map[string]any{}, Enabled: true,
 	}); err != nil {
-		t.Fatalf("create connection: %v", err)
+		t.Fatalf("repo insert connection: %v", err)
 	}
 	ref, url, err := svc.MirrorIncident(ctx, tn.ID, "Ransomware", "critical", "body")
 	if err != nil || ref != "INC55" || !strings.Contains(url, "s1") {

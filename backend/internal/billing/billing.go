@@ -6,6 +6,8 @@ package billing
 import (
 	"context"
 	"errors"
+	"sync"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -74,10 +76,30 @@ func (r *Repository) RawCountToday(ctx context.Context, tenantID uuid.UUID) (int
 }
 
 // Service is the billing/entitlements service and the ingest QuotaChecker.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo  *Repository
+	mu    sync.Mutex
+	quota map[uuid.UUID]*quotaEntry // per-tenant cached ingest meter (R6-P1)
+}
+
+// quotaEntry caches a tenant's daily raw count + cap so the ingest quota check does not run count(*)
+// over raw_events on every event (R6-P1). The DB count is refreshed once per TTL window and per day;
+// between refreshes admitted events increment the cached count locally, so the meter stays close to the
+// true value without a per-event scan. Brief over-admission at a refresh boundary is acceptable
+// backpressure behaviour.
+type quotaEntry struct {
+	cap     int64
+	count   int64
+	day     int // year-day the count belongs to (reset at midnight)
+	expires time.Time
+}
+
+const quotaCacheTTL = 10 * time.Second
 
 // NewService builds the service.
-func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+func NewService(repo *Repository) *Service {
+	return &Service{repo: repo, quota: map[uuid.UUID]*quotaEntry{}}
+}
 
 // Get returns entitlements.
 func (s *Service) Get(ctx context.Context, tenantID uuid.UUID) (*Entitlements, error) {
@@ -96,15 +118,42 @@ func (s *Service) Set(ctx context.Context, tenantID uuid.UUID, in Entitlements) 
 	return &in, nil
 }
 
-// WithinIngestQuota implements ingestion.QuotaChecker: today's raw count vs cap.
+// WithinIngestQuota implements ingestion.QuotaChecker: today's raw count vs cap. It uses a short-TTL
+// per-tenant cache (R6-P1) so the DB count(*) runs at most once per TTL window per tenant instead of on
+// every event; between refreshes an admitted event increments the cached count. Fail-open on a DB error
+// (availability) — logged upstream.
 func (s *Service) WithinIngestQuota(ctx context.Context, tenantID uuid.UUID, addBytes int64) (bool, error) {
-	ent, err := s.repo.Get(ctx, tenantID)
-	if err != nil {
-		return true, err // fail-open on error (availability) — logged upstream
+	now := time.Now()
+	today := now.YearDay()
+
+	s.mu.Lock()
+	e := s.quota[tenantID]
+	s.mu.Unlock()
+
+	if e == nil || now.After(e.expires) || e.day != today {
+		ent, err := s.repo.Get(ctx, tenantID)
+		if err != nil {
+			return true, err
+		}
+		n, err := s.repo.RawCountToday(ctx, tenantID)
+		if err != nil {
+			return true, err
+		}
+		e = &quotaEntry{cap: ent.EventsPerDay, count: n, day: today, expires: now.Add(quotaCacheTTL)}
+		s.mu.Lock()
+		s.quota[tenantID] = e
+		s.mu.Unlock()
 	}
-	n, err := s.repo.RawCountToday(ctx, tenantID)
-	if err != nil {
-		return true, err
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-check the day under the lock in case a concurrent refresh rolled it over.
+	if e.day != today {
+		e.count, e.day, e.expires = 0, today, now.Add(quotaCacheTTL)
 	}
-	return n < ent.EventsPerDay, nil
+	if e.count >= e.cap {
+		return false, nil
+	}
+	e.count++ // this event is being admitted (and will be persisted)
+	return true, nil
 }

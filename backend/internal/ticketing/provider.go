@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 )
 
 // Provider creates a ticket in an external ITSM. Implementations are pure HTTP so
@@ -16,9 +18,11 @@ type Provider interface {
 	Create(ctx context.Context, conn *Connection, secret string, t Ticket) (*Ref, error)
 }
 
-// httpClient is the shared client (short timeout; overridable in tests via the
-// package-level newRequest hooks are unnecessary — base URL comes from the conn).
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+// httpClient is SSRF-safe by construction (R6 SEC-carry): the tenant-supplied base_url flows into the
+// request URL with basic-auth creds attached, so — like the notify webhook/SMS channels — it dials
+// through netsafe.SafeClient (dial-time resolved-IP block + redirect refusal) so a base_url can never
+// reach cloud metadata or an internal host.
+var httpClient = netsafe.SafeClient(15 * time.Second)
 
 // ProviderFor returns the provider implementation for a connection's kind.
 func ProviderFor(provider string) (Provider, error) {

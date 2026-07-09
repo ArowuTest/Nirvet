@@ -2,10 +2,12 @@ package ticketing
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/google/uuid"
 )
 
@@ -27,6 +29,16 @@ func (s *Service) CreateConnection(ctx context.Context, tenantID uuid.UUID, in C
 	}
 	if in.BaseURL == "" || in.Credential == "" {
 		return nil, httpx.ErrBadRequest("base_url and credential are required")
+	}
+	// R6 SEC-carry: validate base_url at save time (absolute https + non-internal host). The SafeClient
+	// is the dial-time backstop; this rejects the obvious cases up front. Creds are attached to requests
+	// to this host, so it must not be an internal/metadata target.
+	u, perr := url.Parse(strings.TrimSpace(in.BaseURL))
+	if perr != nil || u.Scheme != "https" || u.Host == "" {
+		return nil, httpx.ErrBadRequest("base_url must be an absolute https URL")
+	}
+	if netsafe.IsInternalHost(u.Hostname()) {
+		return nil, httpx.ErrBadRequest("base_url must not target an internal or metadata address")
 	}
 	if in.Config == nil {
 		in.Config = map[string]any{}
