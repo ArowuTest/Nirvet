@@ -50,12 +50,36 @@ func validateCondition(c Condition) error {
 	return check(c.Any)
 }
 
-// fieldValue resolves a normalized-event field (or data.<key>) to a string.
+// fieldValue resolves a normalized-event field (or data.<key>, or a nested data.<k>.<k2>… path into a §6.5 field
+// group such as data.process.cmdline) to a string. Flat key first (full back-compat: an existing rule using a
+// literal dotted key or a single key resolves exactly as before); only if the flat key is absent do we walk the
+// dotted path through nested maps. This is what makes the host-telemetry field groups (process/file/user/network)
+// queryable by detection rules.
 func fieldValue(ev eventstore.NormalizedEvent, field string) string {
 	if strings.HasPrefix(field, "data.") {
 		key := strings.TrimPrefix(field, "data.")
-		if v, ok := ev.Data[key]; ok {
+		if v, ok := ev.Data[key]; ok { // flat lookup first — unchanged behavior for every existing rule
 			return fmt.Sprintf("%v", v)
+		}
+		// Nested walk: data.process.cmdline → ev.Data["process"]["cmdline"].
+		segs := strings.Split(key, ".")
+		if len(segs) < 2 {
+			return ""
+		}
+		var cur any = map[string]any(ev.Data)
+		for i, seg := range segs {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				return ""
+			}
+			v, ok := m[seg]
+			if !ok {
+				return ""
+			}
+			if i == len(segs)-1 {
+				return fmt.Sprintf("%v", v)
+			}
+			cur = v
 		}
 		return ""
 	}
