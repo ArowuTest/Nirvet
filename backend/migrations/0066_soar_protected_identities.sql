@@ -7,9 +7,11 @@ CREATE TABLE IF NOT EXISTS protected_identities (
   tenant_id    uuid NULL,                              -- NULL = global
   identity_ref text NOT NULL,                          -- objectId or UPN
   reason       text NOT NULL DEFAULT '',
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(identity_ref))
+  created_at   timestamptz NOT NULL DEFAULT now()
 );
+-- Expression uniqueness (COALESCE/lower) is not allowed in an inline table constraint → use a unique index.
+CREATE UNIQUE INDEX IF NOT EXISTS protected_identities_tenant_ref_uq
+  ON protected_identities (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(identity_ref));
 ALTER TABLE protected_identities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE protected_identities FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS protected_identities_rw ON protected_identities;
@@ -22,9 +24,10 @@ CREATE TABLE IF NOT EXISTS protected_directory_roles (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id  uuid NULL,                                -- NULL = global default
   role_name  text NOT NULL,                            -- directory role displayName (matched case-insensitively)
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(role_name))
+  created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS protected_directory_roles_tenant_role_uq
+  ON protected_directory_roles (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), lower(role_name));
 ALTER TABLE protected_directory_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE protected_directory_roles FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS protected_directory_roles_rw ON protected_directory_roles;

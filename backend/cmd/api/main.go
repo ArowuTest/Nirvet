@@ -46,6 +46,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
+	"github.com/ArowuTest/nirvet/internal/soarwire"
 	"github.com/ArowuTest/nirvet/internal/sso"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
@@ -252,7 +253,14 @@ func main() {
 	for _, a := range connector.NewDefenderActioner("", "", "", nil).Actioners() {
 		soarReg.Register(a)
 	}
-	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soarReg, soarCreds, log))
+	for _, a := range connector.NewEntraActioner("", "", "", nil).Actioners() { // §6.11 vendor-2: identity containment
+		soarReg.Register(a)
+	}
+	// A destructive step initiated via a playbook run/approve also goes through this supervisor, so it carries
+	// the same D5 protected-identity guard (blast-radius) + the failed/withheld-containment alerter.
+	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soarReg, soarCreds, log).
+		WithAlerter(soarwire.NewContainmentAlerter(alertSvc, outboxRepo)).
+		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)))
 	soarH := soar.NewHandler(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
