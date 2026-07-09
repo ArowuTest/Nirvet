@@ -242,10 +242,17 @@ func main() {
 	// containment actions (Defender isolate/release, Entra disable, PAN block) register incrementally
 	// (registration, not an engine change), and stay dormant until a tenant enables destructive actions.
 	// With no registered Actioner, every connector step keeps the truthful-simulation slice-A behavior.
-	// The CredDecryptor (slice C) vault-decrypts a tenant's connector creds for Phase B; it is only
-	// invoked once a real Actioner runs, so wiring it now is inert until slice C registers one.
+	// The CredDecryptor (slice C) vault-decrypts a tenant's connector creds for Phase B.
 	soarCreds := connector.NewCredentialResolver(connector.NewRepository(db), vault)
-	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soar.NewActionerRegistry(), soarCreds, log))
+	// §6.11 slice C: register the real Defender isolate/release Actioners (prod endpoints; SafeClient).
+	// The supervised path now engages for a Defender isolate step, but ONLY when the tenant has enabled
+	// destructive actions (soar_settings.destructive_enabled, default OFF) — otherwise the gate withholds
+	// before any external call. Empty endpoints select production defaults (per-tenant token URL, MDE host).
+	soarReg := soar.NewActionerRegistry()
+	for _, a := range connector.NewDefenderActioner("", "", "", nil).Actioners() {
+		soarReg.Register(a)
+	}
+	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soarReg, soarCreds, log))
 	soarH := soar.NewHandler(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).

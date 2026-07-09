@@ -122,9 +122,14 @@ func main() {
 		Register("notify_analyst", soar.NewNotifyExecutor(outboxRepo)).
 		Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))
 	// CredDecryptor (slice C): vault-decrypts a tenant's connector creds for Phase B of a resumed
-	// containment run. Inert until a real Actioner is registered (empty registry today).
+	// containment run. §6.11 slice C registers the real Defender isolate/release Actioners so the resume
+	// loop can re-drive a stranded containment step (dormant until a tenant enables destructive actions).
 	soarCreds := connector.NewCredentialResolver(connector.NewRepository(db), connector.NewVault(cipher))
-	soarSup := soar.NewSupervisor(soarRepo, soar.NewActionerRegistry(), soarCreds, log)
+	soarReg := soar.NewActionerRegistry()
+	for _, a := range connector.NewDefenderActioner("", "", "", nil).Actioners() {
+		soarReg.Register(a)
+	}
+	soarSup := soar.NewSupervisor(soarRepo, soarReg, soarCreds, log)
 	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs).WithSupervisor(soarSup)
 	go soarSvc.StartResumeLoop(ctx, log, time.Minute, 300)
 
