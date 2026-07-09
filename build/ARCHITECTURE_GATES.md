@@ -1227,4 +1227,98 @@ containment).
 - [x] MUST-3 reverse honors observed prior state captured in Phase B.
 - [x] MUST-4 every denial audited + surfaced.
 - [x] Should-adds folded (Phase-B kill-switch re-read, re-drive resumes at B, Class4 no-exec V1, dry-run full gate, legible target in audit).
-- [ ] Reviewer's five-minute confirming pass → fully green → proceed to code + dedicated adversarial round.
+- [x] Reviewer's five-minute confirming pass → fully green → proceed to code + dedicated adversarial round. **LANDED HEAD 763b218; dormant.**
+
+---
+
+## Gate — §6.11 SOAR slice C: FIRST REAL vendor Actioner (Defender isolate/release) — DESIGN REVIEW (pre-code) — Jul 2026
+
+**One-line.** Register the first REAL vendor Actioner into the already-built, dormant slice-B two-phase
+supervisor: Microsoft Defender for Endpoint **isolate ⇄ release**. This is where SOAR stops truthful-
+simulating and performs a real, reversible, destructive containment for one action pair — behind
+`soar_settings.destructive_enabled` (default OFF). Triggers the reviewer's dedicated adversarial round #34.
+
+**SRS grounding.** SOAR-002 catalog **isolate endpoint** (+ its reverse); SOAR-004 §9.5 class = **3 High**
+(→ customer/senior approval, never silent); SOAR-005 human approval for high-impact unless contractually
+pre-authorised AND technically safe; SOAR-006 audit every execution/input/output/decision/error;
+SOAR-007 dry-run; SOAR-009 failure→escalation. Reuses the slice-B engine verbatim (MUST-1..4 already proven);
+this slice supplies the vendor implementation behind the seam, it does NOT change the engine.
+
+**In scope (slice C).**
+1. **Real `CredDecryptor`** (was wired `nil` in api+worker). A `connector`-vault-backed impl:
+   `ConnectorCreds(ctx, tenantID, connectorKey) ([]byte, error)` → resolves the tenant's Defender connector
+   config and vault-decrypts its secret (client_id / client_secret / azure_tenant). This is the Phase-B seam
+   the supervisor already calls; slice B decrypts+audits the intent, this makes the bytes real.
+2. **Defender action client** (`internal/connector`, alongside `graphClient`): client-credentials auth with
+   an **injectable base URL + scope** (portability/testability), and three calls — resolve host→machine id,
+   read current isolation state (PreCheck), `POST /machines/{id}/isolate` (IsolationType Full) + `/unisolate`.
+   Note the **different API surface**: MDE machine actions live on `api.securitycenter.microsoft.com` with
+   scope `Machine.Isolate`, NOT the `graph.microsoft.com/.default` alert-pull scope — the tenant's Defender
+   app-registration must grant Machine.Isolate. All dials via `netsafe.SafeClient`.
+3. **Two `Actioner`s** registered into the previously-empty registry at api+worker startup:
+   `defender:isolate` (`Idempotent=false, PreCheck=true, Reversible=true, Inverse="release"`) and
+   `defender:release`. PreCheck is mandatory here and load-bearing (see invariant C-3 below). Once registered,
+   `supervisedNeeded` matches a playbook isolate step → the real two-phase path engages **iff** a matching
+   Defender connector is configured AND that tenant's `destructive_enabled=true`.
+4. **Catalog seed** (migration): `isolate_endpoint`/`release_endpoint` → `executor=connector, connector_key=defender,
+   risk_class=high`. Idempotent seed (`ON CONFLICT DO NOTHING`), global row (tenant-overridable, tighten-only).
+5. **Dry-run** does the PreCheck read but NOT the POST → records `simulated` with the would-be action.
+   (Kill-switch, per-class rate cap, four-eyes, Class-3 approval-gate are all enforced by the slice-B engine — unchanged.)
+
+**Out of scope (later slices / follow-ons).**
+- Other vendor actions (Entra ID disable-user / revoke-session, Palo Alto block-IP) — identical Actioner
+  pattern, each its own slice.
+- **Async completion reconciler.** MDE isolate is async (machineAction Pending→Succeeded). V1: `executed` =
+  "action accepted by MDE" with the machineAction id as `connector_ref`; a background poller that confirms
+  terminal machineAction status → marks the step confirmed/failed is a **named follow-on**, not slice C.
+- Incident-asset → machine-id auto-resolution. Slice C takes an explicit target (machine id, or hostname the
+  Fn resolves via `/machines?$filter=computerDnsName eq '…'`). Richer asset-graph mapping later.
+- Live smoke against a real Defender tenant (needs owner app-registration creds w/ Machine.Isolate).
+
+**Key design decisions — reviewer, please confirm these four (the honest wrinkles):**
+- **D-1 API surface + scope.** Use the MDE API (`api.securitycenter.microsoft.com`, `Machine.Isolate`), base
+  URL + scope injectable so tests hit a mock and prod is config-driven. Accept that this needs a broader app-
+  registration than the alert-pull connector (owner-side config).
+- **D-2 "already isolated" read for MUST-3.** MDE exposes no clean isolation boolean; the reliable signal is
+  the machine's most-recent Isolate/Unisolate `machineAction` (or `healthStatus`). PreCheck reads that; if the
+  machine is already in the target state → `prior_state.changed=false` (skip the POST, record no-op). **If the
+  state is indeterminate:** recommend still issuing isolate (it is safe to re-request; MDE dedups) and recording
+  `changed=unknown` — reverse then treats unknown as "do not auto-undo" (fail-safe: never auto-release on a guess).
+  Reviewer: confirm the indeterminate policy (act-on-isolate / don't-auto-reverse).
+- **D-3 "submitted = executed" for V1.** Given async, `executed` means accepted-by-MDE (machineAction id captured),
+  not confirmed-isolated; reverse is symmetric. Completion reconciler is a follow-on. Confirm acceptable for V1.
+- **D-4 target contract.** Step `target` carries the machine id (or a hostname the Fn resolves). No upstream
+  incident→machine mapping in this slice.
+
+**Correctness invariants (must hold — round #34).**
+- **C-1** `destructive_enabled=false` → step `withheld` + audited, **zero** isolate POSTs (mock call-count 0).
+- **C-2** `dry_run=true` → PreCheck read only, **zero** isolate POSTs, recorded `simulated`.
+- **C-3 (THE ONE):** crash **after** the external POST but **before** Phase-C commit → reaper resumes at Phase B →
+  the Actioner's **PreCheck observes the machine is now isolated → does NOT POST again** → step recorded `executed`
+  exactly once (mock isolate call-count stays 1). This is why MUST-1 forbids a non-idempotent action without
+  PreCheck; PreCheck is the resume-idempotency guard for a real destructive call. **Must be explicitly tested.**
+- **C-4** reverse honors `prior_state.changed`: `true` → POST unisolate; `false`/`unknown` → skip (no-op), audited.
+- **C-5** Class-3 under `observe`/`approval` authority → `awaiting_approval`, no auto-exec; four-eyes on approve.
+- **C-6** MDE API error → step `failed` (not stuck `executing`), reason recorded; run continues/ends per SOAR-009.
+- **C-7** kill-switch flipped mid-flight (between Phase A claim and Phase B) → abort before POST, `withheld`.
+- **C-8** per-class rate cap on Class-3 → `withheld` after N real executions in the window.
+- Build/vet/gofmt/RequireDSN-CI/heartbeat green; slice-A + slice-B suites stay green at every chunk (build-time bar).
+
+**Chunking (test-first, keep A+B suites green each step).**
+- **C-1** real `CredDecryptor` (connector-vault-backed) + wire into api+worker (registry still empty → no behavior
+  change yet; slice-A/B suites unaffected).
+- **C-2** Defender action client (auth + machine-lookup + isolate/unisolate, injectable base URL+scope) + unit
+  tests vs a mock MDE server.
+- **C-3** the two `Actioner`s (MUST-1 props + Fn + PreCheck prior_state) + register in api+worker + catalog seed migration.
+- **C-4** adversarial round #34 (C-1..C-8) green against the mock MDE API.
+
+**Landing.** All external calls mocked for build + round #34 (no creds needed). `destructive_enabled` stays OFF
+by default; turning it on per-tenant is an explicit admin action. Live smoke waits on owner-provided Defender
+sandbox creds. Ping reviewer for their dedicated round #34 on landing.
+
+**Gate checklist.**
+- [ ] Reviewer confirms D-1..D-4 (API surface/scope, indeterminate-state policy, submitted=executed, target contract).
+- [ ] Reviewer confirms C-3 (crash-after-POST resume-idempotency via PreCheck) is the load-bearing invariant + must-test.
+- [ ] Owner confirms Defender is the right first vendor (vs Entra disable-user) and that OFF-by-default + explicit
+      enable is the desired safety posture.
+- [ ] On green → build C-1..C-4 test-first; dedicated adversarial round #34 on landing.
