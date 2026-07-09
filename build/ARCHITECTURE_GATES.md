@@ -1460,6 +1460,30 @@ build-time notes to FOLD IN (none block):
 **→ BUILDING A-1→A-6 test-first, folding in the 5 notes. Design-file pass DEFERRED to A-4 (reconcile the two AI
 screens against the BUILT contract, not the spec). Dedicated adversarial round on landing.**
 
+**✅ LANDED & DORMANT (HEAD eea81da) — awaiting the reviewer's landing round.** A-1 migration 0067 (2277e7f) · A-2
+Provider interface + adapters (83bdd03) · A-3 openai_compatible + fail-closed resolver + netsafe waiver (94f80b2,
+a97845d) · A-4 config surface + vault seal + migration 0068 (05e0581) · A-5 resolver wired into the copilot + vault
+unseal + per-call provider audit (705320c) · A-6 adversarial RLS forge probes (eea81da). 33 ai tests + schemacheck +
+soar + connector green on a fresh DB; outbound-http guard green. Real behavior unchanged until an admin sets a
+provider row (seeded global anthropic = today's default).
+
+**All 5 build-notes folded:** api_key_ref NULLABLE (keyless), bounded openai timeout, keyless omits auth,
+GuardNoAutoContain carried by the assistive-only Provider interface, allowlist framed as the §1903 egress/residency
+control in code + audit. **The load-bearing guard proven end-to-end:** `TestResolve_AllowlistedInternalEndpointWorks`
+stands up a real loopback server, allowlists it, and confirms the resolved provider COMPLETES against it (internal-is-
+allowed); the client is `// netsafe-exempt` (CI-waived), never SafeClient.
+
+**Migration note (0068):** 0067's ai_provider write policy `WITH CHECK (tenant_id = app_current_tenant())` rejected
+the GLOBAL row (NULL=NULL isn't true) — WithSystem sets no GUC and doesn't bypass RLS. 0068 widened it to also allow
+the global row ONLY under system context (`app_current_tenant() IS NULL`). A-6 proves a tenant still cannot
+forge/write/update the global row → no platform-default-hijack.
+
+**Reviewer next:** landing round on this feature (allowlist-not-block crux + internal-endpoint-works + tenant-can't-
+forge-global as the headline checks). **Deferred to A-4-follow-on / owner:** reconcile the two AI screens
+(nirvet-soc-settings-policies.html, nirvet-soc-ai-copilot.html) against the built contract (allowed-kinds gating,
+allowlist-validated URL field, disabled state) — NEVER soften the allowlist to match a free-form-URL mockup. Then
+#118 host-telemetry (do not interleave).
+
 ---
 
 ## Gate — Host-Telemetry Flow: osquery/Wazuh → collector → normalize → detect (§321–326, E09 US-033..036) — DESIGN REVIEW (pre-code) — Jul 2026
