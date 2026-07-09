@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
@@ -93,6 +94,50 @@ func (r *Repository) FindForWebhook(ctx context.Context, id uuid.UUID) (*Webhook
 func (r *Repository) MarkSuccess(ctx context.Context, tenantID, id uuid.UUID) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE connector_configs SET health='healthy', last_success=now() WHERE id=$1`, id)
+		return err
+	})
+}
+
+// SilentSource is a host-telemetry connector that reported before but has gone quiet past the threshold (US-032).
+type SilentSource struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	Name        string
+	Kind        string
+	LastSuccess time.Time
+}
+
+// SilentHostSources returns enabled host-telemetry connectors that reported at least once (last_success set) but not
+// within `within` — and are not already flagged 'silent' (so the sweeper alerts once per silence episode, not every
+// tick). System context: the worker's sweeper runs cross-tenant. A silent host source is a detection GAP (US-032).
+func (r *Repository) SilentHostSources(ctx context.Context, within time.Duration, limit int) ([]SilentSource, error) {
+	var out []SilentSource
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// SECURITY DEFINER function: connector_configs is tenant-RLS'd, so this cross-tenant sweep reads through
+		// connector_silent_host_sources (mirrors connector_list_pullers).
+		rows, e := tx.Query(ctx, `SELECT id, tenant_id, name, kind, last_success FROM connector_silent_host_sources($1, $2)`,
+			within.Seconds(), limit)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s SilentSource
+			if e := rows.Scan(&s.ID, &s.TenantID, &s.Name, &s.Kind, &s.LastSuccess); e != nil {
+				return e
+			}
+			out = append(out, s)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// MarkSilent flags a connector's health as 'silent' so the sweeper does not re-alert; MarkSuccess resets it to
+// 'healthy' when the source reports again.
+func (r *Repository) MarkSilent(ctx context.Context, tenantID, id uuid.UUID) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE connector_configs SET health='silent' WHERE id=$1`, id)
 		return err
 	})
 }

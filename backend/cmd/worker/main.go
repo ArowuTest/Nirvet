@@ -102,6 +102,10 @@ func main() {
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), jobs, nil, blobs)
 	poller := connector.NewPoller(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc, log)
 	go poller.Start(ctx, time.Minute)
+	// §6.4 #118 host-telemetry health (US-032): a host source (osquery/Wazuh) that reported before but has gone
+	// silent is a detection GAP — alert once per silence episode. last-seen is recorded on every keyed ingest;
+	// this is the silence half. (interval 5m; silent after 30m of no events; ≤200/tick.)
+	go connector.NewSilenceSweeper(connector.NewRepository(db), alertSvc).Start(ctx, log, 5*time.Minute, 30*time.Minute, 200)
 	// Ingestion durability: re-enqueue any raw event orphaned by a crash between
 	// StoreRaw and Enqueue (SEC Critical #4). The worker process owns this sweep.
 	go ingestSvc.StartReconciler(ctx, log, 30*time.Second, 60*time.Second, 100)
