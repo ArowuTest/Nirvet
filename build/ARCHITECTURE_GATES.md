@@ -1782,3 +1782,11 @@ last-of-role → withheld; **self (Nirvet's own SP) → withheld, immutable**. D
 - [x] D4 reviewer: revoke_sessions non-reversible → separate later gate.
 - [x] D5 reviewer: protected-identity guard (L1 deny-list + L2 dynamic role/last-of-role + L3 self) folded in above.
 - [ ] Reviewer clears the updated gate → build E-1..E-4 test-first; dedicated adversarial round on landing.
+
+**✅ CLEARED FOR E-1 (reviewer, D1–D5 all verified against source).** Build E-1→E-4 test-first, SOAR A+B+C green each
+chunk; dedicated adversarial round on landing (headline probes: D5 deny-listed/Global-Admin/last-of-role/self →
+withheld+escalate+alert; terminal-state fail-safe foreign-already-disabled → reverse never re-enables). Reviewer note
+(E-2, non-blocking): the last-of-role count is inherently BEST-EFFORT (TOCTOU) — a concurrent disable of another
+member between the count and our disable could theoretically leave zero; there is no cross-Graph-API transaction, so
+DOCUMENT it as best-effort (meaningfully reduces risk; not an airtight invariant). Sequencing: finish Entra vendor-2
+(E-1→E-4) coherently BEFORE #117 (AI-provider config) then #118 (host-telemetry); do not interleave mid-build.
