@@ -1341,3 +1341,126 @@ sandbox creds. Ping reviewer for their dedicated round #34 on landing.
       C-2 MDE client + D-1 allowlist (c026c8c), C-3 Actioners + register + catalog seed mig 0064 (b2ef28f),
       C-4 round #34 (8c3eb9d). All 7 round-#34 scenarios green incl. the C-3 crash-while-`Pending` no-double-POST
       headline; full repo suite green on a fresh migrated DB. Reviewer to run their independent round #34 pass.
+
+---
+
+## Gate — Admin-Configurable AI Providers (§1454/§1903/§3842, doc 04 §31) — DESIGN REVIEW (pre-code) — Jul 2026
+
+**Source spec:** `outputs/NIRVET_IMPL_SPEC_AI_PROVIDER_AND_HOST_TELEMETRY.md` Part 1 (lead reviewer, Fable 5).
+**Status:** near-free design inclusion done NOW (config shape decided below); BUILD after SOAR slice C. This is
+SRS CONFORMANCE DEBT, not a new feature — the SRS already mandates admin-configurable AI providers + per-tenant
+routing restrictions, and it is unbuilt.
+
+**Why (grounding, verified in code).** `ai/gateway.go:29,:71` hardwires `https://api.anthropic.com`; only
+`apiKey`+`model` are configurable; there is NO `ai_provider` config surface. Gap vs §1454 (global config shall
+include AI providers), §1903 (model/provider config + data-routing restrictions **by tenant**), §3842 (private-
+model strategy per country/regulated type), and the owner no-hardcoding rule. Already-good baseline (keep it):
+AI is assistive-only (`GuardNoAutoContain`) and optional with an offline fallback (`Available()==apiKey!=""` →
+`fallbackSummary`), so "AI off = zero LLM egress, SOC still works" is already true. This item adds the "AI on, but
+only on a provider/endpoint the tenant is ALLOWED to use" path.
+
+**In scope.** Config-first `ai_provider` record (global default + per-tenant override); a `Provider` interface with
+≥3 kinds (`anthropic`, `openai_compatible`, `disabled`); per-tenant provider pinning + `tenant_ai_policy` restriction
+(residency, §1903); a **platform-admin allowlist** of permitted model endpoints; vault-stored keys + decrypt-audit;
+audit of provider_kind+endpoint+model+output. **Out (this slice):** streaming; per-task-type multi-model routing;
+fine-tuning; a gateway proxy service. One resolved provider per (tenant, call) → call → audit.
+
+**Config shape (DECIDED NOW — mirrors `soar_action_catalog`, FORCE RLS).** `ai_provider`
+(tenant_id NULL=global; provider_kind CHECK; base_url NULL unless openai_compatible; model; api_key_ref = vault ref;
+UNIQUE one row per tenant + one global). `ai_provider_allowed_endpoint` (platform-admin trust list: scheme+host[:port],
+UNIQUE(scheme,host); http allowed only for an explicitly-approved on-prem endpoint). `tenant_ai_policy`
+(tenant_id PK, allowed_kinds text[] default all — a sovereign tenant → e.g. `{openai_compatible,disabled}`). Seed one
+global `anthropic` row = current default → existing tenants unchanged.
+
+**THE load-bearing guard (get this exactly right): ALLOWLIST, do NOT block-internal.** A self-hosted sovereign model
+is LEGITIMATELY on an internal/private address (on-prem GPU box) — so do **NOT** wrap the LLM endpoint in
+`netsafe.SafeClient`/`IsInternalHost` the way OIDC/ticketing/SMS/MDE are guarded; that would reject the legitimate
+internal endpoint. Internal ≠ malicious here. Instead: (1) `openai_compatible` base_url host[:port]+scheme MUST exactly
+match an `ai_provider_allowed_endpoint` (rejected at save; resolver fails closed to `disabled` if it ever sees a
+non-allowlisted one); (2) client appends only the fixed `/v1/chat/completions` path and DISALLOWS redirects; (3) the
+platform-admin-curated allowlist IS the trust boundary (an internal address on it is trusted on purpose); (4)
+`anthropic` keeps its fixed code-constant host (netsafe-exempt). Net: the only reachable targets are the hardcoded
+Anthropic host or a platform-admin-allowlisted endpoint — tenant/admin input can never point the client at an
+arbitrary URL. SSRF closed WITHOUT blocking the sovereign endpoint. **This is the one place a careless "wrap it in
+SafeClient" fix breaks the feature — flag it in the build + review.**
+
+**Resolver (fail-closed).** `ResolveProvider(ctx, tenantID)`: load `tenant_ai_policy.allowed_kinds` → load
+`ai_provider` (tenant or global) → if resolved kind ∉ allowed_kinds → `disabledProvider` (never silently use a
+forbidden provider) → build provider; openai_compatible base_url must be allowlisted else `disabledProvider`+audit.
+
+**Config surface (admin-gated, audited, tighten-only).** platform-admin: `GET/PUT /admin/ai/provider`,
+`GET/POST/DELETE /admin/ai/allowed-endpoints`, `PUT /admin/tenants/{id}/ai-policy`. tenant-admin: `GET/PUT
+/tenant/ai/provider` (kind must be within allowed_kinds; base_url must be allowlisted; else 403/400). A
+`tenant_ai_policy` restriction is platform-admin-set and CANNOT be loosened by tenant/lower role (same "overrides may
+only tighten" pattern as SOAR/detection). Vault: api_key_ref through the existing vault; credential-decrypt audit on
+unseal (same as connector creds).
+
+**Verify / adversarial (round on landing).** resolver order (tenant→global→disabled); restriction fail-closed
+(kind∉allowed→disabled, audited); allowlist enforced (non-allowlisted base_url rejected at save + fails closed);
+openai_compatible request/response mapping; disabled→fallbackSummary; sovereign tenant pinned to
+`{openai_compatible,disabled}` CANNOT select anthropic (403); an ALLOWLISTED INTERNAL endpoint WORKS (proves
+internal-is-allowed — the crux); non-allowlisted refused; FORCE-RLS no cross-tenant provider read; vault decrypt-audit
+present; `GuardNoAutoContain` intact; **AI-off tenant still functions**. Adversarial: base_url→169.254.169.254 rejected
+unless a platform admin explicitly allowlisted it (trust is the admin's, by design); redirect off the allowlisted host
+blocked; lower role cannot loosen `tenant_ai_policy`.
+
+**Gate checklist.**
+- [x] Config shape decided now (this gate) so no other AI feature accretes on the hardcoded gateway.
+- [ ] Reviewer confirms the ALLOWLIST-not-block guard framing before code (the one careless-fix trap).
+- [ ] Build after SOAR slice C, test-first; reviewer pass on landing (allowlist guard + internal-endpoint-works are the specific checks).
+
+---
+
+## Gate — Host-Telemetry Flow: osquery/Wazuh → collector → normalize → detect (§321–326, E09 US-033..036) — DESIGN REVIEW (pre-code) — Jul 2026
+
+**Source spec:** `outputs/NIRVET_IMPL_SPEC_AI_PROVIDER_AND_HOST_TELEMETRY.md` Part 2.
+**Status:** near-free design inclusion done NOW (§6.5 field-group requirement + §1.4 scope clarification below);
+BUILD after SOAR slice C, pulled by a sovereign/low-maturity engagement.
+
+**Why + the §1.4 boundary (record as a scope CLARIFICATION, not a breach).** §321–326 already scopes an on-prem/
+air-gapped **adjacent collector** (customer-side collectors normalize/filter/forward telemetry; residency
+configurable), and the Syslog + Webhook/API on-ramps (E09 US-033..036) exist. §1.4 scopes OUT "replacing full
+enterprise EDR / equivalent endpoint agents" — so **we do NOT build an endpoint agent.** We INGEST telemetry from a
+customer-deployed OPEN agent (osquery/Wazuh) into the in-scope collector. Forwarding telemetry into an on-ramp is
+ingestion, not EDR. **§1.4 clarification (record, don't edit the immutable SRS source):** ingesting from a
+customer-run open host agent is in-scope ingestion; building/shipping an agent remains out of scope. This is the
+difference between serving and not serving the no-EDR / low-maturity / sovereign customer — plausibly Nirvet's core buyer.
+
+**In scope.** New source kind(s) for host telemetry (`host_osquery`/`host_wazuh`, or one `host_agent`); a host-event
+normalizer (osquery/Wazuh → canonical/OCSF, mirroring the existing 8 normalizers); a seed ATT&CK-mapped host detection
+pack (from public osquery packs / Wazuh rulesets / SigmaHQ); per-source auth + tenant scoping (reuse US-036 HMAC/API
+key + existing event-path RLS); per-source health/last-seen (US-032). Recommend/validate/DOCUMENT an open-agent config
+— do NOT author an agent. **Out:** building an agent; bidirectional agent control / query push-down (v1 = ingest only);
+agent auto-deployment.
+
+**Two supported topologies.** (A) direct: osqueryd TLS logger → `POST /ingest` (kind=host_osquery, HMAC) → normalize
+→ detect. (B) managed/sovereign (§321–326): Wazuh agents → self-hosted onshore Wazuh **manager** (normalize/filter/
+forward) → `POST /ingest` (kind=host_wazuh) → …. Both reuse the EXISTING push ingest (`ingestion/handler.go Ingest`)
++ existing source auth. Topology B's Wazuh manager IS the in-scope adjacent collector for a sovereign in-country deploy.
+
+**DESIGN INCLUSION NOW (near-free, so §6.5 isn't retrofitted).** Today the canonical event carries `ActorRef`/
+`TargetRef` + an opaque `Data` map (normalize.go) — there are NO first-class host/process/file/user/network field
+groups. **Requirement folded into the §6.5 canonical/OCSF schema design:** it must carry **host, process, file, user,
+network** field groups so host events map cleanly instead of being bolted on later. Target OCSF mappings:
+process exec→Process Activity (1007); file create/modify→File System Activity (1001); logon/auth→Authentication (3002);
+net connection→Network Activity (4001). (Build the schema extension in this slice; the DECISION is captured now.)
+
+**Security / sovereignty.** Per-source credential (HMAC/API key, US-036); ingest tenant-scoped (existing RLS); a source
+belongs to exactly one tenant. Agent + Wazuh manager + Nirvet all self-hostable onshore (osquery Apache-2.0; Wazuh
+GPLv2; Fleet MIT) — nothing phones home; non-egressing collection pairs with onshore deploy + AI-off/self-hosted-model
+(Part 1) for an end-to-end in-country SOC. Input hardening: treat agent payloads as untrusted — size caps, schema
+validation, parameterized (no field→SQL), path/filename sanitation on file events (same discipline as STIX/attachments).
+
+**Health (US-032).** Per-source heartbeat/last-seen; ALERT when a host source goes silent past a threshold — a silent
+endpoint is a detection gap (the SOC-worst-failure theme). Surface in connector health, not just a status field.
+
+**Verify plan.** Ingest a representative osquery pack result + a Wazuh alert JSON → normalize → canonical (OCSF-mapped)
+→ a seeded host detection FIRES; tenant isolation (source A's events never visible to tenant B); source auth rejects a
+bad HMAC; malformed/oversized payload rejected not panicked; health signal fires on source silence; §6.5 mapping
+round-trips the four classes above.
+
+**Gate checklist.**
+- [x] §6.5 field-group requirement (host/process/file/user/network) recorded now so it isn't retrofitted.
+- [x] §1.4 scope clarification recorded (ingest-from-open-agent is in-scope ingestion; no agent build).
+- [ ] Build after SOAR slice C, pulled by a concrete sovereign/low-maturity engagement.
+- [ ] Reviewer pass on landing (tenant-isolation + silent-source health are the specific checks).
