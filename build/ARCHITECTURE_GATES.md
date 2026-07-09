@@ -996,3 +996,28 @@ DB). Verify: unit (multi-value extraction incl. AND/OR + dedup, decay math at 0/
 sighting boost + cap + post-decay order) + integration (compound indicator matches either branch; a
 past-half-life IOC below floor stops matching; a sighting raises effective confidence; settings round-trip;
 tenant isolation). Heartbeat green.
+
+---
+
+## Structural guardrails — the un-bypassable "control everywhere except one sibling" class-fix (Jul 2026)
+
+The recurring R4→R6 theme was one class: a control applied everywhere except one sibling (SMS→ticketing→
+OIDC missed SafeClient; stix_objects missed a tenant-composite key; the detect-slice-C M2 config guardrail).
+Rather than keep patching instances, three mechanical guards now fail CI on the whole class:
+
+1. **Outbound HTTP must use netsafe.SafeClient** — `scripts/check-outbound-http.sh` (a CI step after
+   build/vet) rejects any plain `http.Client{}` / `http.DefaultClient` / `http.Get|Post|...` outside
+   `netsafe/`, tests, or an inline `// netsafe-exempt: <reason>` waiver. Closes the SSRF-sibling class.
+2. **Tenant-composite PK/UNIQUE** — `internal/schemacheck` (a DB-invariant test in the `go test ./...` CI
+   step) fails if any PK/UNIQUE on a table with a `tenant_id` column omits tenant_id, unless the key is
+   globally unique by construction (contains a uuid column, or is a single-column surrogate with a default
+   / identity) or is an explicitly-waived global pre-tenant lookup (api-key prefix, invite token hash).
+   Closes the cross-tenant-collision class (R5-H3); on introduction it surfaced + retired the dead
+   stix_sightings stub.
+3. **enum↔CHECK consistency** — same package: each registered column's CHECK value set must equal its Go
+   source-of-truth const set (detection stage/disposition, roles, tenant tiers, severity, SOAR risk class),
+   so a Go enum and its DB CHECK can't drift. Adding a new enum'd column means registering it — that is the
+   enforcement.
+
+Net: a new plain outbound client, a new tenant-natural-key without tenant_id, or an enum/CHECK drift can no
+longer merge silently — each is a red build, not a future review finding.
