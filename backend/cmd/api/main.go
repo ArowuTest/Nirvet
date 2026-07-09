@@ -238,11 +238,14 @@ func main() {
 		Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))
 	soarRepo := soar.NewRepository(db)
 	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs)
-	// §6.11 slice B: wire the two-phase supervisor. The Actioner registry starts EMPTY — real vendor
+	// §6.11 slice B/C: wire the two-phase supervisor. The Actioner registry starts EMPTY — real vendor
 	// containment actions (Defender isolate/release, Entra disable, PAN block) register incrementally
 	// (registration, not an engine change), and stay dormant until a tenant enables destructive actions.
 	// With no registered Actioner, every connector step keeps the truthful-simulation slice-A behavior.
-	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soar.NewActionerRegistry(), nil, log))
+	// The CredDecryptor (slice C) vault-decrypts a tenant's connector creds for Phase B; it is only
+	// invoked once a real Actioner runs, so wiring it now is inert until slice C registers one.
+	soarCreds := connector.NewCredentialResolver(connector.NewRepository(db), vault)
+	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soar.NewActionerRegistry(), soarCreds, log))
 	soarH := soar.NewHandler(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
