@@ -53,8 +53,8 @@ func (r *Repository) SetSoarSettings(ctx context.Context, tenantID uuid.UUID, s 
 func (r *Repository) GetPlatformFlags(ctx context.Context) (PlatformFlags, error) {
 	var f PlatformFlags
 	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT kill_switch, dry_run FROM soar_platform WHERE id=true`).
-			Scan(&f.KillSwitch, &f.DryRun)
+		return tx.QueryRow(ctx, `SELECT kill_switch, dry_run, confirmation_grace_secs, confirmation_stall_secs FROM soar_platform WHERE id=true`).
+			Scan(&f.KillSwitch, &f.DryRun, &f.ConfirmationGraceSecs, &f.ConfirmationStallSecs)
 	})
 	return f, err
 }

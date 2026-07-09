@@ -67,10 +67,14 @@ func DefaultSoarSettings() SoarSettings {
 	return SoarSettings{DestructiveEnabled: false, DryRun: false, MaxClass3PerHour: 10, MaxClass4PerHour: 0}
 }
 
-// PlatformFlags is the global kill-switch + dry-run.
+// PlatformFlags is the global kill-switch + dry-run + reconciler thresholds. ConfirmationGraceSecs delays
+// the first confirmation poll after submit; ConfirmationStallSecs bounds how long an action may stay
+// non-terminal before it is surfaced as stalled (config-first, seeded defaults in soar_platform).
 type PlatformFlags struct {
-	KillSwitch bool `json:"kill_switch"`
-	DryRun     bool `json:"dry_run"`
+	KillSwitch            bool `json:"kill_switch"`
+	DryRun                bool `json:"dry_run"`
+	ConfirmationGraceSecs int  `json:"confirmation_grace_secs"`
+	ConfirmationStallSecs int  `json:"confirmation_stall_secs"`
 }
 
 // rateCapFor returns the per-hour destructive-action cap for a risk class (0 = none allowed).
