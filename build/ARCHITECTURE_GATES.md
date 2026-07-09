@@ -959,3 +959,40 @@ state; tenant isolation on all four tables; audited mutations (settings, disposi
 runner pass/fail incl. CEL, fp_rate math, coverage set-diff, promotion-gate logic) + integration (add test
 case → run → promote blocked until pass, disposition writes feedback + closes alert + stats reflect it,
 coverage flags a missing dep, settings round-trip, tenant isolation + negative cross-tenant). Heartbeat green.
+
+---
+
+## Gate — §6.10 threat intel slice B — reviewed Jul 2026
+
+Drive §6.10 PARTIAL→ (toward FULL). Slice A delivered the real STIX 2.1 store (typed id, versioning,
+validity/revocation, TLP, kill-chain, per-command RLS), AddStix/ImportBundle, a STIX-typed enricher, and
+worker-written match provenance. Slice A matched a SINGLE observable per indicator (first `= 'x'` literal),
+had no freshness decay, and did not use sightings. Slice B makes STIX matching real, time-aware and
+corroboration-aware. (TAXII poller/server + relationship-graph traversal → slice C.)
+
+**Full multi-value pattern extraction (matching quality).** `extractObservables(pattern) []string` pulls
+EVERY quoted comparison literal from a STIX pattern (all AND/OR branches), deduped — so a compound
+indicator `[ipv4-addr:value='1.2.3.4' OR ipv4-addr:value='5.6.7.8']` matches an event carrying EITHER. The
+`value` column still stores the first literal (display/back-compat); the enricher expands each indicator
+into one matchable value→object entry per extracted literal at cache-load, so a hit on any branch yields
+one deduped Match. Fixes the "compound patterns silently keep only the first observable" slice-A gap.
+
+**Config-driven decay (freshness).** A per-tenant `threat_intel_settings` (config-first, lazy default):
+`decay_half_life_days` (30), `min_effective_confidence` (0), `sighting_boost_cap` (20). At enrich time a
+STIX match's confidence decays by 0.5^(age_days/half_life) where age = now − (valid_from or created); a
+match whose EFFECTIVE confidence falls below `min_effective_confidence` is dropped (a stale IOC stops
+firing) — so intel ages out on a curve, not a cliff, and the cliff (valid_until/revoked) still applies in
+SQL. Watchlist indicators are the manual/authoritative path and are NOT decayed.
+
+**Sightings → confidence (corroboration).** `sighting` SROs already persist in stix_objects; the enricher
+sums each sighting's `count` (default 1) by `sighting_of_ref` at cache-load and adds a bounded boost
+(min(sum, sighting_boost_cap)) to the referenced object's effective confidence — a corroborated IOC scores
+higher (TI-004 feeds COR-002). Boost applied AFTER decay, then clamped to 100.
+
+**Invariants.** Settings tenant-scoped RLS, lazy default (no row ⇒ defaults); decay/boost are pure functions
+of stored data (deterministic, testable); effective confidence clamped [0,100]; revoked/expired still
+filtered in SQL (defense in depth); watchlist unaffected; enrichment stays per-tenant cached (no per-event
+DB). Verify: unit (multi-value extraction incl. AND/OR + dedup, decay math at 0/1/2 half-lives, floor drop,
+sighting boost + cap + post-decay order) + integration (compound indicator matches either branch; a
+past-half-life IOC below floor stops matching; a sighting raises effective confidence; settings round-trip;
+tenant isolation). Heartbeat green.

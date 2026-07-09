@@ -37,14 +37,19 @@ type StixObject struct {
 }
 
 // stixObservable is the slim projection the enricher matches on (loaded into the per-tenant cache), so
-// enrichment never carries the full object body per event.
+// enrichment never carries the full object body per event. Slice B adds the pattern (multi-value
+// expansion) and the age inputs (valid_from/created) the decay curve needs.
 type stixObservable struct {
 	ID         string
+	Type       string
 	Value      string
+	Pattern    string
 	Confidence int
 	TLP        string
 	Labels     []string
 	KillChain  []string
+	ValidFrom  *time.Time
+	Created    time.Time
 }
 
 // knownStixTypes mirrors the DB CHECK (0041): the SDO/SRO/SCO types the store accepts.
@@ -78,12 +83,34 @@ var scoTypes = map[string]bool{
 // (deferred: full STIX patterning grammar — logged, not silently dropped, by the caller).
 var patternValueRe = regexp.MustCompile(`=\s*'([^']*)'`)
 
-// extractObservable computes the matchable value for an object: for indicators, from the pattern; for
-// cyber-observables, from raw.value; otherwise empty (SDOs like malware/attack-pattern are not matched).
+// extractPatternValues returns EVERY quoted literal compared with '=' across all AND/OR branches of a
+// STIX pattern, trimmed and de-duplicated in first-seen order (slice B):
+//
+//	[ipv4-addr:value = '1.2.3.4' OR ipv4-addr:value = '5.6.7.8']  -> ["1.2.3.4","5.6.7.8"]
+//	[file:hashes.'SHA-256' = 'abc' AND file:name = 'x']           -> ["abc","x"]
+//
+// so a compound indicator matches an event carrying any of its observables (slice A kept only the first).
+func extractPatternValues(pattern string) []string {
+	ms := patternValueRe.FindAllStringSubmatch(pattern, -1)
+	seen := map[string]bool{}
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		v := strings.TrimSpace(m[1])
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// extractObservable computes the PRIMARY matchable value stored in the value column (display/back-compat):
+// the first pattern literal for an indicator, or raw.value for a cyber-observable. The enricher expands
+// the full pattern (extractPatternValues) for matching.
 func extractObservable(typ, pattern string, raw json.RawMessage) string {
 	if typ == "indicator" && pattern != "" {
-		if m := patternValueRe.FindStringSubmatch(pattern); len(m) == 2 {
-			return strings.TrimSpace(m[1])
+		if vs := extractPatternValues(pattern); len(vs) > 0 {
+			return vs[0]
 		}
 		return ""
 	}
@@ -96,6 +123,18 @@ func extractObservable(typ, pattern string, raw json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// observableValues returns ALL matchable IOC literals for an object: every pattern literal for an
+// indicator, else the single already-extracted SCO value.
+func observableValues(typ, pattern, value string) []string {
+	if typ == "indicator" && pattern != "" {
+		return extractPatternValues(pattern)
+	}
+	if value != "" {
+		return []string{value}
+	}
+	return nil
 }
 
 // UpsertStix inserts or version-updates a STIX object within the tenant, returning applied=true when the
@@ -235,7 +274,7 @@ func (r *Repository) matchableObservables(ctx context.Context, tenantID uuid.UUI
 	var out []stixObservable
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, value, confidence, tlp, labels, kill_chain_phases
+			`SELECT id, type, value, pattern, confidence, tlp, labels, kill_chain_phases, valid_from, created
 			   FROM stix_objects
 			  WHERE value <> '' AND NOT revoked
 			    AND (valid_until IS NULL OR valid_until > now())
@@ -246,7 +285,7 @@ func (r *Repository) matchableObservables(ctx context.Context, tenantID uuid.UUI
 		defer rows.Close()
 		for rows.Next() {
 			var o stixObservable
-			if err := rows.Scan(&o.ID, &o.Value, &o.Confidence, &o.TLP, &o.Labels, &o.KillChain); err != nil {
+			if err := rows.Scan(&o.ID, &o.Type, &o.Value, &o.Pattern, &o.Confidence, &o.TLP, &o.Labels, &o.KillChain, &o.ValidFrom, &o.Created); err != nil {
 				return err
 			}
 			out = append(out, o)
@@ -254,6 +293,70 @@ func (r *Repository) matchableObservables(ctx context.Context, tenantID uuid.UUI
 		return rows.Err()
 	})
 	return out, err
+}
+
+// sightingCounts sums each sighting SRO's `count` (default 1) by the object it corroborates
+// (sighting_of_ref), read from the raw body — the corroboration signal folded into effective
+// confidence (slice B). Non-revoked sightings only.
+func (r *Repository) sightingCounts(ctx context.Context, tenantID uuid.UUID) (map[string]int, error) {
+	out := map[string]int{}
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT raw FROM stix_objects WHERE type='sighting' AND NOT revoked`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var raw []byte
+			if err := rows.Scan(&raw); err != nil {
+				return err
+			}
+			var s struct {
+				SightingOfRef string `json:"sighting_of_ref"`
+				Count         int    `json:"count"`
+			}
+			if json.Unmarshal(raw, &s) != nil || s.SightingOfRef == "" {
+				continue
+			}
+			c := s.Count
+			if c <= 0 {
+				c = 1
+			}
+			out[s.SightingOfRef] += c
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// GetTISettings returns the tenant's threat-intel tuning, or the seeded defaults when no row exists.
+func (r *Repository) GetTISettings(ctx context.Context, tenantID uuid.UUID) (TISettings, error) {
+	s := DefaultTISettings()
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		e := tx.QueryRow(ctx,
+			`SELECT decay_half_life_days, min_effective_confidence, sighting_boost_cap
+			   FROM threat_intel_settings WHERE tenant_id=$1`, tenantID).
+			Scan(&s.DecayHalfLifeDays, &s.MinEffectiveConfidence, &s.SightingBoostCap)
+		if e == pgx.ErrNoRows {
+			return nil
+		}
+		return e
+	})
+	return s, err
+}
+
+// SetTISettings upserts the tenant's threat-intel tuning.
+func (r *Repository) SetTISettings(ctx context.Context, tenantID uuid.UUID, s TISettings) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO threat_intel_settings (tenant_id, decay_half_life_days, min_effective_confidence, sighting_boost_cap, updated_at)
+			 VALUES ($1,$2,$3,$4, now())
+			 ON CONFLICT (tenant_id) DO UPDATE SET
+			   decay_half_life_days=$2, min_effective_confidence=$3, sighting_boost_cap=$4, updated_at=now()`,
+			tenantID, s.DecayHalfLifeDays, s.MinEffectiveConfidence, s.SightingBoostCap)
+		return err
+	})
 }
 
 func scanStix(row pgx.Row) (StixObject, error) {

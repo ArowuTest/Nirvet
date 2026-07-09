@@ -104,3 +104,30 @@ func (h *Handler) GetStix(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, o)
 }
+
+// GetSettings handles GET /threat-intel/settings (slice B decay/boost tuning).
+func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	set, err := h.svc.Settings(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, set)
+}
+
+// SetSettings handles PUT /threat-intel/settings.
+func (h *Handler) SetSettings(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in TISettings
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	set, err := h.svc.SetSettings(r.Context(), p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, set)
+}

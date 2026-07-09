@@ -45,9 +45,19 @@ type Enricher struct {
 }
 
 type entry struct {
-	inds    []Indicator
-	obs     []stixObservable
-	expires time.Time
+	inds      []Indicator
+	obs       []stixObservable   // retained so the pointers in `stix` stay valid
+	stix      []stixMatchEntry   // one per matchable literal (multi-value pattern expansion, slice B)
+	sightings map[string]int     // sighting count by object id (corroboration boost)
+	settings  TISettings         // per-tenant decay/boost tuning
+	expires   time.Time
+}
+
+// stixMatchEntry is one matchable literal (lower-cased) tied back to its parent object; a compound
+// indicator expands into several of these (slice B), deduped to one Match by object id at hit time.
+type stixMatchEntry struct {
+	value string
+	obs   *stixObservable
 }
 
 // NewEnricher builds the enricher.
@@ -63,9 +73,10 @@ func (e *Enricher) Enrich(ctx context.Context, tenantID uuid.UUID, candidates []
 	if err != nil {
 		return nil, err
 	}
-	if len(snap.inds) == 0 && len(snap.obs) == 0 {
+	if len(snap.inds) == 0 && len(snap.stix) == 0 {
 		return nil, nil
 	}
+	now := time.Now()
 	lc := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		if c != "" {
@@ -93,12 +104,21 @@ func (e *Enricher) Enrich(ctx context.Context, tenantID uuid.UUID, candidates []
 			out = append(out, Match{Source: "watchlist", Value: ind.Value, Score: ind.Score, Confidence: ind.Score, Tags: ind.Tags, TLP: ind.TLP})
 		}
 	}
-	for _, o := range snap.obs {
-		if hit(strings.ToLower(o.Value)) && !seen["s:"+o.ID] {
-			seen["s:"+o.ID] = true
-			out = append(out, Match{Source: "stix", ObjectID: o.ID, Value: o.Value, Score: o.Confidence,
-				Confidence: o.Confidence, Tags: o.Labels, Labels: o.Labels, TLP: o.TLP, KillChain: o.KillChain})
+	// STIX matches: each entry is one literal from an indicator's (possibly compound) pattern. A hit on
+	// ANY literal yields one Match per object (deduped by id). Effective confidence = age decay + bounded
+	// sightings corroboration; a match decayed below the tenant's floor stops firing (slice B).
+	for _, me := range snap.stix {
+		o := me.obs
+		if seen["s:"+o.ID] || !hit(me.value) {
+			continue
 		}
+		eff := effectiveConfidence(o.Confidence, ageDays(o.ValidFrom, o.Created, now), snap.sightings[o.ID], snap.settings)
+		if eff < snap.settings.MinEffectiveConfidence {
+			continue // aged out below the freshness floor — no longer actionable
+		}
+		seen["s:"+o.ID] = true
+		out = append(out, Match{Source: "stix", ObjectID: o.ID, Value: o.Value, Score: eff,
+			Confidence: eff, Tags: o.Labels, Labels: o.Labels, TLP: o.TLP, KillChain: o.KillChain})
 	}
 	return out, nil
 }
@@ -120,7 +140,26 @@ func (e *Enricher) snapshot(ctx context.Context, tenantID uuid.UUID) (entry, err
 	if err != nil {
 		return entry{}, err
 	}
-	ent = entry{inds: inds, obs: obs, expires: time.Now().Add(e.ttl)}
+	sightings, err := e.repo.sightingCounts(ctx, tenantID)
+	if err != nil {
+		return entry{}, err
+	}
+	settings, err := e.repo.GetTISettings(ctx, tenantID)
+	if err != nil {
+		return entry{}, err
+	}
+	// Expand each object into one matchable entry per pattern literal (compound indicators → several),
+	// pointing back into the retained obs slice so hit-time has the full object metadata + age inputs.
+	var stix []stixMatchEntry
+	for i := range obs {
+		for _, v := range observableValues(obs[i].Type, obs[i].Pattern, obs[i].Value) {
+			if v == "" {
+				continue
+			}
+			stix = append(stix, stixMatchEntry{value: strings.ToLower(v), obs: &obs[i]})
+		}
+	}
+	ent = entry{inds: inds, obs: obs, stix: stix, sightings: sightings, settings: settings, expires: time.Now().Add(e.ttl)}
 	e.mu.Lock()
 	e.cache[tenantID] = ent
 	e.mu.Unlock()
@@ -323,6 +362,34 @@ func (s *Service) ListStix(ctx context.Context, tenantID uuid.UUID, typeFilter s
 // GetStix returns one STIX object by id (nil if not visible).
 func (s *Service) GetStix(ctx context.Context, tenantID uuid.UUID, id string) (*StixObject, error) {
 	return s.repo.GetStix(ctx, tenantID, id)
+}
+
+// Settings returns the tenant's threat-intel tuning (defaults if unset).
+func (s *Service) Settings(ctx context.Context, tenantID uuid.UUID) (TISettings, error) {
+	set, err := s.repo.GetTISettings(ctx, tenantID)
+	if err != nil {
+		return TISettings{}, httpx.ErrInternal("could not load threat-intel settings")
+	}
+	return set, nil
+}
+
+// SetSettings validates and upserts the tenant's threat-intel tuning, then invalidates the enricher
+// cache so the new decay/boost takes effect on the next event.
+func (s *Service) SetSettings(ctx context.Context, tenantID uuid.UUID, in TISettings) (TISettings, error) {
+	if in.DecayHalfLifeDays < 1 || in.DecayHalfLifeDays > 3650 {
+		return TISettings{}, httpx.ErrBadRequest("decay_half_life_days must be between 1 and 3650")
+	}
+	if in.MinEffectiveConfidence < 0 || in.MinEffectiveConfidence > 100 {
+		return TISettings{}, httpx.ErrBadRequest("min_effective_confidence must be between 0 and 100")
+	}
+	if in.SightingBoostCap < 0 || in.SightingBoostCap > 100 {
+		return TISettings{}, httpx.ErrBadRequest("sighting_boost_cap must be between 0 and 100")
+	}
+	if err := s.repo.SetTISettings(ctx, tenantID, in); err != nil {
+		return TISettings{}, httpx.ErrInternal("could not save threat-intel settings")
+	}
+	s.enr.invalidate(tenantID)
+	return in, nil
 }
 
 // parseBundleObject maps one raw STIX object to a StixObject, computing its matchable value and deriving

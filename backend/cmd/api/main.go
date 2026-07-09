@@ -471,6 +471,9 @@ func main() {
 	mux.Handle("GET /threat-intel/stix/{id}", provider(threatH.GetStix))
 	mux.Handle("POST /threat-intel/stix", senior(threatH.AddStix))
 	mux.Handle("POST /threat-intel/stix/bundle", senior(threatH.ImportBundle))
+	// §6.10 slice B: per-tenant decay/sighting tuning (read provider-wide, write senior).
+	mux.Handle("GET /threat-intel/settings", provider(threatH.GetSettings))
+	mux.Handle("PUT /threat-intel/settings", senior(threatH.SetSettings))
 	// reporting
 	mux.Handle("GET /reports/summary", provider(reportingH.SummaryHTTP))
 	// compliance (§6.14): config-driven frameworks + real per-tenant assessment; manual override is senior.

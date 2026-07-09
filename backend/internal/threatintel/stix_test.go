@@ -127,14 +127,19 @@ func TestParseBundleObject(t *testing.T) {
 func TestEnrich_StixObservableMatches(t *testing.T) {
 	e := NewEnricher(nil)
 	tid := uuid.New()
+	obs := []stixObservable{{
+		ID: "indicator--abc", Type: "ipv4-addr", Value: "9.9.9.9", Confidence: 90, TLP: "red",
+		Labels: []string{"c2"}, KillChain: []string{"command-and-control"}, Created: time.Now(),
+	}}
 	e.mu.Lock()
 	e.cache[tid] = entry{
 		inds: []Indicator{{Value: "manual.example", Type: "domain", Score: 40, TLP: "green", Tags: []string{"watch"}}},
-		obs: []stixObservable{{
-			ID: "indicator--abc", Value: "9.9.9.9", Confidence: 90, TLP: "red",
-			Labels: []string{"c2"}, KillChain: []string{"command-and-control"},
-		}},
-		expires: time.Now().Add(time.Hour),
+		obs:  obs,
+		// slice B: the enricher matches the expanded per-literal entries; settings default (no decay floor).
+		stix:      []stixMatchEntry{{value: "9.9.9.9", obs: &obs[0]}},
+		sightings: map[string]int{},
+		settings:  DefaultTISettings(),
+		expires:   time.Now().Add(time.Hour),
 	}
 	e.mu.Unlock()
 
