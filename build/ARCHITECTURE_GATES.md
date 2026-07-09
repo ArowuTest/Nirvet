@@ -1927,3 +1927,114 @@ withheld+escalate+alert; terminal-state fail-safe foreign-already-disabled → r
 member between the count and our disable could theoretically leave zero; there is no cross-Graph-API transaction, so
 DOCUMENT it as best-effort (meaningfully reduces risk; not an airtight invariant). Sequencing: finish Entra vendor-2
 (E-1→E-4) coherently BEFORE #117 (AI-provider config) then #118 (host-telemetry); do not interleave mid-build.
+
+---
+
+## Gate — §6.18 Platform Administration, Configuration & Feature Flags — slice A — DESIGN REVIEW (pre-code) — Jul 2026
+
+**SRS:** §6.18 ADMIN-001..010 (00_SRS.md lines 1447–1504; all Must). §6.18 is the last true STUB — there is **no
+`admin` package** today (`platform/` is infra: audit/auth/crypto/db/queue). Global config exists only as
+domain-specific islands: `soar_platform` (kill-switch), `ai_provider`/`tenant_ai_policy` (#117), `tenants.status`.
+This gate builds the **general platform-config + feature-flag surface and the security governance around it** — it
+does NOT rewrite those islands (they stay authoritative for their domains; this references them).
+
+**Why this first / why gated hard:** platform-admin is where a single toggle can weaken the whole platform. An admin
+feature flag that can silently disable MFA, RLS, audit immutability, or the destructive-SOAR enablement gate is the
+**platform-admin analog of the D5 blast-radius problem** — so feature-flag safety gets the same "some switches are
+NOT freely flippable" treatment we gave protected-identity targets. This is the headline design concern; the reviewer
+flagged it as the one to nail before code.
+
+### Scope (slice A — the security-critical core; broad §6.18 phased)
+**In:** ADMIN-001 general `platform_config` (material settings not already owned by a domain island) · **ADMIN-002
+feature flags** with a **safety classification** · **ADMIN-004 config audit (immutable) + rollback (surfaces security
+deltas)** · **ADMIN-005 tenant lifecycle** states + a **uniform offboarding routine** (closes the reviewer's
+"offboarding = one routine over all tenant-scoped tables, not per-table FK cascade" thread, and TEN-009) ·
+**ADMIN-008 maintenance windows** that do not silently drop incidents.
+**Out (later slices, noted so nothing accretes wrong):** ADMIN-003 health dashboards (read-only aggregation),
+ADMIN-006 data-repair/reprocess, ADMIN-007 content library, ADMIN-009 secrets-rotation reminders / cred-expiry,
+ADMIN-010 support tickets.
+
+### THE headline guard — feature-flag SAFETY CLASSIFICATION (get this exactly right)
+Every flag key carries a **safety_class that is CODE-OWNED, not admin-editable** (a Go registry keyed by flag key —
+an admin must NOT be able to reclassify a `protected` flag to `open` to bypass the guard; this is the
+config-ization-without-guardrails trap the SOAR rounds taught us). Four classes:
+- **`open`** — freely flippable by a platform-admin; audited. (e.g. a cosmetic beta feature, a non-security UI toggle.)
+- **`guarded`** — security-*relevant* but not a control disable; requires an explicit reason + audit (e.g. enable a
+  connector kind for a region, flip a beta data-path). Also the class for flipping a protected flag toward MORE-secure.
+- **`protected`** — CAN disable a security control (MFA enforcement, destructive-SOAR enablement, AI egress
+  restriction, alert/notification delivery). Flipping toward the **LESS-secure** state requires **elevated authority
+  (senior/break-glass) + four-eyes + a required reason + it is time-boxed + it raises a HIGH platform alert**. Same
+  authority envelope as a Class-3 SOAR action. Flipping toward more-secure is `guarded`.
+- **`immutable`** — NEVER settable via config: RLS enforcement, audit immutability, tenant isolation, the
+  SECURITY DEFINER→REVOKE-PUBLIC invariant. A config row that tries to flip an `immutable` key is **REJECTED at
+  save (400) and the attempt is audited** — it is not honored, ever. These live as code constants; config cannot reach them.
+
+**Fail-SAFE resolution (mirrors the AI resolver / SOAR withhold-on-uncertainty):** `ResolveFlag(key, scope)` returns
+the flag's value, but a **missing / unknown / unreadable / malformed** flag resolves to its **SECURE default** — a
+security control defaults ON, a risky feature defaults OFF. There is NO permissive fallback on uncertainty. Every flag
+key declares its secure default in the code registry.
+
+**Overrides may only TIGHTEN** (the standing institutional pattern — SOAR/detection/AI-policy): a narrower-scope
+override (tenant < region < env < global) may make a flag MORE restrictive, never loosen a platform-set `protected`
+flag. Precedence is deterministic and documented.
+
+### The other four security concerns — folded in as first-class design requirements
+1. **Config-audit immutability (ADMIN-004).** Every material config/flag change writes an **append-only, tamper-
+   evident** row (reuse the `audit_log_immutable` trigger pattern — no UPDATE/DELETE, even by padmin) capturing
+   key/scope/old→new/actor/reason/safety_class/timestamp. History is never mutated.
+2. **Rollback SURFACES the security delta (ADMIN-004).** Rollback = apply a prior value as a **NEW forward change**
+   (never rewrite history) and it **re-runs the SAME safety-class gate** — rolling a `protected` flag back into a
+   less-secure state needs the same senior+four-eyes authority as setting it. The rollback preview must show the
+   security delta in plain terms ("this re-enables destructive SOAR for tenant X / disables MFA enforcement").
+3. **Tenant lifecycle + uniform offboarding (ADMIN-005 / TEN-009).** Tenant states = active → suspended → legal_hold
+   → exported → deleted, padmin-gated + audited + MT-008-style reason. Offboarding is **ONE uniform routine** that
+   enumerates every tenant-scoped table (not per-table FK cascade — for a retention/compliance SOC, cascade-wipe is
+   the WRONG posture): export produces the data set; **legal_hold BLOCKS deletion**; deletion honors retention windows
+   and emits a certificate-of-destruction. A registry/generated list of tenant-scoped tables keeps it complete as the
+   schema grows (candidate for a schemacheck-style CI guard: every table with `tenant_id` is covered by the routine).
+4. **Maintenance windows don't silently drop incidents (ADMIN-008).** A window may suppress NOTIFICATIONS and/or pause
+   SLA timers, but **ingestion / detection / correlation / alert+incident creation CONTINUE** — a maintenance window
+   is never a detection blackout. Any suppression is explicit, scoped, time-boxed, and **every suppressed
+   notification and every SLA pause is LOGGED** (no silent gap — the "silent-withhold is the worst SOC failure"
+   theme). On window close, deferred notifications and SLA timers resume; nothing is lost.
+
+### Config shape (DECIDED NOW — FORCE RLS where tenant-scoped; padmin-owned)
+- `platform_config` (key within scope, scope enum, value jsonb, updated_by, updated_at) — general material settings.
+- `platform_feature_flags` (key, scope {global,env,tenant,package,partner,region,beta}, scope_ref, enabled/value,
+  updated_by, updated_at; UNIQUE per (key, scope, scope_ref)). **safety_class is NOT a column** — it comes from the
+  code registry; the resolver + guard enforce it. Tenant-scoped rows FORCE RLS; global/env/etc. are padmin/system.
+- `platform_config_audit` (append-only + immutability trigger: entity {config|flag}, key, scope, old_value,
+  new_value, safety_class, actor, reason, created_at). One log for both config + flags.
+- `maintenance_windows` (id, scope, scope_ref, starts_at, ends_at, suppress_notifications bool, pause_sla bool,
+  banner text, created_by, created_at; audited). The dispatcher / SLA check consults active windows.
+- Tenant lifecycle: extend `tenants.status` enum (+ legal_hold/exported/deleted) + `tenant_offboarding` job rows;
+  the offboarding routine is code over a tenant-scoped-table registry.
+
+### Chunk plan (test-first; keep every suite green each step; DORMANT until an admin sets something)
+- **P-1** migrations (platform_config, platform_feature_flags, platform_config_audit immutable, maintenance_windows)
+  + FORCE RLS/schemacheck/from-zero + the **flag safety-class registry (code)** + `ResolveFlag` (fail-safe default,
+  tighten-only precedence, protected/immutable classification). Unit + RLS tests. No behavior change (no flags set yet).
+- **P-2** config/flag **set + rollback** with the safety-class gate (open/guarded/protected/immutable), the
+  security-delta preview, append-only immutable audit; handlers padmin, protected flips senior+four-eyes+HIGH-alert.
+- **P-3** tenant lifecycle states + the **uniform offboarding routine** (export/suspend/legal-hold/delete honoring
+  retention + legal-hold-blocks-delete + cert-of-destruction) + the tenant-scoped-table coverage guard.
+- **P-4** maintenance windows: continue-ingest/detect; explicit+logged notification/SLA suppression; resume on close.
+- **P-5** dedicated adversarial round (below).
+
+### Verify / adversarial round (on landing — the headline probes)
+Flag safety: a `protected` flag CANNOT be flipped less-secure without senior+four-eyes (a plain padmin is refused +
+audited); an `immutable` key flip is rejected-at-save + audited, never honored; a missing/unknown flag resolves to
+its SECURE default (fail-safe); a tenant override cannot loosen a platform `protected` flag (tighten-only); an admin
+cannot reclassify a flag's safety_class (code-owned). Config: rollback into a less-secure state re-runs the gate +
+surfaces the delta; config-audit is append-only (UPDATE/DELETE rejected even by padmin). Lifecycle: legal_hold blocks
+deletion; offboarding covers every tenant-scoped table (guard); FORCE-RLS no cross-tenant config read. Maintenance:
+events still ingest + detections still fire + incidents still open during a window; every suppressed notification /
+SLA pause is logged; deferred items resume on close. Standard: FORCE-RLS cross-tenant, all mutations audited.
+
+### Gate checklist
+- [x] Config shape + the four safety classes decided now (this gate), so no admin feature accretes on an ungoverned toggle.
+- [ ] **Reviewer confirms the feature-flag safety classification (protected/immutable + fail-safe default + tighten-only + code-owned class) BEFORE code — the D5-analog, the one to nail.**
+- [ ] Reviewer confirms the other four folds (config-audit immutable, rollback-surfaces-delta, uniform-offboarding-not-cascade + legal-hold-blocks-delete, maintenance-doesn't-drop-incidents).
+- [ ] Build P-1..P-5 test-first after clearance; dedicated adversarial round on landing.
+
+**→ READY FOR REVIEWER PRE-CODE PASS.** No code until the reviewer confirms the safety classification + the four folds (gated-approach rule).
