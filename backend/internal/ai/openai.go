@@ -34,7 +34,7 @@ type openAICompatibleProvider struct {
 // for tests; a nil hc gets the default hardened client.
 func newOpenAICompatibleProvider(endpoint, model, apiKey string, hc *http.Client) *openAICompatibleProvider {
 	if hc == nil {
-		hc = &http.Client{
+		hc = &http.Client{ // netsafe-exempt: openai_compatible endpoint is gated by the platform-admin allowlist, NOT netsafe — a sovereign model legitimately lives on an internal address (#117 ALLOWLIST-not-block guard)
 			Timeout: openaiTimeout,
 			// Refuse redirects: a 3xx off the allowlisted host must never be followed (SSRF containment).
 			CheckRedirect: func(*http.Request, []*http.Request) error {
