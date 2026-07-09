@@ -31,6 +31,9 @@ jobs:
         run: |
           go build ./...
           go vet ./...
+      - name: Guard — outbound HTTP must use netsafe.SafeClient (SSRF)
+        working-directory: backend
+        run: bash scripts/check-outbound-http.sh
       - name: Apply migrations
         working-directory: backend
         env:

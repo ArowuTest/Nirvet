@@ -23,7 +23,10 @@ func NewGateway(apiKey, model string) *Gateway {
 	if model == "" {
 		model = "claude-sonnet-5"
 	}
-	return &Gateway{apiKey: apiKey, model: model, http: &http.Client{Timeout: 30 * time.Second}}
+	// The gateway only ever calls the hardcoded api.anthropic.com host (see Complete), never a
+	// tenant-configurable URL, so it is not an SSRF surface. All tenant-URL clients MUST use
+	// netsafe.SafeClient (enforced by scripts/check-outbound-http.sh in CI).
+	return &Gateway{apiKey: apiKey, model: model, http: &http.Client{Timeout: 30 * time.Second}} // netsafe-exempt: hardcoded api.anthropic.com host
 }
 
 // Available reports whether a live LLM is configured.
