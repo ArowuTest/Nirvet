@@ -1537,8 +1537,15 @@ round-trips the four classes above.
 **Gate checklist.**
 - [x] §6.5 field-group requirement (host/process/file/user/network) recorded now so it isn't retrofitted.
 - [x] §1.4 scope clarification recorded (ingest-from-open-agent is in-scope ingestion; no agent build).
-- [ ] Build after SOAR slice C, pulled by a concrete sovereign/low-maturity engagement.
+- [x] Build precondition met: SOAR slice C + Entra + #117 AI-provider all landed.
+- [x] **Reviewer PRE-CODE pass given (alongside #117 — reviewer confirmed the gate at #117 landing).** Build-ready.
 - [ ] Reviewer pass on landing (tenant-isolation + silent-source health are the specific checks).
+
+**✅ CLEARED TO BUILD (reviewer pre-code pass).** SRS anchors are LINE NUMBERS: §321–326 = the On-Prem/Air-Gapped
+Adjacent Collector deployment rows; this is a new source kind under backlog E09 (US-033..036) + E08 health (US-032),
+NOT a new epic. Build when the owner picks it up; run test-first, reviewer landing round on the tenant-isolation +
+silent-source-health checks. Full spec: build/NIRVET_IMPL_SPEC_AI_PROVIDER_AND_HOST_TELEMETRY.md Part 2. Do not
+interleave with other work mid-build.
 
 ### Round #34 remediation (7d69689) — H-1 + M-1 fixed
 - **H-1 (High)** crash-resume reversibility, fixed at the supervisor SEAM: `phaseBC(resumed bool)` — a resume + PreCheck-noop attributes `changed=true` (our own in-flight action → reverse can release), a fresh claim finding target already-done stays `changed=false` (foreign). Covers every future PreCheck Actioner. Test: reverse-after-crash-resume asserts unisolate fires once.
