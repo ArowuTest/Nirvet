@@ -15,6 +15,11 @@ const (
 	KindDefender     Kind = "defender"
 	KindSyslog       Kind = "syslog"
 	KindWebhook      Kind = "webhook"
+	// §6.4/§6.5 #118 host telemetry: an open agent (osquery/Wazuh) forwards host events into the EXISTING push
+	// collector. This is INGESTION of customer-deployed open-agent telemetry, NOT a first-party endpoint agent
+	// (SRS §1.4 scopes that out) — the kind only selects the source normalizer.
+	KindOsquery Kind = "host_osquery"
+	KindWazuh   Kind = "host_wazuh"
 )
 
 // ConnectorConfig is a tenant's configured integration. Secrets are stored

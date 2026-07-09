@@ -46,6 +46,11 @@ func init() {
 	RegisterMapper("sentinel", "azure-sentinel", 1, normalizeAzureSentinel)
 	RegisterMapper("gcp-scc", "gcp-scc", 1, normalizeGCPSCC)
 	RegisterMapper("scc", "gcp-scc", 1, normalizeGCPSCC)
+	// §6.5 #118 host telemetry from customer-deployed open agents (osquery/Wazuh) → OCSF classes + §6.5 field groups.
+	RegisterMapper("host_osquery", "osquery", 1, normalizeOsquery)
+	RegisterMapper("osquery", "osquery", 1, normalizeOsquery)
+	RegisterMapper("host_wazuh", "wazuh", 1, normalizeWazuh)
+	RegisterMapper("wazuh", "wazuh", 1, normalizeWazuh)
 }
 
 // sourceMeta records the vendor + product a source belongs to, stamped into the

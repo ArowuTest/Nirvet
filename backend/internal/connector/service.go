@@ -42,6 +42,7 @@ type CreateResult struct {
 
 var validKinds = map[Kind]bool{
 	KindMicrosoft365: true, KindEntraID: true, KindDefender: true, KindSyslog: true, KindWebhook: true,
+	KindOsquery: true, KindWazuh: true, // §6.4/§6.5 #118 host-telemetry push sources
 }
 
 // Create provisions a connector. Secrets are vault-sealed; webhooks get a key.
