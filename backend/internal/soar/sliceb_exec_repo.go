@@ -99,6 +99,38 @@ func (r *Repository) markReversedTx(ctx context.Context, tx pgx.Tx, id uuid.UUID
 	return err
 }
 
+// listReversibleExecutions returns a run's executed, not-yet-reversed connector actions (newest first —
+// reverse in the opposite order of application), for the MUST-3 reverse path.
+func (r *Repository) listReversibleExecutions(ctx context.Context, tenantID, runID uuid.UUID) ([]ActionExecution, error) {
+	var out []ActionExecution
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx,
+			`SELECT id, run_id, step_index, action_key, connector_key, target, status, reason, prior_state,
+			        connector_ref, dry_run, reversed
+			   FROM soar_action_execution
+			  WHERE run_id=$1 AND status='executed' AND dry_run=false AND NOT reversed
+			  ORDER BY step_index DESC`, runID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ex ActionExecution
+			var prior []byte
+			if e := rows.Scan(&ex.ID, &ex.RunID, &ex.StepIndex, &ex.ActionKey, &ex.ConnectorKey, &ex.Target,
+				&ex.Status, &ex.Reason, &prior, &ex.ConnectorRef, &ex.DryRun, &ex.Reversed); e != nil {
+				return e
+			}
+			if len(prior) > 0 {
+				_ = json.Unmarshal(prior, &ex.PriorState)
+			}
+			out = append(out, ex)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // setCurrentStepTx advances a run's supervisor cursor (MUST-2: resume from the last non-terminal step).
 func (r *Repository) setCurrentStepTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID, step int) error {
 	_, err := tx.Exec(ctx, `UPDATE playbook_runs SET current_step=$2 WHERE id=$1`, runID, step)
