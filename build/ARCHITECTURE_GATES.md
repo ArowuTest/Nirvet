@@ -1474,3 +1474,92 @@ round-trips the four classes above.
 - **M-1** confirmed fixed (odataQuote both sites). **H-1 first fix (7d69689) was itself FAIL-OPEN** (reviewer re-verify): the `resumed`-flag override attributed ANY resumed no-op to us, but a claim proves we CLAIMED (Phase A) not that we POSTed (Phase B) — a FOREIGN isolation + crash-in-window → reverse released a containment we never created.
 - **Correct fix:** attribute by CORRELATOR not resumed. Supervisor injects a stable per-step correlator (run_id:step_index, `soar.ActionCorrelatorParam`) into params; the Defender Actioner embeds it in the MDE requestorComment on execute and, on a PreCheck-active, sets changed = the comment carries OUR correlator (own→reversible, foreign→not, crash-before-POST→fresh POST). Removed the resumed override entirely. C-3 no-double-POST intact.
 - **Mirror test added** (was structurally unrepresentable): `TestDefenderRound_ForeignIsolationNotReversed` + connector-unit `TestDefenderActioner_ForeignVsOwnAttribution`. 9 round-#34 green; full suite green fresh DB. Reviewer re-verify again = task #36. LESSON: on a destructive resume, "we claimed" ≠ "we acted" — own-vs-foreign needs a correlator carried in the vendor effect, not an engine-state proxy.
+
+---
+
+## Gate — §6.11 SOAR slice C follow-on: async completion reconciler (D-3) — DESIGN REVIEW (pre-code) — Jul 2026
+
+**One-line.** Turn a real containment's `executed` (= "submitted to MDE", the machineAction id captured) into
+`confirmed` (= "MDE reports the isolation actually took effect"), and turn a later-FAILED isolate from a
+silent "confirmed containment" into a surfaced, non-reversible, alerted failure. Hardens the honesty of the
+existing Defender action BEFORE a second vendor multiplies it. Owner-selected next; reviewer-recommended
+sequence (reconciler → 2nd vendor → live smoke). Dormant/OFF-by-default like all of slice B/C.
+
+**SRS grounding.** SOAR-006 (log every execution OUTCOME, not just submission); SOAR-009 (failure handling +
+escalation to human); §10.2 severity. The SOC-worst-failure theme: believing a host is contained when it is
+not is worse than a visible failure. Closes the slice-C gate's D-3 named follow-on ("`executed` = accepted-by-
+MDE, not confirmed-isolated; a completion reconciler that confirms terminal machineAction status is a follow-on").
+
+**Why (grounded).** MDE isolate is ASYNC: the machineAction goes Pending → InProgress → Succeeded | Failed |
+Cancelled | TimeOut. Today `phaseBC` records `executed` the instant MDE ACCEPTS the POST (connector_ref = the
+machineAction id) — so a machineAction that later FAILS still reads as `executed` = confirmed containment. That
+is a silent detection/containment gap on the destructive path.
+
+**In scope.**
+1. **Schema (mig 0065):** `soar_action_execution` gains `confirmed boolean NOT NULL DEFAULT false`,
+   `confirmation_status text NOT NULL DEFAULT ''` (the terminal machineAction status), `confirmed_at timestamptz`.
+   No new `status` CHECK value — a confirmed FAILURE flips `status='executed' → 'failed'` (within the existing
+   CHECK), which also drops the row out of `listReversibleExecutions` (status='executed' filter) so reverse can't
+   try to un-isolate a machine that was never isolated. Index for the poll query `(confirmed, status, claimed_at)`.
+2. **`Confirm` capability on the Actioner (optional field, mirrors `Fn`):** add
+   `Confirm func(ctx, creds []byte, connectorRef string) (done bool, success bool, status string, err error)` to the
+   `Actioner` struct. Defender sets it (GET `/api/machineactions/{id}` → status); a synchronous action leaves it
+   nil. `Confirm==nil` ⇒ the action has nothing async to wait on (the reconciler marks it confirmed=true).
+3. **Reconciler loop (worker), system-level, panic-guarded** — mirrors `StartResumeLoop` + `soar_stale_executions`:
+   a SECURITY-DEFINER query lists `executed`, `dry_run=false`, `NOT confirmed`, `NOT reversed`, non-empty
+   `connector_ref` rows older than a small grace period (spans tenants). For each: look up the Actioner; decrypt
+   the tenant's creds via the existing `CredDecryptor`; if `Confirm==nil` → mark confirmed=true; else call `Confirm`
+   and apply the terminal-state table below. Idempotent (a confirmed/failed row is never re-selected); safe to run
+   in exactly one worker.
+4. **Failed-containment alert (SOAR-009):** a Failed/Cancelled/TimeOut isolate emits a HIGH-severity durable
+   notification via the existing outbox (the worker already wires `notifySvc`) — "containment reported FAILED for
+   <target>; host is NOT isolated". This is the honesty payoff.
+
+**Terminal-state handling.**
+
+| machineAction status | confirmed | row status | reverse | alert |
+|---|---|---|---|---|
+| Succeeded | true | executed | eligible (unchanged) | no |
+| Failed / Cancelled / TimeOut | false | → **failed** | excluded (nothing to undo) | **yes** (SOAR-009) |
+| Pending / InProgress (not terminal) | false | executed | eligible | no — retry next tick |
+| still Pending past a STALL threshold | false | executed | eligible | **yes** — "stalled containment, unconfirmed" |
+
+**Out of scope (later).** Auto-retry of a failed destructive action (NEVER auto-retry containment — human decides);
+confirmation of the reverse/unisolate action (V1 confirms isolate only); confirmation for internal executors
+(notify/ticket are synchronous). §6.3 UI.
+
+**Config (no-hardcoding; per-tenant `soar_settings` or global `soar_platform`, lazy default):**
+`confirmation_poll_interval_secs`, `confirmation_grace_secs` (don't poll immediately after submit),
+`confirmation_stall_secs` (Pending-too-long → alert). Seeded defaults; tighten-only where a per-tenant override exists.
+
+**Key design decisions — reviewer, please confirm:**
+- **D-a** Confirmed-FAILURE flips the row to `status='failed'` (so it exits `listReversibleExecutions`) + alerts;
+  it does NOT auto-retry. Correct that reverse must skip it (the isolate never took hold → nothing to undo).
+- **D-b** `Confirm` is an optional Actioner field (`nil` = synchronous ⇒ reconciler marks confirmed=true). No
+  supervisor/`phaseBC` change needed; the reconciler owns all confirmation writes.
+- **D-c** The reconciler decrypts creds and calls a READ-only vendor endpoint (GET machineaction) — no destructive
+  effect, so no gate/kill-switch/rate-cap needed on the poll itself (those guard EXECUTION, not status reads).
+- **D-d** A machineAction that MDE has aged out / 404s past the stall window → treat as unconfirmable → alert
+  "stalled/unknown", leave the row `executed` (do NOT silently mark failed OR confirmed on missing data).
+
+**Correctness invariants (round on landing).**
+- Succeeded → confirmed=true, still reversible; no alert.
+- Failed → row `failed`, **excluded from reverse** (ReverseRun no-ops it), HIGH alert emitted once.
+- Not-terminal → left executed/unconfirmed, retried next tick (no premature confirm/fail).
+- Stuck Pending past `confirmation_stall_secs` → alerted once, not silently confirmed.
+- Poll is read-only: no isolate/unisolate POST ever fires from the reconciler.
+- Idempotent + tenant-isolated (SECURITY DEFINER list + per-tenant creds); panic-guarded; one-worker-safe.
+
+**Chunks (test-first, A+B+C suites green each step).**
+- **R-1** schema 0065 + repo (system list-unconfirmed, mark-confirmed, mark-failed) + config lazy-default.
+- **R-2** `Confirm` Actioner field + Defender `confirm` (GET machineaction) + unit test vs mock. **Fold in the
+  round-#34 LOW here** (own-vs-foreign correlator match → delimited `[nirvet:<corr>]` token instead of bare
+  `strings.Contains`, since this chunk already touches the Defender attribution code).
+- **R-3** reconciler loop + terminal-state table + failed-containment alert + reversibility exclusion; wire into cmd/worker.
+- **R-4** adversarial: Succeeded→confirmed; Failed→failed+not-reversible+alert; Pending→retry; stuck→alert;
+  Confirm-nil→confirmed; poll-never-POSTs; tenant isolation.
+
+**Gate checklist.**
+- [ ] Reviewer confirms D-a..D-d (fail→status flip + reverse-exclusion; optional Confirm field; read-only poll needs no gate; 404/aged-out = alert-not-guess).
+- [ ] Owner confirms alert channel for a failed containment (durable notification via outbox = the proposed default).
+- [ ] On green → build R-1..R-4 test-first, fold in the LOW; reviewer pass on landing.
