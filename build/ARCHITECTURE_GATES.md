@@ -1336,6 +1336,8 @@ sandbox creds. Ping reviewer for their dedicated round #34 on landing.
       (round #34 headline probe: a resume while the isolate is still `Pending` must not double-POST).
 - [x] Reviewer endorses Defender-isolate-first (risk-ordered: fully reversible, single-machine blast radius,
       pre-checkable) over leading with Entra disable-user; OFF-by-default + explicit per-tenant enable = correct posture.
-- [ ] **Owner's final nod** (the one open box): Defender-isolate-first + OFF-by-default.
-- [ ] On owner nod → build C-1..C-4 test-first (A+B suites green each chunk); dedicated adversarial round #34 vs
-      mock MDE on landing, headline probe = crash-while-`Pending` double-POST.
+- [x] **Owner's final nod**: Defender-isolate-first + OFF-by-default — CONFIRMED.
+- [x] Built C-1..C-4 test-first (A+B suites green each chunk). **LANDED** — C-1 CredDecryptor (3ef2bc4),
+      C-2 MDE client + D-1 allowlist (c026c8c), C-3 Actioners + register + catalog seed mig 0064 (b2ef28f),
+      C-4 round #34 (8c3eb9d). All 7 round-#34 scenarios green incl. the C-3 crash-while-`Pending` no-double-POST
+      headline; full repo suite green on a fresh migrated DB. Reviewer to run their independent round #34 pass.
