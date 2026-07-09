@@ -915,3 +915,47 @@ templates; SMS/email delivery honors the existing at-least-once outbox + dead-le
 config-first (no hardcoded provider). Verify: unit (sender secret round-trip via cipher, template render,
 throttle window) + integration (configure sender → email/sms channel resolves + attempts delivery,
 tenant isolation on senders, unconfigured dead-letters).
+
+---
+
+## Gate — §6.6 detection slice C → FULL — reviewed Jul 2026
+
+Drive §6.6 PARTIAL→FULL. Slice B delivered the §9.4 lifecycle (stage machine, version/snapshot/rollback,
+owner + source_dependencies metadata, emergency deploy, create-as-draft; engine fires pilot/production/
+tuned only). Slice C closes the three remaining reqs — the detection-as-code quality controls.
+
+**DET-005 test-against-sample.** SRS §9.4 says every detection MUST carry test cases. A
+detection_test_cases table (tenant-owned) holds named sample events (partial NormalizedEvent as jsonb) with
+an expected_match bool. AddTestCase / ListTestCases / DeleteTestCase manage them; RunTests(rule) builds a
+NormalizedEvent from each sample and evaluates the rule body (Condition.Matches or EvalCEL — the SAME
+primitives the engine uses, so a test proves real firing) and reports pass/fail per case. Ad-hoc RunSamples
+(inline samples, no persistence) for authoring. **Teeth:** promotion to production (Transition to
+StageProduction, non-emergency) is GATED — the rule must have ≥1 test case and ALL must pass
+(require_tests_for_production config, default true). Emergency deploy (senior-gated) still bypasses.
+
+**DET-007 FP-disposition feedback loop.** An analyst dispositions an alert (POST /alerts/{id}/disposition
+{disposition, reason}); disposition ∈ true_positive|false_positive|benign|duplicate. This closes the alert
+AND, when the alert carries a detection_id, appends an append-only detection_feedback row attributed to that
+rule (via a narrow FeedbackSink interface — alert stays decoupled from detection, mirroring Correlator/
+Alerter). Per-rule stats (RuleFeedbackStats: counts by disposition, fp_rate over total dispositioned) feed
+tuning; a tenant tuning view lists rules whose fp_rate ≥ configured threshold once the sample ≥ min_feedback
+_sample (so a 1-of-1 FP doesn't cry wolf). fp_rate + tuning_recommended surfaced, not auto-acted (assistive).
+
+**DET-009 data-source-dependency coverage warnings.** For each ACTIVE rule with non-empty
+source_dependencies, compare against the tenant's actually-ingested sources (DISTINCT raw_events.source over
+a configurable coverage_window_days). A dependency neither seen in that window is a coverage gap — the rule
+is live but its data source isn't arriving, so it can never fire. GET /detections/coverage returns per-rule
+missing deps + the observed source set. Grounded in real ingested data, not just declared connectors.
+
+**Config (no hardcoding).** detection_settings (tenant PK): fp_rate_threshold (0.30), min_feedback_sample
+(20), coverage_window_days (7), require_tests_for_production (true). Lazy default — GetSettings returns the
+seeded defaults when no row exists; SetSettings upserts (audited). Every threshold/window/toggle is a DB
+record, not a constant.
+
+**Invariants.** Test cases + feedback tenant-owned, RLS own-only; feedback append-only (no update/delete
+grant); promotion gate fail-closed (no tests → not promotable unless emergency); coverage/stats endpoints
+are GET, never write; disposition sink best-effort must not block the alert close from committing its own
+state; tenant isolation on all four tables; audited mutations (settings, disposition). Verify: unit (test
+runner pass/fail incl. CEL, fp_rate math, coverage set-diff, promotion-gate logic) + integration (add test
+case → run → promote blocked until pass, disposition writes feedback + closes alert + stats reflect it,
+coverage flags a missing dep, settings round-trip, tenant isolation + negative cross-tenant). Heartbeat green.

@@ -71,6 +71,9 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID) ([]Rule, erro
 // Create inserts a tenant-owned rule.
 func (r *Repository) Create(ctx context.Context, tenantID uuid.UUID, rule *Rule) error {
 	cond, _ := json.Marshal(rule.Condition)
+	if rule.MITRE == nil {
+		rule.MITRE = []string{} // mitre is NOT NULL DEFAULT '{}'; never send SQL NULL
+	}
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if rule.Stage == "" {
 			rule.Stage = StageProduction

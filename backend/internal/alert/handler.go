@@ -66,3 +66,27 @@ func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "assigned"})
 }
+
+// Disposition handles POST /alerts/{id}/disposition with {"disposition":"...","reason":"..."} — the
+// analyst verdict that closes the alert and feeds detection tuning (DET-007).
+func (h *Handler) Disposition(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid alert id"))
+		return
+	}
+	var in struct {
+		Disposition string `json:"disposition"`
+		Reason      string `json:"reason"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Disposition(r.Context(), p.TenantID, id, in.Disposition, in.Reason, p.UserID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "closed", "disposition": in.Disposition})
+}

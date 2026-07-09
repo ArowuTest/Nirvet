@@ -138,6 +138,22 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, e
 	return &a, nil
 }
 
+// Close marks an alert closed (dispositioned) — only from new/assigned, so a promoted alert
+// (already an incident) is not silently reverted. Returns pgx.ErrNoRows when nothing changed.
+func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx,
+			`UPDATE alerts SET status='closed' WHERE id=$1 AND status IN ('new','assigned')`, id)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		return nil
+	})
+}
+
 // Assign sets the assignee and marks the alert assigned.
 func (r *Repository) Assign(ctx context.Context, tenantID, id, assignee uuid.UUID) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {

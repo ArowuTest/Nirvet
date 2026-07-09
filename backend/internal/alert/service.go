@@ -8,11 +8,50 @@ import (
 	"github.com/google/uuid"
 )
 
+// FeedbackSink receives an analyst's alert disposition so the detection module can attribute it to
+// the firing rule (DET-007). Kept narrow so alert does not depend on the detection package (mirrors
+// ingestion.Correlator / iam.Alerter). Implemented by detection.Service.
+type FeedbackSink interface {
+	RecordDetectionFeedback(ctx context.Context, tenantID, ruleID, alertID uuid.UUID, disposition, reason string, by uuid.UUID) error
+}
+
 // Service holds alert business logic.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo     *Repository
+	feedback FeedbackSink // optional (nil = no detection feedback wired)
+}
 
 // NewService builds the service.
 func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+
+// WithFeedbackSink wires the detection FP-feedback loop (DET-007).
+func (s *Service) WithFeedbackSink(f FeedbackSink) *Service { s.feedback = f; return s }
+
+// validDispositions are the verdicts an analyst may record when closing an alert (DET-007).
+var validDispositions = map[string]bool{
+	"true_positive": true, "false_positive": true, "benign": true, "duplicate": true,
+}
+
+// Disposition closes an alert with an analyst verdict and, when the alert came from a detection rule,
+// feeds that verdict back to detection tuning (DET-007). The alert close is the authoritative action;
+// feedback is best-effort so a feedback failure never blocks dispositioning the alert.
+func (s *Service) Disposition(ctx context.Context, tenantID, id uuid.UUID, disposition, reason string, by uuid.UUID) error {
+	if !validDispositions[disposition] {
+		return httpx.ErrBadRequest("invalid disposition: must be true_positive|false_positive|benign|duplicate")
+	}
+	a, err := s.repo.Get(ctx, tenantID, id)
+	if err != nil {
+		return httpx.ErrNotFound("alert not found")
+	}
+	if err := s.repo.Close(ctx, tenantID, id); err != nil {
+		return httpx.ErrBadRequest("alert cannot be dispositioned (already promoted or closed)")
+	}
+	if s.feedback != nil && a.DetectionID != nil {
+		// Attribute the verdict to the firing rule. Best-effort: the alert is already closed.
+		_ = s.feedback.RecordDetectionFeedback(ctx, tenantID, *a.DetectionID, id, disposition, reason, by)
+	}
+	return nil
+}
 
 // Spec is the detection-supplied definition of an alert to raise.
 type Spec struct {

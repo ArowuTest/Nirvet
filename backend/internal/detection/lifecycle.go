@@ -195,6 +195,17 @@ func (s *Service) Transition(ctx context.Context, tenantID, id uuid.UUID, to, no
 	if !emergency && !validStage(to) {
 		return httpx.ErrBadRequest("unknown stage")
 	}
+	// DET-005 promotion gate: a non-emergency promotion to production requires passing test cases
+	// (config require_tests_for_production). Emergency deploy is the sanctioned senior-gated bypass.
+	if !emergency && to == StageProduction {
+		ok, reason, perr := s.promotable(ctx, tenantID, id)
+		if perr != nil {
+			return httpx.ErrInternal("could not evaluate promotion gate")
+		}
+		if !ok {
+			return httpx.ErrBadRequest(reason)
+		}
+	}
 	applied, bad, err := s.repo.Transition(ctx, tenantID, id, to, note, by, emergency)
 	if err != nil {
 		return httpx.ErrInternal("could not transition rule")

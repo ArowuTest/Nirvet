@@ -152,7 +152,10 @@ func main() {
 
 	detectionRepo := detection.NewRepository(db)
 	detEngine := detection.NewEngine(detectionRepo)
-	detectionH := detection.NewHandler(detection.NewService(detectionRepo, detEngine))
+	detectionSvc := detection.NewService(detectionRepo, detEngine)
+	detectionH := detection.NewHandler(detectionSvc)
+	// Close the DET-007 loop: an alert disposition feeds detection tuning (alert stays decoupled).
+	alertSvc.WithFeedbackSink(detectionSvc)
 
 	// Durable notification outbox: notifications are enqueued transactionally and
 	// delivered by a background dispatcher with retry (R3 §6.5 — no silent drop).
@@ -415,6 +418,7 @@ func main() {
 	mux.Handle("GET /alerts", provider(alertH.List))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
+	mux.Handle("POST /alerts/{id}/disposition", provider(alertH.Disposition)) // DET-007 FP feedback
 	mux.Handle("POST /alerts/{id}/promote", senior(incidentH.PromoteFromAlert))
 	mux.Handle("POST /alerts/{id}/summarise", aiProvider(aiH.SummariseAlert))
 	mux.Handle("POST /incidents/{id}/triage", aiProvider(aiH.TriageIncident))
@@ -429,6 +433,17 @@ func main() {
 	mux.Handle("PUT /detections/{id}/metadata", detEng(detectionH.SetMetadata))
 	mux.Handle("GET /detections/{id}/versions", provider(detectionH.Versions))
 	mux.Handle("POST /detections/{id}/rollback", detEng(detectionH.Rollback))
+	// §6.6 slice C: test-against-sample (DET-005), FP-feedback tuning (DET-007), coverage (DET-009), settings.
+	mux.Handle("POST /detections/{id}/tests", detEng(detectionH.AddTestCase))
+	mux.Handle("GET /detections/{id}/tests", provider(detectionH.ListTestCases))
+	mux.Handle("POST /detections/{id}/tests/run", provider(detectionH.RunTests))
+	mux.Handle("POST /detections/{id}/tests/samples", provider(detectionH.RunSamples))
+	mux.Handle("DELETE /detections/{id}/tests/{tid}", detEng(detectionH.DeleteTestCase))
+	mux.Handle("GET /detections/{id}/feedback", provider(detectionH.FeedbackStats))
+	mux.Handle("GET /detections/tuning", provider(detectionH.Tuning))
+	mux.Handle("GET /detections/coverage", provider(detectionH.Coverage))
+	mux.Handle("GET /detections/settings", provider(detectionH.GetSettings))
+	mux.Handle("PUT /detections/settings", detEng(detectionH.SetSettings))
 	// connectors
 	mux.Handle("GET /connectors/catalogue", provider(connectorH.Catalogue))
 	mux.Handle("GET /connectors", provider(connectorH.List))
