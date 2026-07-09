@@ -12,7 +12,7 @@ import (
 // TISettings are the per-tenant threat-intel tuning knobs. Defaults mirror the DB column defaults so a
 // tenant with no row still gets sane behaviour.
 type TISettings struct {
-	DecayHalfLifeDays      int `json:"decay_half_life_days"`      // confidence halves every N days of age
+	DecayHalfLifeDays      int `json:"decay_half_life_days"`     // confidence halves every N days of age
 	MinEffectiveConfidence int `json:"min_effective_confidence"` // a STIX match below this (after decay) stops firing
 	SightingBoostCap       int `json:"sighting_boost_cap"`       // max corroboration boost from sightings
 }

@@ -46,10 +46,10 @@ type Enricher struct {
 
 type entry struct {
 	inds      []Indicator
-	obs       []stixObservable   // retained so the pointers in `stix` stay valid
-	stix      []stixMatchEntry   // one per matchable literal (multi-value pattern expansion, slice B)
-	sightings map[string]int     // sighting count by object id (corroboration boost)
-	settings  TISettings         // per-tenant decay/boost tuning
+	obs       []stixObservable // retained so the pointers in `stix` stay valid
+	stix      []stixMatchEntry // one per matchable literal (multi-value pattern expansion, slice B)
+	sightings map[string]int   // sighting count by object id (corroboration boost)
+	settings  TISettings       // per-tenant decay/boost tuning
 	expires   time.Time
 }
 

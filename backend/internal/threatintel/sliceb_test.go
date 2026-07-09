@@ -15,7 +15,7 @@ func TestExtractPatternValues(t *testing.T) {
 		{`[ipv4-addr:value = '1.2.3.4' OR ipv4-addr:value = '5.6.7.8']`, []string{"1.2.3.4", "5.6.7.8"}},
 		{`[file:hashes.'SHA-256' = 'abc' AND file:name = 'evil.exe']`, []string{"abc", "evil.exe"}},
 		{`[ipv4-addr:value = '9.9.9.9' OR ipv4-addr:value = '9.9.9.9']`, []string{"9.9.9.9"}}, // dedup
-		{`[domain-name:value = '']`, nil}, // empty literal dropped
+		{`[domain-name:value = '']`, nil},                                                     // empty literal dropped
 		{`no brackets no quotes`, nil},
 	}
 	for _, c := range cases {

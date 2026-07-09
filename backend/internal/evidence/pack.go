@@ -33,10 +33,10 @@ type Pack struct {
 	Events          []eventstore.NormalizedEvent `json:"events"`
 	Assets          []asset.Asset                `json:"assets"`          // affected assets (§6.15), matched by alert refs
 	Vulnerabilities []vulnerability.Vuln         `json:"vulnerabilities"` // open vulns on those assets (§6.15 ASSET-002/007)
-	Attachments     []incident.Attachment        `json:"attachments"`      // chain-of-custody: full sha256/size/uploader per file (R5-M6)
+	Attachments     []incident.Attachment        `json:"attachments"`     // chain-of-custody: full sha256/size/uploader per file (R5-M6)
 	Audit           []audit.LogEntry             `json:"audit"`
-	AuditTruncated  bool                         `json:"audit_truncated"`  // R6: true when the audit trail hit the row cap and is NOT the complete record
-	AuditLimit      int                          `json:"audit_limit"`      // the cap applied when AuditTruncated is true
+	AuditTruncated  bool                         `json:"audit_truncated"` // R6: true when the audit trail hit the row cap and is NOT the complete record
+	AuditLimit      int                          `json:"audit_limit"`     // the cap applied when AuditTruncated is true
 	Manifest        Manifest                     `json:"manifest"`
 }
 

@@ -121,12 +121,12 @@ func runCases(rule *Rule, cases []TestCase) TestRun {
 
 // FeedbackStats is per-rule disposition tuning data (DET-007).
 type FeedbackStats struct {
-	RuleID           uuid.UUID           `json:"rule_id"`
-	Total            int                 `json:"total"`
-	ByDisposition    map[Disposition]int `json:"by_disposition"`
-	FalsePositives   int                 `json:"false_positives"`
-	FPRate           float64             `json:"fp_rate"`
-	TuningRecommended bool               `json:"tuning_recommended"`
+	RuleID            uuid.UUID           `json:"rule_id"`
+	Total             int                 `json:"total"`
+	ByDisposition     map[Disposition]int `json:"by_disposition"`
+	FalsePositives    int                 `json:"false_positives"`
+	FPRate            float64             `json:"fp_rate"`
+	TuningRecommended bool                `json:"tuning_recommended"`
 }
 
 // CoverageGap reports an active rule whose declared data-source dependencies are not being

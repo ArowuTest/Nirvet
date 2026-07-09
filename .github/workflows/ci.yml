@@ -31,6 +31,15 @@ jobs:
         run: |
           go build ./...
           go vet ./...
+      - name: Guard — gofmt (no formatting drift)
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean; run 'gofmt -w .':"
+            echo "$unformatted"
+            exit 1
+          fi
       - name: Guard — outbound HTTP must use netsafe.SafeClient (SSRF)
         working-directory: backend
         run: bash scripts/check-outbound-http.sh

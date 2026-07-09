@@ -17,12 +17,16 @@ type APIError struct {
 func (e *APIError) Error() string { return e.Message }
 
 // Common constructors.
-func ErrBadRequest(msg string) *APIError   { return &APIError{http.StatusBadRequest, "bad_request", msg} }
-func ErrUnauthorized(msg string) *APIError { return &APIError{http.StatusUnauthorized, "unauthorized", msg} }
-func ErrForbidden(msg string) *APIError    { return &APIError{http.StatusForbidden, "forbidden", msg} }
-func ErrNotFound(msg string) *APIError     { return &APIError{http.StatusNotFound, "not_found", msg} }
-func ErrConflict(msg string) *APIError     { return &APIError{http.StatusConflict, "conflict", msg} }
-func ErrInternal(msg string) *APIError     { return &APIError{http.StatusInternalServerError, "internal", msg} }
+func ErrBadRequest(msg string) *APIError { return &APIError{http.StatusBadRequest, "bad_request", msg} }
+func ErrUnauthorized(msg string) *APIError {
+	return &APIError{http.StatusUnauthorized, "unauthorized", msg}
+}
+func ErrForbidden(msg string) *APIError { return &APIError{http.StatusForbidden, "forbidden", msg} }
+func ErrNotFound(msg string) *APIError  { return &APIError{http.StatusNotFound, "not_found", msg} }
+func ErrConflict(msg string) *APIError  { return &APIError{http.StatusConflict, "conflict", msg} }
+func ErrInternal(msg string) *APIError {
+	return &APIError{http.StatusInternalServerError, "internal", msg}
+}
 func ErrTooManyRequests(msg string) *APIError {
 	return &APIError{http.StatusTooManyRequests, "rate_limited", msg}
 }

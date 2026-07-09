@@ -416,10 +416,10 @@ func main() {
 	// correlation (§6.7): risk-ranked clusters of related alerts
 	mux.Handle("GET /correlations", provider(correlationH.List))
 	mux.Handle("GET /correlations/{id}", provider(correlationH.Get))
-	mux.Handle("GET /correlations/storm", provider(correlationH.Storm))     // COR-008 storm status (literal beats {id})
-	mux.Handle("GET /correlations/metrics", provider(correlationH.Metrics)) // COR-010 over-correlation metric
+	mux.Handle("GET /correlations/storm", provider(correlationH.Storm))            // COR-008 storm status (literal beats {id})
+	mux.Handle("GET /correlations/metrics", provider(correlationH.Metrics))        // COR-010 over-correlation metric
 	mux.Handle("GET /correlations/{id}/explain", provider(correlationH.Explain))   // COR-006 risk breakdown
-	mux.Handle("PUT /correlations/{id}/override", provider(correlationH.Override))  // COR-009 analyst override
+	mux.Handle("PUT /correlations/{id}/override", provider(correlationH.Override)) // COR-009 analyst override
 	// COR-007 suppression / maintenance windows: create/delete withholds auto-promotion → senior.
 	mux.Handle("GET /correlation-suppressions", provider(correlationH.ListSuppressions))
 	mux.Handle("POST /correlation-suppressions", senior(correlationH.CreateSuppression))
