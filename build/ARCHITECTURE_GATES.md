@@ -1563,3 +1563,36 @@ confirmation of the reverse/unisolate action (V1 confirms isolate only); confirm
 - [ ] Reviewer confirms D-a..D-d (fail→status flip + reverse-exclusion; optional Confirm field; read-only poll needs no gate; 404/aged-out = alert-not-guess).
 - [ ] Owner confirms alert channel for a failed containment (durable notification via outbox = the proposed default).
 - [ ] On green → build R-1..R-4 test-first, fold in the LOW; reviewer pass on landing.
+
+### Revision — G-1/G-2 folded in (reviewer greenlit, owner agreed, pre-code)
+
+Reviewer confirmed D-a..D-d (D-a verified against the real `listReversibleExecutions` filter) and greenlit the
+build once these two folds are written in. Both are the reconciler asking the SAME two questions the destructive
+loop already turns on — *whose action, and did it really happen* — instead of flattening every `executed` row to
+"ours, and done":
+
+- **G-1 — poll the REAL machineAction id, not the display ref.** `connector_ref` is a bare machineAction id on a
+  fresh POST but a DISPLAY string (`own-isolate:<id>` / `foreign-isolate:<id>`) on a crash-resumed no-op row.
+  Polling the display string 404s → a false "unconfirmable" alert that never confirms. FOLD: the Defender Actioner
+  records the bare machineAction id in a dedicated `prior_state.action_id` in EVERY path (fresh POST → the returned
+  id; precheck-noop → the found active action's id). The reconciler polls `prior_state.action_id` (falling back to
+  `connector_ref` only if it is a bare id). `connector_ref` stays human-readable.
+- **G-2 — reconcile/alert ONLY on rows we caused.** The list query + loop process a row ONLY when
+  `prior_state.changed = true` (ours, and we effected it). A FOREIGN isolation (`changed=false`/`foreign=true`) or
+  an own no-op is never confirmed, never flipped to `failed`, never alerted — otherwise a foreign isolation that
+  MDE later reports Failed would fire a HIGH "containment failed" alarm for a containment that was never ours. The
+  SECURITY-DEFINER list filters `(prior_state->>'changed')::boolean IS TRUE`.
+
+**Owner decision — alert channel (BOTH).** A failed/stalled containment emits BOTH a HIGH-severity durable outbox
+notification AND an internal alert/incident, so it lands in the SOC's triage queue (not only an email).
+
+**Two pinning tests added to R-4 (the ones that would have caught G-1/G-2):**
+- G-1: isolate → crash → resume (own, `changed=true`, display `connector_ref`) → reconciler polls `action_id` →
+  MDE Succeeded → **confirmed=true** (no false 404/"unconfirmable").
+- G-2: foreign isolation present → fresh isolate no-ops (`changed=false`) → its machineAction reports Failed →
+  reconciler **skips it**: no `failed` flip, no alert (assert alert-count 0, row stays `executed`).
+
+**Checklist — CLEARED to build:**
+- [x] Reviewer confirmed D-a..D-d; G-1/G-2 folded above; landing review queued as reviewer task #37.
+- [x] Owner confirmed alert channel = BOTH outbox HIGH + internal alert/incident.
+- [ ] Build R-1..R-4 test-first (fold in the round-#34 LOW at R-2); ping reviewer on landing.
