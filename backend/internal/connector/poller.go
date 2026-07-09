@@ -113,7 +113,7 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 				p.log.Warn("poller: ingest failed", "connector", pc.ID, "err", err)
 				continue
 			}
-			if a.CreatedDateTime > newCheckpoint {
+			if checkpointAfter(a.CreatedDateTime, newCheckpoint) {
 				newCheckpoint = a.CreatedDateTime
 			}
 			total++
@@ -121,4 +121,21 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 		_ = p.repo.UpdateCheckpoint(ctx, pc.TenantID, pc.ID, newCheckpoint, "healthy")
 	}
 	return total, nil
+}
+
+// checkpointAfter reports whether candidate is chronologically after current. R6: the
+// Graph createdDateTime is compared as a TIME, not lexically — variable fractional-second
+// precision (".7Z" vs ".789Z") would sort wrong as strings and could rewind the watermark,
+// re-pulling already-ingested alerts. Falls back to string compare only if either value is
+// unparseable (empty current => any candidate advances it).
+func checkpointAfter(candidate, current string) bool {
+	if current == "" {
+		return candidate != ""
+	}
+	ct, cerr := time.Parse(time.RFC3339, candidate)
+	pt, perr := time.Parse(time.RFC3339, current)
+	if cerr != nil || perr != nil {
+		return candidate > current
+	}
+	return ct.After(pt)
 }

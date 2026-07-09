@@ -66,17 +66,22 @@ func (s *Service) VerifyLink(token string, now time.Time) (tenantID uuid.UUID, r
 	if !hmac.Equal([]byte(token[dot+1:]), []byte(s.sign(payload))) {
 		return uuid.Nil, "", errBadLink
 	}
-	parts := strings.Split(payload, "|")
-	if len(parts) != 3 {
+	// R6: the payload is tenant|resource|exp with tenant first and exp last; the RESOURCE may
+	// itself contain '|'. Split on the first and last delimiter (not strings.Split, which would
+	// reject an otherwise-valid signed token whose resource has a pipe) so resource is the middle.
+	firstPipe := strings.IndexByte(payload, '|')
+	lastPipe := strings.LastIndexByte(payload, '|')
+	if firstPipe <= 0 || lastPipe <= firstPipe {
 		return uuid.Nil, "", errBadLink
 	}
-	exp, cerr := strconv.ParseInt(parts[2], 10, 64)
+	tidStr, resourceStr, expStr := payload[:firstPipe], payload[firstPipe+1:lastPipe], payload[lastPipe+1:]
+	exp, cerr := strconv.ParseInt(expStr, 10, 64)
 	if cerr != nil || now.Unix() > exp {
 		return uuid.Nil, "", errBadLink
 	}
-	tid, perr := uuid.Parse(parts[0])
-	if perr != nil {
+	tid, perr := uuid.Parse(tidStr)
+	if perr != nil || resourceStr == "" {
 		return uuid.Nil, "", errBadLink
 	}
-	return tid, parts[1], nil
+	return tid, resourceStr, nil
 }

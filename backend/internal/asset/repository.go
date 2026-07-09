@@ -88,7 +88,12 @@ func (r *Repository) FindByRefs(ctx context.Context, tenantID uuid.UUID, refs []
 	}
 	var out []Asset
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT `+assetCols+` FROM assets WHERE ref = ANY($1) ORDER BY criticality DESC`, refs)
+		// R6: rank by criticality SEMANTICALLY — a lexical `criticality DESC` sorts
+		// medium>low>high>critical, surfacing the least-critical assets first to triage/AI.
+		rows, err := tx.Query(ctx, `SELECT `+assetCols+` FROM assets WHERE ref = ANY($1)
+			ORDER BY CASE criticality
+				WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,
+				ref ASC`, refs)
 		if err != nil {
 			return err
 		}

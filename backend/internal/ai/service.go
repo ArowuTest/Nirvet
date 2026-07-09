@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
@@ -38,12 +39,24 @@ func fenceBlock(lines []string) string {
 	for _, ln := range lines {
 		ln = strings.ReplaceAll(ln, sentinel, "")
 		if len(ln) > maxFieldLen {
-			ln = ln[:maxFieldLen] + "…(truncated)"
+			ln = truncateUTF8(ln, maxFieldLen) + "…(truncated)"
 		}
 		sb.WriteString(ln + "\n")
 	}
 	sb.WriteString("END UNTRUSTED DATA [" + sentinel + "]")
 	return sb.String()
+}
+
+// truncateUTF8 cuts s to at most max BYTES without splitting a multibyte rune (R6). A raw
+// byte slice on non-ASCII telemetry would emit invalid UTF-8 into the prompt / audit record.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 // auditMeta builds the audit metadata for an AI call: model + the full output text
@@ -53,7 +66,7 @@ func auditMeta(model, output string) map[string]any {
 	sum := sha256.Sum256([]byte(output))
 	stored := output
 	if len(stored) > 8000 {
-		stored = stored[:8000] + "…(truncated)"
+		stored = truncateUTF8(stored, 8000) + "…(truncated)"
 	}
 	return map[string]any{
 		"model":         model,

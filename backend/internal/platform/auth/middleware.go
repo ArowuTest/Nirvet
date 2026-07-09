@@ -157,16 +157,23 @@ func IsProviderRole(r Role) bool {
 
 // roleRank orders roles by privilege tier (higher = more privileged) for floor/cap comparisons —
 // SOAR approver floors (§6.11) and break-glass one-tier caps (§6.2). Single source of truth so those
-// callers don't each keep a divergent rank map. Provider seniors outrank customer roles; an unknown
-// role ranks 0.
+// callers don't each keep a divergent rank map. Provider seniors outrank customer roles. customer_viewer
+// is the lowest VALID tier (0); an UNKNOWN/garbage role ranks -1 so it satisfies no floor (fail-closed).
 var roleRank = map[Role]int{
 	RoleCustomerViewer: 0, RoleCustomerAdmin: 1,
 	RoleAnalystT1: 1, RoleAnalystT2: 2, RoleDetectionEng: 2,
 	RoleAnalystT3: 3, RoleSOCManager: 4, RolePlatformAdmin: 5,
 }
 
-// RoleRank returns a role's privilege tier (unknown roles rank 0).
-func RoleRank(r Role) int { return roleRank[r] }
+// RoleRank returns a role's privilege tier. R6: an unknown role returns -1 (not the map's zero
+// value, which would tie with customer_viewer and let a garbage role clear a viewer-level floor) —
+// so an unrecognized role fails every floor comparison rather than silently passing the lowest one.
+func RoleRank(r Role) int {
+	if rank, ok := roleRank[r]; ok {
+		return rank
+	}
+	return -1
+}
 
 // seniorRoleSet are the provider roles trusted with destructive/senior actions (close incident,
 // promote alert, create connector, reopen a closed case). Excludes analyst_t1 and detection_engineer.

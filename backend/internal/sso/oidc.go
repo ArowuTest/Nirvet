@@ -262,7 +262,12 @@ func rsaPublicKey(nB64, eB64 string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	// e is a big-endian unsigned integer, usually 65537 (AQAB).
+	// e is a big-endian unsigned integer, usually 65537 (AQAB). R6: guard the length —
+	// an oversized exponent would make `copy(buf[8-len(eb):], ...)` index with a negative
+	// bound and panic (a malformed/hostile JWKS should be a clean error, not a crash).
+	if len(eb) == 0 || len(eb) > 8 {
+		return nil, fmt.Errorf("oidc: unsupported RSA exponent size (%d bytes)", len(eb))
+	}
 	var e uint64
 	buf := make([]byte, 8)
 	copy(buf[8-len(eb):], eb)

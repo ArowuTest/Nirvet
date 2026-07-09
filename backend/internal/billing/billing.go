@@ -115,6 +115,12 @@ func (s *Service) Set(ctx context.Context, tenantID uuid.UUID, in Entitlements) 
 	if err := s.repo.Set(ctx, &in); err != nil {
 		return nil, httpx.ErrInternal("could not set entitlements")
 	}
+	// R6: invalidate the cached quota entry so a cap change takes effect immediately. The
+	// entry caches the tenant's cap alongside the count; without this a tightened cap would
+	// not bind until the TTL window elapsed (a raised cap would likewise stay throttled).
+	s.mu.Lock()
+	delete(s.quota, tenantID)
+	s.mu.Unlock()
 	return &in, nil
 }
 

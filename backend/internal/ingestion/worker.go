@@ -12,6 +12,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
+	"github.com/ArowuTest/nirvet/internal/platform/safe"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/google/uuid"
 )
@@ -54,9 +55,14 @@ func (wk *Worker) Start(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := wk.RunOnce(ctx); err != nil {
-				wk.log.Error("ingest worker error", "err", err)
-			}
+			// R6: guard the whole tick like the reconciler/reaper loops — per-job panics are already
+			// recovered in processGuarded, this covers a panic in Claim/Complete/Fail so the worker
+			// goroutine survives and keeps draining the queue.
+			safe.Do(wk.log, "ingest-worker", func() {
+				if _, err := wk.RunOnce(ctx); err != nil {
+					wk.log.Error("ingest worker error", "err", err)
+				}
+			})
 		}
 	}
 }

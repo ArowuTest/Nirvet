@@ -56,8 +56,13 @@ func TestRoleRank(t *testing.T) {
 	if RoleRank(RoleSOCManager) >= RoleRank(RolePlatformAdmin) {
 		t.Fatal("soc_manager must rank below platform_admin")
 	}
-	if RoleRank(RoleCustomerViewer) != 0 || RoleRank(Role("wizard")) != 0 {
-		t.Fatal("viewer and unknown roles must rank 0")
+	// customer_viewer is the lowest VALID tier (0); an unknown role must rank -1 so it clears no
+	// floor (fail-closed) — an unrecognised role tying with viewer at 0 would pass a viewer floor (R6).
+	if RoleRank(RoleCustomerViewer) != 0 {
+		t.Fatal("customer_viewer must rank 0")
+	}
+	if RoleRank(Role("wizard")) != -1 {
+		t.Fatal("an unknown role must rank -1 (fail-closed), not 0")
 	}
 }
 

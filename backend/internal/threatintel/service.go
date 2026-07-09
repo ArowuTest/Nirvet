@@ -253,6 +253,12 @@ func (s *Service) AddStix(ctx context.Context, tenantID uuid.UUID, in StixInput)
 		Source:             defaultStr(in.Source, "manual"),
 	}
 	o.Value = firstNonEmpty(in.Value, extractObservable(o.Type, o.Pattern, o.Raw))
+	// R6: bundle-imported objects keep their original bytes in Raw; a manually-added object had
+	// none, leaving Raw empty (so a later TAXII/evidence export of it lost the canonical STIX JSON).
+	// Serialize the assembled object as its own canonical 2.1 representation.
+	if raw, merr := json.Marshal(o); merr == nil {
+		o.Raw = json.RawMessage(raw)
+	}
 	if _, err := s.repo.UpsertStix(ctx, tenantID, o); err != nil {
 		return nil, httpx.ErrInternal("could not store STIX object")
 	}

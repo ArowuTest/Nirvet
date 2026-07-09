@@ -25,11 +25,11 @@ const (
 
 // Descriptor describes a connector type in the catalogue (backlog: Integration Roadmap).
 type Descriptor struct {
-	Key       string // "microsoft-365", "entra-id", "defender", ...
-	Name      string
-	Category  string // Identity | EDR | Cloud | Firewall | Ticketing | Generic
-	Direction Direction
-	Phase     string // MVP | V1 | V2
+	Key       string    `json:"key"`      // "microsoft-365", "entra-id", "defender", ...
+	Name      string    `json:"name"`     // R6: explicit snake_case tags — this is serialised by the
+	Category  string    `json:"category"` // /connectors/catalogue endpoint; tag-less fields would render
+	Direction Direction `json:"direction"` // as PascalCase, inconsistent with every other API payload.
+	Phase     string    `json:"phase"`    // Identity|EDR|Cloud|Firewall|Ticketing|Generic ; MVP|V1|V2
 }
 
 // Puller pulls events from a source into the platform (feeds ingestion → EventStore).

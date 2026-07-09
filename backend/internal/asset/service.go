@@ -2,6 +2,7 @@ package asset
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
@@ -98,7 +99,12 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Asset, error)
 func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Asset, error) {
 	a, err := s.repo.Get(ctx, tenantID, id)
 	if err != nil {
-		return nil, httpx.ErrNotFound("asset not found")
+		// R6: only a genuine no-row is a 404; a DB/RLS error must surface as 500, not be
+		// masked as "not found" (which would hide an outage and mislead the caller/on-call).
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, httpx.ErrNotFound("asset not found")
+		}
+		return nil, httpx.ErrInternal("could not load asset")
 	}
 	return a, nil
 }

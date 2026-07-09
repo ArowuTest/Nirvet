@@ -70,7 +70,10 @@ func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput
 
 	var sourceKey, keyHash string
 	if in.Kind == KindWebhook {
-		sourceKey = randomKey()
+		var kerr error
+		if sourceKey, kerr = randomKey(); kerr != nil {
+			return nil, httpx.ErrInternal("could not generate connector key")
+		}
 		keyHash = hashKey(sourceKey)
 	}
 
@@ -129,10 +132,14 @@ func (s *Service) IngestWebhook(ctx context.Context, connectorID uuid.UUID, prov
 	return accepted, nil
 }
 
-func randomKey() string {
+// randomKey mints a 256-bit webhook source key. R6: propagate a crypto/rand failure rather
+// than silently returning an all-zero (predictable) key that would authenticate any caller.
+func randomKey() (string, error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func hashKey(k string) string {
