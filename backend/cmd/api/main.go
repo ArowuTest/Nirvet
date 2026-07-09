@@ -465,6 +465,12 @@ func main() {
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	mux.Handle("GET /soar/action-catalog", provider(soarH.ListActionCatalog))
 	mux.Handle("PUT /soar/action-catalog", padmin(soarH.SetActionCatalog))
+	// §6.11 slice B: destructive-action safety config (read provider; write platform-admin — enabling
+	// real containment for a tenant and the global kill-switch are the highest-consequence toggles).
+	mux.Handle("GET /soar/settings", provider(soarH.GetSettings))
+	mux.Handle("PUT /soar/settings", padmin(soarH.SetSettings))
+	mux.Handle("GET /soar/platform", padmin(soarH.GetPlatform))
+	mux.Handle("PUT /soar/platform", padmin(soarH.SetPlatform))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
 	mux.Handle("POST /threat-intel", senior(threatH.Add))

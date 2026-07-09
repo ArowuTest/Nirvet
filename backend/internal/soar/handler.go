@@ -58,6 +58,59 @@ func (h *Handler) SetActionCatalog(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, a)
 }
 
+// GetSettings handles GET /soar/settings (per-tenant destructive-action config).
+func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	set, err := h.svc.Settings(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, set)
+}
+
+// SetSettings handles PUT /soar/settings (platform-admin: enable/tune destructive actions for a tenant).
+func (h *Handler) SetSettings(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in SoarSettings
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	set, err := h.svc.SetSettings(r.Context(), p, p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, set)
+}
+
+// GetPlatform handles GET /soar/platform (global kill-switch + dry-run).
+func (h *Handler) GetPlatform(w http.ResponseWriter, r *http.Request) {
+	f, err := h.svc.PlatformFlags(r.Context())
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, f)
+}
+
+// SetPlatform handles PUT /soar/platform (platform-admin: the global kill-switch / dry-run emergency stop).
+func (h *Handler) SetPlatform(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in PlatformFlags
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	f, err := h.svc.SetPlatformFlags(r.Context(), p, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, f)
+}
+
 // ListPlaybooks handles GET /playbooks.
 func (h *Handler) ListPlaybooks(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
