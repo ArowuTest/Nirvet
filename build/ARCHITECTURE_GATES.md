@@ -1781,7 +1781,25 @@ last-of-role → withheld; **self (Nirvet's own SP) → withheld, immutable**. D
 - [x] D1 owner: Entra disable-user.  [x] D2 reviewer: terminal-state fail-SAFE PreCheck.  [x] D3 reviewer: Confirm=nil.
 - [x] D4 reviewer: revoke_sessions non-reversible → separate later gate.
 - [x] D5 reviewer: protected-identity guard (L1 deny-list + L2 dynamic role/last-of-role + L3 self) folded in above.
-- [ ] Reviewer clears the updated gate → build E-1..E-4 test-first; dedicated adversarial round on landing.
+- [x] Reviewer clears the updated gate → build E-1..E-4 test-first; dedicated adversarial round on landing.
+
+**✅ LANDED & DORMANT (HEAD 3965d42) — awaiting the dedicated Entra adversarial round.** E-1 Graph client +
+base-URL allowlist (a11409b) · E-2 D5 protected-identity guard + migration 0066 (e424fe9) · E-3 disable/enable
+Actioners + shared `soarwire` alerter + api/worker wiring (3965d42) · E-4 adversarial suite
+`sliceb_entra_integration_test.go` — all 5 probes GREEN on a fresh migrated DB: disable-happy (1 PATCH, no alert) /
+foreign-already-disabled → reverse never re-enables (0 PATCH) / own-crash → stranded-disabled, reverse does NOT
+re-enable (fail-SAFE) / clean reverse re-enables (2 PATCH) / D5 self+deny-list+Global-Admin+last-of-role → all
+StatusAwaitingCustomer + 0 PATCH + 1 alert + "protected" note. soar + connector suites green. Real containment
+engages ONLY when a tenant sets `destructive_enabled` (default OFF).
+
+**Latent bug fixed on landing:** migration 0066 (E-2) used expression-based inline `UNIQUE (COALESCE(...), lower(...))`
+table constraints — Postgres rejects expressions in inline constraints (`syntax error at or near "("`), so 0066
+failed on EVERY fresh-DB migration, silently breaking CI/prod deploy since e424fe9. Replaced with `CREATE UNIQUE
+INDEX`. Verified 66/66 apply from zero with the 4 seeded protected roles present. Lesson reinforced: run a
+FROM-ZERO migrate in CI, not just against a reused dev DB.
+
+Reviewer next: dedicated Entra adversarial round (own/foreign/crash/reverse/D5 as headline probes) + the two named
+follow-ons (Defender-host protected-guard seam retrofit; live Entra/Defender sandbox smoke, needs owner creds).
 
 **✅ CLEARED FOR E-1 (reviewer, D1–D5 all verified against source).** Build E-1→E-4 test-first, SOAR A+B+C green each
 chunk; dedicated adversarial round on landing (headline probes: D5 deny-listed/Global-Admin/last-of-role/self →
