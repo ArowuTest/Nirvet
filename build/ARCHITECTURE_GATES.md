@@ -1727,3 +1727,7 @@ is materially more surface for a rare availability case; recommend deferring it.
 **Note on the generalization:** this means comment-less vendors attribute by fail-safe terminal state, and only
 vendors with a writable per-action field (MDE requestorComment, a PAN tag) can be BOTH own-reversible-after-crash
 AND fail-closed. That is a real, documented property of the destructive model, not a limitation to paper over.
+
+**Decision log:** D1 CONFIRMED by owner — second vendor = **Entra ID disable-user**. Remaining before E-1: reviewer's
+pre-code confirming pass on the terminal-state fail-SAFE attribution decision (+ D3 confirm nil-vs-read-back). D4
+(revoke_sessions non-reversible) stays a separate later gate. No code until that pass.
