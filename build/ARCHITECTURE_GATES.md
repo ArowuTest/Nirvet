@@ -1054,3 +1054,100 @@ hot path (worker-batched); settings/quality tenant-scoped; reads are GET. Verify
 across full/partial/empty mappings, drift-flag threshold) + integration (worker normalizes events → flush →
 quality reflects avg confidence + parser version, a low-confidence source is flagged drift, settings
 round-trip, tenant isolation). Heartbeat green.
+
+---
+
+## Gate — §6.11 SOAR slice B: REAL containment executors — DESIGN REVIEW (pre-code) — Jul 2026
+
+**Status: DESIGN ONLY. No code until the appointed reviewer signs off.** This is the single
+highest-consequence change on the roadmap: the platform goes from "can do nothing destructive"
+(notify-only, everything else a truthful simulation) to "can really isolate a host / disable an
+account / block an IP." Every SOAR control shipped R2–R4 (authority-to-act, four-eyes, claim-then-act,
+per-action + credential-decrypt audit-in-tx, panic recovery, override-may-only-raise-risk) was rated
+"latent, safe *because only notify executes*." Slice B removes that safety net, so the design is
+reviewed on paper first and the implementation gets a dedicated adversarial review round, not a
+general sweep.
+
+### The core design tension (the decision to review)
+
+Slice A's `ActionExecutor.Execute(ctx, tx, …)` runs INSIDE the run's DB transaction so effect + audit
++ run-state change commit together (R4-M2: effect and audit can never diverge). That is correct and
+must stay for INTERNAL executors (notify/ticket/evidence/report — their "effect" is a DB row). It is
+**wrong for a real connector call**: an external HTTP effect to Defender/Entra/PAN (a) cannot be rolled
+back if the tx later aborts, and (b) must never run with a DB tx open across the network (long tx,
+locks held, pool starvation). So slice B splits the seam:
+
+- **Internal executors** — unchanged: in-tx `ActionExecutor`.
+- **Connector (destructive) executors** — a **durable two-phase** model, NOT in-tx:
+  - **Phase A (tx1, atomic):** re-verify gate (authority + approval + kill-switch + enablement + rate
+    budget), then CLAIM the step — write an `soar_action_execution` row `status=executing` with a unique
+    idempotency key `(run_id, step_index)`, decrement the rate-limit budget, and write the INTENT audit
+    (who/what/target/params-hash) + the credential-decrypt audit. Commit. Nothing external yet.
+  - **Phase B (no tx):** perform the connector call via the Actioner (vault-decrypted creds, netsafe
+    SafeClient — already CI-enforced). Bounded timeout < any reclaim window.
+  - **Phase C (tx2, atomic):** record the OUTCOME (`executed`/`failed` + connector response ref) + the
+    result audit, and advance run state. Commit.
+  - **Crash-safety / idempotency:** a reaper re-drives `status=executing` rows past a visibility timeout;
+    re-drive is safe because (i) the claim's idempotency key prevents a second claim, and (ii) the
+    Actioner call is required to be idempotent or pre-checked (e.g. "isolate" is a no-op if already
+    isolated). An action whose idempotency cannot be guaranteed is Class-gated to require human confirm.
+
+### Safety envelope (all REQUIRED before any external call)
+
+1. **Authority + four-eyes chain, re-checked in Phase A** (never trust the Phase-1 read): §9.5 —
+   Class0 none; Class1 policy-optional; Class2 analyst approval unless pre-authorized; Class3
+   (disable user / revoke sessions / isolate endpoint / block domain|IP) customer/senior approval
+   unless an explicit pre-authorized-containment policy; **Class4 (network-wide block, mass quarantine,
+   cloud lockdown) — incident-commander + customer authority, NO full autonomous execution (stays
+   manual/awaiting_customer in V1)**. Four-eyes: approver ≠ requester (already enforced); real executor
+   path must re-assert it at claim time.
+2. **Kill-switch + per-tenant enablement + global dry-run** (config, admin-gated, tighten-only):
+   - a GLOBAL platform-admin kill-switch that forces every connector executor to simulate;
+   - a PER-TENANT `destructive_actions_enabled` flag (default OFF — a tenant opts in);
+   - a `dry_run` mode (global and per-tenant) where the Actioner logs the exact call it WOULD make and
+     returns simulated, for validation before go-live. Precedence: kill-switch > tenant-disabled >
+     dry-run > live. Any of them ⇒ no external effect.
+3. **Rate-limit / circuit-breaker on destructive actions** (config, per-tenant, per-risk-class):
+   a budget (e.g. N Class3 actions / hour) decremented in Phase A; exhausted ⇒ the step is withheld
+   (awaiting_customer) not executed — bounds the blast radius of a compromised or looping playbook
+   (mass-isolation). A global circuit-breaker trips connector execution off if the platform-wide
+   destructive rate spikes.
+4. **Audit-in-tx, three records:** intent (Phase A), credential-decrypt (Phase A, when vault creds are
+   unsealed), outcome (Phase C) — all in the immutable audit_log, each in its phase's tx so a partial
+   crash still leaves the intent + who authorized it.
+5. **Reversibility (SOAR-010 business-continuity):** every containment action declares its inverse
+   (isolate↔release, disable↔enable, block↔unblock); the execution row records enough (connector, target,
+   prior state where derivable) to reverse; a one-click reverse run is itself a gated SOAR action. No
+   containment without a defined undo.
+
+### Connector Actioner registry
+
+`Actioner` (parallel to the read-side connector Puller): `(connector_key, action) -> func(ctx, creds,
+target, params) (ref, error)`, vault-decrypted creds + SafeClient. Real actions map to vendor APIs —
+Defender isolate/release machine, Entra/Okta disable-user + revoke-sessions, PAN/edl block-IP/domain.
+Unregistered (connector_key, action) ⇒ truthful simulation (unchanged). Registration, not an engine
+change. Each Actioner is idempotent or pre-checks current state.
+
+### Invariants / out-of-scope
+
+Class4 never auto-executes in V1. RLS tenant-scoped on the new execution + config tables. Overrides
+may only tighten (raise risk / narrow authority) — never loosen. Kill-switch/enablement/dry-run/rate
+config is admin-gated and tighten-only. Connector clients are netsafe-only (CI-enforced). Full
+branch/wait DSL (SOAR-001) stays deferred; slice B is linear playbooks with real leaf executors.
+
+### Verify plan (and the adversarial review this feature gets)
+
+Unit: gate precedence (kill-switch>disabled>dry-run>live), rate-budget decrement + withhold, idempotency
+key rejects double-claim, reverse-action mapping. Integration: a Class3 action with a mock Actioner runs
+the two-phase path (claim→call→outcome), crash between Phase B and C re-drives without double-effect,
+dry-run makes no call, tenant-disabled/kill-switch force simulate, rate-limit withholds past budget,
+four-eyes re-checked at claim, tenant isolation, Class4 stays manual. Adversarial round to probe:
+double-execute under retry, gate bypass via Phase-1/Phase-A TOCTOU, rate-limit evasion, credential
+exposure in audit/logs, a compromised-playbook mass-containment scenario.
+
+### Reviewer checklist (please confirm before I write code)
+- [ ] Two-phase durable model (vs in-tx) is the right call for external effects, and the crash/idempotency story holds.
+- [ ] Safety envelope is complete (nothing missing that would let a destructive action fire un-authorized, un-audited, un-bounded, or un-reversible).
+- [ ] Class3 vs Class4 handling matches §9.5 (Class4 = no autonomous in V1).
+- [ ] Config surfaces (kill-switch, per-tenant enablement, dry-run, rate-limit) are the right set and are tighten-only.
+- [ ] Anything you want added to the adversarial round.
