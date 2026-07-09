@@ -1464,3 +1464,8 @@ round-trips the four classes above.
 - [x] §1.4 scope clarification recorded (ingest-from-open-agent is in-scope ingestion; no agent build).
 - [ ] Build after SOAR slice C, pulled by a concrete sovereign/low-maturity engagement.
 - [ ] Reviewer pass on landing (tenant-isolation + silent-source health are the specific checks).
+
+### Round #34 remediation (7d69689) — H-1 + M-1 fixed
+- **H-1 (High)** crash-resume reversibility, fixed at the supervisor SEAM: `phaseBC(resumed bool)` — a resume + PreCheck-noop attributes `changed=true` (our own in-flight action → reverse can release), a fresh claim finding target already-done stays `changed=false` (foreign). Covers every future PreCheck Actioner. Test: reverse-after-crash-resume asserts unisolate fires once.
+- **M-1 (Medium)** OData filter injection escaped (`odataQuote` doubles single quotes in resolveMachineID + latestMachineAction). Unit-tested.
+- 8 round-#34 scenarios green (C-3 no-double-POST intact); full repo suite green on fresh DB. Reviewer re-verify = task #36. `destructive_enabled` stays OFF.
