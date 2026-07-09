@@ -19,10 +19,21 @@ import (
 	"github.com/google/uuid"
 )
 
+// ActionCorrelatorParam is the params key under which the supervisor injects a STABLE per-step correlator
+// (run_id:step_index — identical across the first attempt and any crash-resume of the same step). It is the
+// OWN-vs-FOREIGN attribution mechanism for a PreCheck destructive Actioner (MUST-3, round #34 H-1b): the
+// Actioner MUST embed this correlator in the external action's audit trail / comment when it EXECUTES, and
+// when a PreCheck finds an already-active action it MUST return prior_state.changed=true ONLY if that action
+// carries THIS correlator (ours → reverse may undo it), false otherwise (a foreign pre-existing effect →
+// reverse must NEVER undo it). Attributing by "is this a resume" is a fail-open: the claim proves we CLAIMED
+// (Phase A), not that we caused the external effect (Phase B).
+const ActionCorrelatorParam = "nirvet.correlator"
+
 // Actioner performs one real connector action (Phase B) and declares the safety properties the engine
 // enforces. Fn runs OUTSIDE any DB transaction: it makes the external call with vault-decrypted creds
 // (netsafe.SafeClient — CI-enforced) and returns a connector reference plus the OBSERVED prior state
-// (MUST-3) so a later reverse only undoes what actually changed.
+// (MUST-3) so a later reverse only undoes what actually changed. A PreCheck destructive Actioner MUST
+// attribute own-vs-foreign via ActionCorrelatorParam (see its doc) so reverse never undoes a foreign effect.
 type Actioner struct {
 	ConnectorKey string
 	Action       string

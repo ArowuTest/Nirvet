@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -32,15 +33,19 @@ func (defCreds) ConnectorCreds(context.Context, uuid.UUID, string) ([]byte, erro
 	return json.Marshal(connector.Credentials{ClientID: "cid", ClientSecret: "sec", AzureTenant: "az"})
 }
 
-// mdeMock is a stateful Microsoft Defender for Endpoint API. After an isolate POST it reports a Pending
-// Isolate machineAction (so PreCheck on a resume sees the in-flight action — the C-3 signal). failIsolate
-// makes the isolate POST 500 (C-6).
+// mdeMock is a stateful Microsoft Defender for Endpoint API. It captures the requestorComment from OUR own
+// isolate POST and echoes it as a Pending Isolate machineAction (so a resume's PreCheck sees the in-flight
+// action AND its correlator — the C-3 + H-1b signals). foreignComment, if set before the run, makes the
+// machine appear isolated by a FOREIGN actor (a Pending Isolate carrying a non-nirvet comment) independent
+// of any POST of ours — the case that was previously unrepresentable. failIsolate makes isolate 500 (C-6).
 type mdeMock struct {
 	srv          *httptest.Server
 	isolateCalls int32
 	unisolCalls  int32
-	pending      int32 // set once isolate has been POSTed
 	failIsolate  bool
+	mu           sync.Mutex
+	ownComment   string // requestorComment captured from our isolate POST
+	foreign      string // non-empty => a foreign Pending Isolate exists regardless of our POSTs
 }
 
 func newMDEMock(t *testing.T) *mdeMock {
@@ -54,21 +59,39 @@ func newMDEMock(t *testing.T) *mdeMock {
 		_, _ = w.Write([]byte(`{"value":[{"id":"m-guid-1","computerDnsName":"WIN-EDR-3"}]}`))
 	})
 	mux.HandleFunc("/api/machineactions", func(w http.ResponseWriter, r *http.Request) {
-		filter := r.URL.Query().Get("$filter")
-		// Report a Pending Isolate only once one has been POSTed, and only for the Isolate query.
-		if atomic.LoadInt32(&m.pending) == 1 && strings.Contains(filter, "'Isolate'") {
-			_, _ = w.Write([]byte(`{"value":[{"id":"prior-iso","type":"Isolate","status":"Pending"}]}`))
+		// Only the Isolate query has a prior action in these tests; the Unisolate query is always empty so
+		// reverse's release PreCheck proceeds to POST.
+		if !strings.Contains(r.URL.Query().Get("$filter"), "'Isolate'") {
+			_, _ = w.Write([]byte(`{"value":[]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"value":[]}`))
+		m.mu.Lock()
+		comment := m.foreign // a foreign isolation shadows our own if both somehow present
+		if comment == "" {
+			comment = m.ownComment
+		}
+		m.mu.Unlock()
+		if comment == "" {
+			_, _ = w.Write([]byte(`{"value":[]}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"value": []map[string]string{{"id": "prior-iso", "type": "Isolate", "status": "Pending", "requestorComment": comment}},
+		})
 	})
 	mux.HandleFunc("/api/machines/m-guid-1/isolate", func(w http.ResponseWriter, r *http.Request) {
 		if m.failIsolate {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		var body struct {
+			Comment string `json:"Comment"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		m.mu.Lock()
+		m.ownComment = body.Comment
+		m.mu.Unlock()
 		atomic.AddInt32(&m.isolateCalls, 1)
-		atomic.StoreInt32(&m.pending, 1)
 		_, _ = w.Write([]byte(`{"id":"iso-act-1","type":"Isolate","status":"Pending"}`))
 	})
 	mux.HandleFunc("/api/machines/m-guid-1/unisolate", func(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +255,52 @@ func TestDefenderRound_ReverseAfterCrashResume(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&mock.unisolCalls); n != 1 {
 		t.Fatalf("H-1: reverse must unisolate the crash-resumed isolation once, got %d", n)
+	}
+}
+
+// H-1b (round #34 re-verify, THE FAIL-OPEN MIRROR): a machine already isolated by a FOREIGN actor, with a
+// crash in our claim→commit window, must NOT be released by reverse. Our fresh isolate step no-ops on the
+// foreign isolation (changed=false, correlator absent) → crash → resume → still foreign (correlator absent)
+// → reverse MUST skip. Before the correlator fix, the `resumed`-flag override flipped changed=true and
+// reverse released a containment we never created. `foreign` is set independent of any POST of ours.
+func TestDefenderRound_ForeignIsolationNotReversed(t *testing.T) {
+	sup, repo, db, tid, mock := setupDefender(t)
+	ctx := context.Background()
+	actor := auth.Principal{UserID: uuid.New(), Email: "a@t", TenantID: tid}
+	_ = repo.SetSoarSettings(ctx, tid, soar.SoarSettings{DestructiveEnabled: true, MaxClass3PerHour: 5})
+	mock.mu.Lock()
+	mock.foreign = "Defender automated investigation isolate" // NO nirvet correlator → foreign
+	mock.mu.Unlock()
+	runID := uuid.New()
+
+	// Fresh isolate: PreCheck finds the foreign isolation → no POST, changed=false.
+	if st, _, err := sup.ExecuteConnectorStep(ctx, tid, actor, runID, 0, isoAct(), "host:WIN-EDR-3", nil); err != nil || st != soar.StatusExecuted {
+		t.Fatalf("isolate should no-op on foreign isolation, got %s err=%v", st, err)
+	}
+	if n := atomic.LoadInt32(&mock.isolateCalls); n != 0 {
+		t.Fatalf("must not POST when a foreign isolation already exists, got %d", n)
+	}
+	// Crash in the claim→commit window, then resume.
+	if err := db.WithTenant(ctx, tid, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `UPDATE soar_action_execution SET status='executing' WHERE run_id=$1 AND step_index=0`, runID)
+		return e
+	}); err != nil {
+		t.Fatalf("simulate crash: %v", err)
+	}
+	if st, _, err := sup.ExecuteConnectorStep(ctx, tid, actor, runID, 0, isoAct(), "host:WIN-EDR-3", nil); err != nil || st != soar.StatusExecuted {
+		t.Fatalf("resume should re-affirm no-op, got %s err=%v", st, err)
+	}
+
+	// Reverse MUST NOT release a foreign containment.
+	res, err := sup.ReverseRun(ctx, tid, actor, runID)
+	if err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	if n := atomic.LoadInt32(&mock.unisolCalls); n != 0 {
+		t.Fatalf("H-1b FAIL-OPEN: reverse released a FOREIGN isolation (%d unisolate POSTs, want 0); res=%+v", n, res)
+	}
+	if len(res) == 1 && res[0].Status == "reversed" {
+		t.Fatalf("H-1b: foreign isolation must be skipped_noop, not reversed: %+v", res)
 	}
 }
 

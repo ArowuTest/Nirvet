@@ -10,8 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ArowuTest/nirvet/internal/soar"
 )
 
 // statefulMDE serves the MDE endpoints and counts isolate POSTs. If priorIsolate!=\"\", the
@@ -102,6 +105,59 @@ func TestDefenderActioner_IsolateThenPrecheckSkips(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&m2.isolateCalls); got != 0 {
 		t.Fatalf("crash-while-Pending guard: expected 0 isolate POSTs, got %d (ref=%q)", got, ref2)
+	}
+}
+
+// H-1b (round #34 re-verify): an already-active isolation is attributed as OURS (reversible) only if its
+// requestorComment carries this step's correlator; a foreign comment stays non-reversible. Neither case
+// re-POSTs (C-3). This is the unit-level locus of the fail-open fix.
+func TestDefenderActioner_ForeignVsOwnAttribution(t *testing.T) {
+	run := func(priorComment, correlator string) (map[string]any, int32) {
+		var isoCalls int32
+		mux := http.NewServeMux()
+		mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, `{"access_token":"mde-token","expires_in":3600}`)
+		})
+		mux.HandleFunc("/api/machines", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, `{"value":[{"id":"m-guid-1","computerDnsName":"WIN-EDR-3"}]}`)
+		})
+		mux.HandleFunc("/api/machineactions", func(w http.ResponseWriter, r *http.Request) {
+			if !strings.Contains(r.URL.Query().Get("$filter"), "'Isolate'") {
+				_, _ = io.WriteString(w, `{"value":[]}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]string{{"id": "prior", "type": "Isolate", "status": "Pending", "requestorComment": priorComment}},
+			})
+		})
+		mux.HandleFunc("/api/machines/m-guid-1/isolate", func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&isoCalls, 1)
+			_, _ = io.WriteString(w, `{"id":"iso-act-1","type":"Isolate","status":"Pending"}`)
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+		d := NewDefenderActioner(srv.URL+"/token", srv.URL, "", srv.Client())
+		iso := actionerByAction(d, "isolate_endpoint")
+		params := map[string]any{}
+		if correlator != "" {
+			params[soar.ActionCorrelatorParam] = correlator
+		}
+		_, prior, err := iso(context.Background(), defenderCreds(t), "host:WIN-EDR-3", params)
+		if err != nil {
+			t.Fatalf("isolate: %v", err)
+		}
+		return prior, atomic.LoadInt32(&isoCalls)
+	}
+
+	// Own: the active isolation carries our correlator → reversible, no re-POST.
+	own, ownPosts := run("Nirvet SOAR Isolate [nirvet:R123:0]", "R123:0")
+	if own["changed"] != true || ownPosts != 0 {
+		t.Fatalf("own action must be changed=true with no re-POST: changed=%v posts=%d", own["changed"], ownPosts)
+	}
+	// Foreign: a different comment → NOT reversible, no re-POST (C-3 still holds).
+	foreign, foreignPosts := run("Defender automated investigation", "R123:0")
+	if foreign["changed"] != false || foreignPosts != 0 {
+		t.Fatalf("foreign action must be changed=false with no re-POST: changed=%v posts=%d", foreign["changed"], foreignPosts)
 	}
 }
 

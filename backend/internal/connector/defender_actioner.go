@@ -70,17 +70,26 @@ func (d *DefenderActioner) act(ctx context.Context, creds []byte, target string,
 	if err != nil {
 		return "", nil, err
 	}
+	correlator, _ := params[soar.ActionCorrelatorParam].(string)
 
-	// PreCheck (C-3): a matching action already in flight/complete means we must NOT act again. This is
-	// history-based, not terminal-state-based, so a crash-while-Pending resume sees the Pending action.
+	// PreCheck (C-3): a matching action already in flight/complete means we must NOT re-POST (history-based,
+	// so a crash-while-Pending resume still sees it). Attribution (round #34 H-1b): the action is OURS only
+	// if its requestorComment carries THIS step's correlator → changed=true (reverse may release it). A
+	// FOREIGN active isolation (another run, Defender auto-investigation, a manual analyst) carries a
+	// different/absent correlator → changed=false so reverse never releases a containment we did not create.
 	if act, found, err := client.latestMachineAction(ctx, machineID, actionType); err != nil {
 		return "", nil, err
 	} else if found && mdeActionActive(act.Status) {
-		return "already-" + strings.ToLower(actionType) + ":" + act.ID,
-			map[string]any{"changed": false, "machine_id": machineID, "precheck_status": act.Status}, nil
+		mine := correlator != "" && strings.Contains(act.RequestorComment, correlator)
+		kind := "foreign"
+		if mine {
+			kind = "own"
+		}
+		return kind + "-" + strings.ToLower(actionType) + ":" + act.ID,
+			map[string]any{"changed": mine, "foreign": !mine, "machine_id": machineID, "precheck_status": act.Status}, nil
 	}
 
-	comment := mdeComment(actionType, params)
+	comment := mdeComment(actionType, params, correlator)
 	var ref string
 	if actionType == "Isolate" {
 		ref, err = client.isolate(ctx, machineID, comment)
@@ -129,11 +138,16 @@ func mdeActionActive(status string) bool {
 	return false
 }
 
-// mdeComment builds the audit comment sent to MDE for the action.
-func mdeComment(actionType string, params map[string]any) string {
+// mdeComment builds the audit comment sent to MDE for the action. The correlator (run_id:step_index) is
+// embedded so a later PreCheck (on this step or a crash-resume of it) can recognise OUR own action and keep
+// it reversible, while a foreign isolation — carrying no/other correlator — stays non-reversible (H-1b).
+func mdeComment(actionType string, params map[string]any, correlator string) string {
 	c := "Nirvet SOAR " + actionType
 	if r, ok := params["reverse_of"].(string); ok && r != "" {
 		c += " (reverse of " + r + ")"
+	}
+	if correlator != "" {
+		c += " [nirvet:" + correlator + "]"
 	}
 	return c
 }

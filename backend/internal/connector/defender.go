@@ -165,11 +165,13 @@ func (c *defenderClient) resolveMachineID(ctx context.Context, hostname string) 
 }
 
 // machineActionStatus is the subset of an MDE machineAction we read for PreCheck. Status is one of
-// Pending | InProgress | Succeeded | Failed | Cancelled | TimeOut.
+// Pending | InProgress | Succeeded | Failed | Cancelled | TimeOut. RequestorComment carries the correlator
+// we embed on our own actions (round #34 H-1b own-vs-foreign attribution).
 type machineActionStatus struct {
-	ID     string `json:"id"`
-	Type   string `json:"type"`
-	Status string `json:"status"`
+	ID               string `json:"id"`
+	Type             string `json:"type"`
+	Status           string `json:"status"`
+	RequestorComment string `json:"requestorComment"`
 }
 
 // latestMachineAction returns the most recent machineAction of a type for a machine (found=false if
