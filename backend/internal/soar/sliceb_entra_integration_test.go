@@ -208,13 +208,13 @@ func TestEntraRound_CleanReverseReEnables(t *testing.T) {
 	}
 }
 
-// D5 guard: each protected case → withheld+escalate+alert, no PATCH.
+// D5 guard: each protected case → withheld+escalate+alert, no PATCH. global_admin seeds TWO enabled members to
+// prove a protected role is withheld because it IS protected (holds-protected-role), not because the target is the
+// last member — the last-of-role sweep was removed as over-escalating (see TestEntraRound_SoleMemberNonProtectedRoleAllowed).
 func TestEntraRound_D5Guards(t *testing.T) {
 	ctx := context.Background()
 	ga := []map[string]string{{"id": "role-ga", "displayName": "Global Administrator", "roleTemplateId": "t"}}
 	gaMembersTwo := map[string][]map[string]any{"role-ga": {{"id": "u-1", "accountEnabled": true}, {"id": "u-2", "accountEnabled": true}}}
-	customRole := []map[string]string{{"id": "role-x", "displayName": "Custom Admin", "roleTemplateId": "t"}}
-	customSolo := map[string][]map[string]any{"role-x": {{"id": "u-1", "accountEnabled": true}}}
 
 	cases := []struct {
 		name   string
@@ -226,7 +226,6 @@ func TestEntraRound_D5Guards(t *testing.T) {
 		{"self", "user:app-self", nil, nil, ""},
 		{"deny_list", "user:u-1", nil, nil, "u-1"},
 		{"global_admin", "user:u-1", ga, gaMembersTwo, ""},
-		{"last_of_role", "user:u-1", customRole, customSolo, ""},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -255,5 +254,26 @@ func TestEntraRound_D5Guards(t *testing.T) {
 				t.Fatalf("%s note should say protected: %q", tc.name, note)
 			}
 		})
+	}
+}
+
+// De-escalation (reviewer low note): the SOLE enabled member of a NON-protected directory role must NOT be
+// withheld — the tenant never marked that role protected, so containment proceeds. This is the behaviour change
+// from removing the over-escalating all-roles last-of-role sweep; protected roles remain fully covered
+// (TestEntraRound_D5Guards/global_admin) regardless of member count.
+func TestEntraRound_SoleMemberNonProtectedRoleAllowed(t *testing.T) {
+	custom := []map[string]string{{"id": "role-x", "displayName": "Custom Reader", "roleTemplateId": "t"}}
+	solo := map[string][]map[string]any{"role-x": {{"id": "u-1", "accountEnabled": true}}}
+	sup, _, _, tid, m, al := setupEntra(t, true, custom, solo)
+	ctx := context.Background()
+	st, note, err := sup.ExecuteConnectorStep(ctx, tid, entraActor(tid), uuid.New(), 0, disableAct(), "user:u-1", nil)
+	if err != nil || st != soar.StatusExecuted {
+		t.Fatalf("sole member of a non-protected role must execute (no over-escalation), got %s note=%q err=%v", st, note, err)
+	}
+	if n := atomic.LoadInt32(&m.patchCalls); n != 1 {
+		t.Fatalf("expected the disable to PATCH once, got %d", n)
+	}
+	if al.failed(tid) != 0 {
+		t.Fatalf("no withhold alert expected for a non-protected role, got %d", al.failed(tid))
 	}
 }

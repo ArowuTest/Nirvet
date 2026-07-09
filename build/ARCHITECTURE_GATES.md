@@ -1801,6 +1801,27 @@ FROM-ZERO migrate in CI, not just against a reused dev DB.
 Reviewer next: dedicated Entra adversarial round (own/foreign/crash/reverse/D5 as headline probes) + the two named
 follow-ons (Defender-host protected-guard seam retrofit; live Entra/Defender sandbox smoke, needs owner creds).
 
+**✅ DEDICATED ADVERSARIAL ROUND COMPLETE — CLEAN (no High, no Medium; report `NIRVET_REVIEW_ENTRA_VENDOR_ROUND.md`).**
+Reviewer verified against source: D5 pre-mutation + fail-closed at the caller (Graph error → withhold, not proceed);
+terminal-state fail-safe (no H-1b analog possible — no correlator, no resume-override); no OData injection (target
+is path-addressed `/users/{PathEscape(ref)}`, not a `$filter`); 0066 from-zero fix confirmed. Cleared for the owner's
+live Graph sandbox smoke (app-reg needs `User.ReadWrite.All` + `RoleManagement.Read.Directory`/`Directory.Read.All`);
+`destructive_enabled` stays OFF until then.
+
+Two LOW/tuning notes CLOSED (post-round tuning, suites green):
+- **last-of-role over-escalation** — the guard already blanket-withholds ANY member of a protected role, which is
+  strictly stronger than "last member of a protected role", so scoping last-of-role to the protected set (reviewer
+  remedy) made it fully subsumed. Removed the all-roles last-of-role sweep (it only over-escalated on the last
+  member of trivial NON-protected roles) + its per-role Graph round-trips. Protected roles fully covered by the
+  blanket check regardless of member count. New probe `TestEntraRound_SoleMemberNonProtectedRoleAllowed` +
+  updated `D5Guards/global_admin` (2 members, proves withheld-because-protected not because-last) + connector unit
+  test flipped. Client keeps `roleEnabledMemberCount` for a future refined per-role policy. **Posture note for
+  reviewer:** I kept the blanket "holds-protected-role → withhold" stance (you did not flag it); relaxing it to
+  "withhold only the last member of a protected role" is a security-posture change I did not make without your call.
+- **L3-self vacuous under app-only auth** — documented in the guard header: client-credentials `client_id` is a
+  service-principal appId, not a `/users` object, so it can't match a real user disable; retained as a cheap
+  immutable invariant that also covers a future delegated-auth mode. No logic change.
+
 **✅ CLEARED FOR E-1 (reviewer, D1–D5 all verified against source).** Build E-1→E-4 test-first, SOAR A+B+C green each
 chunk; dedicated adversarial round on landing (headline probes: D5 deny-listed/Global-Admin/last-of-role/self →
 withheld+escalate+alert; terminal-state fail-safe foreign-already-disabled → reverse never re-enables). Reviewer note

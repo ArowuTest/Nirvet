@@ -1,7 +1,9 @@
 package connector
 
-// §6.11 D5 E-2 — the Entra protected-identity guard: L1 deny-list, L2 protected-role + last-of-role, L3 self,
-// vendor-aware no-op, and Graph-error → fail-closed (returns err so the supervisor withholds). Pure unit test.
+// §6.11 D5 E-2 — the Entra protected-identity guard: L1 deny-list, L2 protected-role (blanket membership withhold),
+// L3 self, vendor-aware no-op, and Graph-error → fail-closed (returns err so the supervisor withholds). Pure unit
+// test. NOTE: the old all-roles last-of-role sweep was removed as over-escalating (reviewer low note) — sole
+// membership of a NON-protected role no longer withholds; protected roles are covered by the blanket check below.
 
 import (
 	"context"
@@ -93,13 +95,14 @@ func TestEntraGuard_Layers(t *testing.T) {
 		t.Fatalf("protected role must be protected: p=%v reason=%q err=%v", p, reason, err)
 	}
 
-	// L2 last-of-role: holds a role NOT in the protected set but is its sole enabled member.
+	// De-escalation: sole enabled member of a role NOT in the protected set → NOT protected (the removed
+	// over-escalating last-of-role sweep used to withhold this; the tenant never marked the role protected).
 	oneMember := map[string][]map[string]any{"role-x": {{"id": "u-1", "accountEnabled": true}, {"id": "u-9", "accountEnabled": false}}}
 	xRole := []map[string]string{{"id": "role-x", "displayName": "Custom Admin", "roleTemplateId": "tmpl"}}
 	srv = guardGraph(t, true, xRole, oneMember, false)
 	g = NewEntraProtectedGuard(mockCfg{roles: []string{"global administrator"}}, srv.URL+"/token", srv.URL, "", srv.Client())
-	if p, reason, err := g.CheckProtected(ctx, tid, "entra-id", "disable_user", "user:u-1", guardCreds("app")); !p || err != nil || !strings.Contains(reason, "last enabled member") {
-		t.Fatalf("last-of-role must be protected: p=%v reason=%q err=%v", p, reason, err)
+	if p, reason, err := g.CheckProtected(ctx, tid, "entra-id", "disable_user", "user:u-1", guardCreds("app")); p || err != nil {
+		t.Fatalf("sole member of a non-protected role must NOT be protected: p=%v reason=%q err=%v", p, reason, err)
 	}
 
 	// Clean: enabled, no roles, not denied → NOT protected.

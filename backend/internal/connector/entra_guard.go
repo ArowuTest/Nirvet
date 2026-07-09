@@ -3,9 +3,15 @@ package connector
 // §6.11 D5 protected-identity guard — the Entra implementation of soar.ProtectedTargetGuard. Refuses (→ the
 // supervisor withholds + escalates) a disable against a protected identity, three layers deep:
 //   L1 static deny-list (protected_identities: break-glass / critical service accounts, per-tenant + global).
-//   L2 dynamic Graph directory-role check (a static list misses people): holds a protected role, OR is the
-//      LAST enabled member of ANY directory role (last-of-role — best-effort/TOCTOU: no cross-Graph transaction).
-//   L3 self-protection: never the identity Nirvet authenticates as (the connector client_id).
+//   L2 dynamic Graph directory-role check (a static list misses people): the target holds a protected directory
+//      role. This is a BLANKET withhold on protected-role membership — strictly stronger than a "last enabled
+//      member of a protected role" check, so scoping the old all-roles last-of-role sweep to the protected set
+//      (reviewer note) makes it fully subsumed by this check; we therefore no longer run a separate last-of-role
+//      sweep (it only added over-escalation on trivial NON-protected roles the tenant never deemed protected).
+//   L3 self-protection: never the identity Nirvet authenticates as (the connector client_id). Effectively vacuous
+//      under app-only (client-credentials) auth — client_id is a service-principal appId, not a /users object, so
+//      it won't match a real user disable — but retained as a cheap immutable invariant that also covers a future
+//      delegated-auth mode where the connector could authenticate AS a user.
 // A Graph error propagates up so the supervisor fails CLOSED. No-ops for non-entra connectors (vendor-aware seam).
 
 import (
@@ -96,7 +102,11 @@ func (g *EntraProtectedGuard) CheckProtected(ctx context.Context, tenantID uuid.
 		return true, "self-protection: the identity Nirvet authenticates as", nil
 	}
 
-	// L2 dynamic directory-role check + last-of-role.
+	// L2 dynamic directory-role check: withhold if the target holds ANY protected directory role. This blanket
+	// membership withhold is strictly stronger than a last-of-a-protected-role check, so (per reviewer note) we do
+	// NOT run a separate all-roles last-of-role sweep — it only over-escalated on the last member of trivial
+	// NON-protected roles the tenant never deemed protected. Protected roles are fully covered here regardless of
+	// member count; the client keeps roleEnabledMemberCount for a possible future refined per-role policy.
 	protRoles, err := g.cfg.ProtectedRoles(ctx, tenantID)
 	if err != nil {
 		return false, "", err
@@ -109,16 +119,6 @@ func (g *EntraProtectedGuard) CheckProtected(ctx context.Context, tenantID uuid.
 	for _, role := range roles {
 		if protSet[strings.ToLower(role.DisplayName)] {
 			return true, "holds protected directory role: " + role.DisplayName, nil
-		}
-	}
-	// last-of-role: disabling this user must not empty ANY directory role (all are privileged) of enabled members.
-	for _, role := range roles {
-		n, err := client.roleEnabledMemberCount(ctx, role.ID)
-		if err != nil {
-			return false, "", err
-		}
-		if n <= 1 {
-			return true, "last enabled member of directory role: " + role.DisplayName, nil
 		}
 	}
 	return false, "", nil
