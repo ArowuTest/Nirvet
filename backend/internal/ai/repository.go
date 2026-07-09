@@ -25,6 +25,7 @@ type providerRow struct {
 	BaseURL   string // "" when NULL (non-openai kinds)
 	Model     string
 	APIKeyRef string // "" when NULL (keyless local model, or anthropic-from-config default)
+	IsGlobal  bool   // the effective row is the global default (no tenant override) — governs the key-unseal scope (A-5)
 	HasRow    bool
 }
 
@@ -40,12 +41,13 @@ func (r *Repository) ProviderConfig(ctx context.Context, tenantID uuid.UUID) (pr
 		// Tenant row wins over the global (NULL) row: NULLS LAST puts the tenant's own row first.
 		var baseURL, apiKeyRef *string
 		var kind, model string
+		var isGlobal bool
 		qerr := tx.QueryRow(ctx, `
-			SELECT provider_kind, base_url, model, api_key_ref
+			SELECT provider_kind, base_url, model, api_key_ref, (tenant_id IS NULL) AS is_global
 			  FROM ai_provider
 			 WHERE tenant_id = app_current_tenant() OR tenant_id IS NULL
 			 ORDER BY tenant_id NULLS LAST
-			 LIMIT 1`).Scan(&kind, &baseURL, &model, &apiKeyRef)
+			 LIMIT 1`).Scan(&kind, &baseURL, &model, &apiKeyRef, &isGlobal)
 		switch {
 		case errors.Is(qerr, pgx.ErrNoRows):
 			// leave HasRow=false
@@ -55,6 +57,7 @@ func (r *Repository) ProviderConfig(ctx context.Context, tenantID uuid.UUID) (pr
 			row.HasRow = true
 			row.Kind = ProviderKind(kind)
 			row.Model = model
+			row.IsGlobal = isGlobal
 			if baseURL != nil {
 				row.BaseURL = *baseURL
 			}

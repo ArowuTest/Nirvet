@@ -266,6 +266,10 @@ func main() {
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
 	aiSvc.WithIncidentContext(incidentSvc, assetSvc)
 	aiH := ai.NewHandler(aiSvc)
+	// §6.12 #117 admin-configurable AI providers: config surface (global default + per-tenant override + platform
+	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
+	// boundary. DORMANT — the seeded global anthropic row keeps current behavior until an admin changes it.
+	aiCfgH := ai.NewConfigHandler(ai.NewConfigService(ai.NewRepository(db), vault))
 	reportingH := reporting.NewHandler(reporting.NewService(db, events))
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
@@ -449,6 +453,16 @@ func main() {
 	mux.Handle("POST /alerts/{id}/promote", senior(incidentH.PromoteFromAlert))
 	mux.Handle("POST /alerts/{id}/summarise", aiProvider(aiH.SummariseAlert))
 	mux.Handle("POST /incidents/{id}/triage", aiProvider(aiH.TriageIncident))
+	// §6.12 #117 AI-provider config. Platform-admin: global default + allowlist + per-tenant policy. Tenant-admin:
+	// own override (kind must be within policy; base_url must be allowlisted — enforced at save in ConfigService).
+	mux.Handle("GET /admin/ai/provider", padmin(aiCfgH.GetGlobalProvider))
+	mux.Handle("PUT /admin/ai/provider", padmin(aiCfgH.SetGlobalProvider))
+	mux.Handle("GET /admin/ai/allowed-endpoints", padmin(aiCfgH.ListAllowedEndpoints))
+	mux.Handle("POST /admin/ai/allowed-endpoints", padmin(aiCfgH.AddAllowedEndpoint))
+	mux.Handle("DELETE /admin/ai/allowed-endpoints/{id}", padmin(aiCfgH.DeleteAllowedEndpoint))
+	mux.Handle("PUT /admin/tenants/{id}/ai-policy", padmin(aiCfgH.SetTenantPolicy))
+	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
+	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
 	// detection engineering
 	mux.Handle("GET /detections", provider(detectionH.List))
 	mux.Handle("POST /detections", detEng(detectionH.Create))
