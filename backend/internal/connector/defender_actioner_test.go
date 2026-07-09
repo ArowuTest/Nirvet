@@ -159,6 +159,62 @@ func TestDefenderActioner_ForeignVsOwnAttribution(t *testing.T) {
 	if foreign["changed"] != false || foreignPosts != 0 {
 		t.Fatalf("foreign action must be changed=false with no re-POST: changed=%v posts=%d", foreign["changed"], foreignPosts)
 	}
+	// Round-#34 LOW: a delimited token means step :1 must NOT match another step's :10 comment.
+	collide, _ := run("Nirvet SOAR Isolate [nirvet:R123:10]", "R123:1")
+	if collide["changed"] != false {
+		t.Fatalf("delimited token must prevent :1 matching :10, got changed=%v", collide["changed"])
+	}
+	// And the exact delimited token DOES match its own step.
+	own10, _ := run("Nirvet SOAR Isolate [nirvet:R123:10]", "R123:10")
+	if own10["changed"] != true {
+		t.Fatalf("exact correlator token must match, got changed=%v", own10["changed"])
+	}
+}
+
+// R-2: confirm() maps MDE machineAction terminal state → (done, success), and treats a 404/aged-out
+// action as unconfirmable (done=false, "NotFound") rather than a false failure (D-d).
+func TestDefenderActioner_Confirm(t *testing.T) {
+	cases := []struct {
+		status     string
+		code       int
+		done, succ bool
+		want       string
+	}{
+		{"Succeeded", 200, true, true, "Succeeded"},
+		{"Failed", 200, true, false, "Failed"},
+		{"Cancelled", 200, true, false, "Cancelled"},
+		{"TimeOut", 200, true, false, "TimeOut"},
+		{"Pending", 200, false, false, "Pending"},
+		{"InProgress", 200, false, false, "InProgress"},
+		{"", 404, false, false, "NotFound"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.want, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, `{"access_token":"mde-token","expires_in":3600}`)
+			})
+			mux.HandleFunc("/api/machineactions/act-1", func(w http.ResponseWriter, r *http.Request) {
+				if tc.code == 404 {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]string{"id": "act-1", "type": "Isolate", "status": tc.status})
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			d := NewDefenderActioner(srv.URL+"/token", srv.URL, "", srv.Client())
+			done, succ, status, err := d.confirm(context.Background(), defenderCreds(t), "act-1")
+			if err != nil {
+				t.Fatalf("confirm: %v", err)
+			}
+			if done != tc.done || succ != tc.succ || status != tc.want {
+				t.Fatalf("status %q → done=%v succ=%v status=%q; want done=%v succ=%v status=%q",
+					tc.status, done, succ, status, tc.done, tc.succ, tc.want)
+			}
+		})
+	}
 }
 
 func TestDefenderActioner_Release(t *testing.T) {

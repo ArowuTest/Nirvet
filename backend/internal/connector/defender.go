@@ -201,6 +201,28 @@ func (c *defenderClient) latestMachineAction(ctx context.Context, machineID, act
 	return &out.Value[0], true, nil
 }
 
+// getMachineAction fetches a single machineAction by id (the completion reconciler's confirm poll). Returns
+// the action, the HTTP status code (so a 404 = aged-out/unknown can be handled as "unconfirmable", not a
+// failure — D-d), and any transport error.
+func (c *defenderClient) getMachineAction(ctx context.Context, actionID string) (*machineActionStatus, int, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/machineactions/"+url.PathEscape(actionID), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, resp.StatusCode, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode, fmt.Errorf("mde machineaction: status %d", resp.StatusCode)
+	}
+	var a machineActionStatus
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return &a, resp.StatusCode, nil
+}
+
 // isolate submits a Full isolation and returns the machineAction id (async — the action starts Pending).
 func (c *defenderClient) isolate(ctx context.Context, machineID, comment string) (string, error) {
 	return c.postAction(ctx, "/api/machines/"+machineID+"/isolate", map[string]any{"Comment": comment, "IsolationType": "Full"})

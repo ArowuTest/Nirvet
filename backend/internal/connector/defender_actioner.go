@@ -47,6 +47,7 @@ func (d *DefenderActioner) Actioners() []soar.Actioner {
 			Fn: func(ctx context.Context, creds []byte, target string, params map[string]any) (string, map[string]any, error) {
 				return d.act(ctx, creds, target, params, "Isolate")
 			},
+			Confirm: d.confirm,
 		},
 		{
 			ConnectorKey: string(KindDefender), Action: "release_endpoint",
@@ -54,6 +55,7 @@ func (d *DefenderActioner) Actioners() []soar.Actioner {
 			Fn: func(ctx context.Context, creds []byte, target string, params map[string]any) (string, map[string]any, error) {
 				return d.act(ctx, creds, target, params, "Unisolate")
 			},
+			Confirm: d.confirm,
 		},
 	}
 }
@@ -80,13 +82,16 @@ func (d *DefenderActioner) act(ctx context.Context, creds []byte, target string,
 	if act, found, err := client.latestMachineAction(ctx, machineID, actionType); err != nil {
 		return "", nil, err
 	} else if found && mdeActionActive(act.Status) {
-		mine := correlator != "" && strings.Contains(act.RequestorComment, correlator)
+		// Round-#34 LOW fold-in: match the DELIMITED correlator token `[nirvet:<corr>]`, not the bare
+		// `<run>:<step>` — so `:1` can never be a substring of `:10`. prior_state carries the BARE action id
+		// (G-1) for the reconciler to poll, regardless of the human-readable display ref.
+		mine := correlator != "" && strings.Contains(act.RequestorComment, correlatorToken(correlator))
 		kind := "foreign"
 		if mine {
 			kind = "own"
 		}
 		return kind + "-" + strings.ToLower(actionType) + ":" + act.ID,
-			map[string]any{"changed": mine, "foreign": !mine, "machine_id": machineID, "precheck_status": act.Status}, nil
+			map[string]any{"changed": mine, "foreign": !mine, "machine_id": machineID, "precheck_status": act.Status, "action_id": act.ID}, nil
 	}
 
 	comment := mdeComment(actionType, params, correlator)
@@ -99,7 +104,31 @@ func (d *DefenderActioner) act(ctx context.Context, creds []byte, target string,
 	if err != nil {
 		return "", map[string]any{"changed": false, "machine_id": machineID}, err
 	}
-	return ref, map[string]any{"changed": true, "machine_id": machineID}, nil
+	return ref, map[string]any{"changed": true, "machine_id": machineID, "action_id": ref}, nil
+}
+
+// confirm polls the terminal state of a submitted machineAction (completion reconciler, D-3). done=terminal;
+// success=Succeeded; a 404/aged-out action is (done=false, "NotFound") — unconfirmable, never a false failure.
+func (d *DefenderActioner) confirm(ctx context.Context, creds []byte, actionRef string) (done bool, success bool, status string, err error) {
+	var cb Credentials
+	if e := json.Unmarshal(creds, &cb); e != nil {
+		return false, false, "", fmt.Errorf("defender: bad credentials bundle: %w", e)
+	}
+	act, code, e := d.clientFor(cb).getMachineAction(ctx, actionRef)
+	if e != nil {
+		return false, false, "", e
+	}
+	if code == http.StatusNotFound || act == nil {
+		return false, false, "NotFound", nil
+	}
+	switch strings.ToLower(strings.TrimSpace(act.Status)) {
+	case "succeeded":
+		return true, true, act.Status, nil
+	case "failed", "cancelled", "timeout":
+		return true, false, act.Status, nil
+	default: // pending | inprogress — not terminal yet
+		return false, false, act.Status, nil
+	}
 }
 
 func (d *DefenderActioner) clientFor(cb Credentials) *defenderClient {
@@ -138,16 +167,21 @@ func mdeActionActive(status string) bool {
 	return false
 }
 
+// correlatorToken is the DELIMITED form of a correlator embedded in / matched against the MDE comment. The
+// closing `]` makes it collision-free (`[nirvet:R:1]` is not a substring of `[nirvet:R:10]`) — round-#34 LOW.
+func correlatorToken(correlator string) string { return "[nirvet:" + correlator + "]" }
+
 // mdeComment builds the audit comment sent to MDE for the action. The correlator (run_id:step_index) is
-// embedded so a later PreCheck (on this step or a crash-resume of it) can recognise OUR own action and keep
-// it reversible, while a foreign isolation — carrying no/other correlator — stays non-reversible (H-1b).
+// embedded as a delimited token so a later PreCheck (on this step or a crash-resume of it) can recognise OUR
+// own action and keep it reversible, while a foreign isolation — carrying no/other correlator — stays
+// non-reversible (H-1b).
 func mdeComment(actionType string, params map[string]any, correlator string) string {
 	c := "Nirvet SOAR " + actionType
 	if r, ok := params["reverse_of"].(string); ok && r != "" {
 		c += " (reverse of " + r + ")"
 	}
 	if correlator != "" {
-		c += " [nirvet:" + correlator + "]"
+		c += " " + correlatorToken(correlator)
 	}
 	return c
 }

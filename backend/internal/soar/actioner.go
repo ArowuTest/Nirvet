@@ -42,8 +42,15 @@ type Actioner struct {
 	Reversible   bool   // has a defined undo
 	Inverse      string // action_key of the undo (required when Reversible)
 	// Fn performs the effect. creds are the vault-decrypted connector credentials; target is the entity
-	// (host/user/ip); returns (connector reference, observed prior state, error).
+	// (host/user/ip); returns (connector reference, observed prior state, error). A PreCheck Actioner must
+	// also record the bare vendor action id in priorState["action_id"] (the completion reconciler's poll key,
+	// G-1) — never a display-prefixed string.
 	Fn func(ctx context.Context, creds []byte, target string, params map[string]any) (ref string, priorState map[string]any, err error)
+	// Confirm (OPTIONAL) polls the vendor for a submitted async action's terminal state (completion
+	// reconciler, D-3). actionRef is priorState["action_id"] (the bare vendor id). Returns done (terminal),
+	// success (the effect actually took hold), the raw vendor status, and err. nil ⇒ synchronous action with
+	// nothing to confirm (the reconciler marks it confirmed on sight).
+	Confirm func(ctx context.Context, creds []byte, actionRef string) (done bool, success bool, status string, err error)
 }
 
 // key is the registry key: connector_key + ":" + action.
