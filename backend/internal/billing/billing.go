@@ -132,11 +132,19 @@ func (s *Service) WithinIngestQuota(ctx context.Context, tenantID uuid.UUID, add
 	now := time.Now()
 	today := now.YearDay()
 
+	stale := func(e *quotaEntry) bool { return e == nil || now.After(e.expires) || e.day != today }
+
 	s.mu.Lock()
-	e := s.quota[tenantID]
+	cur := s.quota[tenantID]
+	needRefresh := stale(cur)
 	s.mu.Unlock()
 
-	if e == nil || now.After(e.expires) || e.day != today {
+	// The DB count runs OUTSIDE the lock (so one tenant's refresh doesn't serialize every other
+	// tenant's admit). Carry-forward Low: on re-lock we DOUBLE-CHECK and always operate on the
+	// map's entry — if two goroutines both refreshed on a boundary, only the first installs; the
+	// second discards its fresh copy and increments the shared entry, so no increment is lost.
+	var fresh *quotaEntry
+	if needRefresh {
 		ent, err := s.repo.Get(ctx, tenantID)
 		if err != nil {
 			return true, err
@@ -145,14 +153,21 @@ func (s *Service) WithinIngestQuota(ctx context.Context, tenantID uuid.UUID, add
 		if err != nil {
 			return true, err
 		}
-		e = &quotaEntry{cap: ent.EventsPerDay, count: n, day: today, expires: now.Add(quotaCacheTTL)}
-		s.mu.Lock()
-		s.quota[tenantID] = e
-		s.mu.Unlock()
+		fresh = &quotaEntry{cap: ent.EventsPerDay, count: n, day: today, expires: now.Add(quotaCacheTTL)}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	e := s.quota[tenantID]
+	if fresh != nil && stale(e) {
+		s.quota[tenantID] = fresh // first refresher wins the boundary
+		e = fresh
+	}
+	if e == nil {
+		// The entry was invalidated (Set) between our read and this lock, and we had no fresh copy
+		// to install. Fail-open for this one event (availability); the next call refreshes.
+		return true, nil
+	}
 	// Re-check the day under the lock in case a concurrent refresh rolled it over.
 	if e.day != today {
 		e.count, e.day, e.expires = 0, today, now.Add(quotaCacheTTL)

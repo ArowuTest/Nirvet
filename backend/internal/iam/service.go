@@ -155,8 +155,11 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 		secret, derr := s.cipher.Decrypt(u.TenantID, u.MFASecret)
 		if derr != nil || !totp.Validate(string(secret), mfaCode, time.Now()) {
 			// A wrong/absent MFA code counts toward lockout — brute-forcing the 6-digit
-			// code is a login failure just like a wrong password.
-			_ = s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow)
+			// code is a login failure just like a wrong password. Log a swallowed counter-write
+			// for symmetry with the password path (a lost increment can defeat the lockout).
+			if ferr := s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow); ferr != nil {
+				slog.Warn("failed to record MFA login failure (lockout may not trip)", "tenant", u.TenantID, "user", u.ID, "err", ferr)
+			}
 			return nil, httpx.ErrUnauthorized("invalid or missing MFA code")
 		}
 	}

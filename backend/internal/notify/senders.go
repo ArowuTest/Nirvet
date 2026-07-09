@@ -3,8 +3,10 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/smtp"
 	"net/url"
@@ -162,9 +164,70 @@ func (c *emailChannel) Send(ctx context.Context, m Message) error {
 		m.Body + "\r\n")
 	send := c.send
 	if send == nil {
-		send = smtp.SendMail // performs STARTTLS when the server advertises it
+		send = boundedSendMail // STARTTLS when advertised, with a hard connection deadline
 	}
 	return send(addr, auth, s.FromAddress, []string{m.To}, msg)
+}
+
+// emailSendDeadline bounds the whole SMTP exchange. It is deliberately below the outbox reclaim
+// window (120s) so a hung/slow SMTP server aborts the connection BEFORE a second instance reclaims
+// the outbox row — otherwise a late delivery from the stalled send would duplicate the email
+// (carry-forward Low). A timeout that only stopped waiting wouldn't help: the abort must close the
+// connection so no late delivery can happen.
+const emailSendDeadline = 90 * time.Second
+
+// boundedSendMail is smtp.SendMail with a dial timeout + a deadline on the whole exchange, so the
+// send can never outlive the outbox reclaim window. STARTTLS is used when the server advertises it.
+func boundedSendMail(addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	if err != nil {
+		return err
+	}
+	if derr := conn.SetDeadline(time.Now().Add(emailSendDeadline)); derr != nil {
+		conn.Close()
+		return derr
+	}
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	defer client.Close()
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: host}); err != nil {
+			return err
+		}
+	}
+	if a != nil {
+		if ok, _ := client.Extension("AUTH"); ok {
+			if err := client.Auth(a); err != nil {
+				return err
+			}
+		}
+	}
+	if err := client.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := client.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := client.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return client.Quit()
 }
 
 // smsChannel delivers over a tenant-configured SMS provider (generic JSON POST, COMM-001).

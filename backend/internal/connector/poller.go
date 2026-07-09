@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/ArowuTest/nirvet/internal/platform/safe"
 )
 
@@ -29,7 +30,9 @@ type Poller struct {
 
 // NewPoller builds the poller.
 func NewPoller(repo *Repository, vault *Vault, ingest *ingestion.Service, log *slog.Logger) *Poller {
-	return &Poller{repo: repo, vault: vault, ingest: ingest, log: log, http: &http.Client{Timeout: 30 * time.Second}}
+	// Carry-forward Low: SafeClient so a misconfigured/hostile token or Graph URL cannot reach
+	// internal hosts (defense-in-depth before any tenant-settable Graph base URL).
+	return &Poller{repo: repo, vault: vault, ingest: ingest, log: log, http: netsafe.SafeClient(30 * time.Second)}
 }
 
 // WithEndpoints overrides the token/graph base URLs (used by tests).

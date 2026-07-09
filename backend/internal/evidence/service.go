@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
@@ -196,7 +197,7 @@ func sectionChecksums(p *Pack) map[string]string {
 // with the (stably-ordered) section checksums. Because it includes generated_at/by,
 // tenant and schema, altering any of those — not just a section — invalidates the
 // signature (R2 H-B, envelope was previously unhashed).
-func digestInput(schemaVersion, generatedBy string, generatedAt time.Time, tenantID uuid.UUID, sc map[string]string) []byte {
+func digestInput(schemaVersion, generatedBy string, generatedAt time.Time, tenantID uuid.UUID, auditTruncated bool, auditLimit int, sc map[string]string) []byte {
 	keys := make([]string, 0, len(sc))
 	for k := range sc {
 		keys = append(keys, k)
@@ -207,6 +208,11 @@ func digestInput(schemaVersion, generatedBy string, generatedAt time.Time, tenan
 	b = append(b, "generated_at="+generatedAt.UTC().Format(time.RFC3339Nano)+"\n"...)
 	b = append(b, "generated_by="+generatedBy+"\n"...)
 	b = append(b, "tenant="+tenantID.String()+"\n"...)
+	// Carry-forward Low: the audit completeness metadata is NOT derivable from the section data
+	// (a truncated audit list looks whole), so it must be inside the signed message — otherwise a
+	// forger could flip audit_truncated:true→false and the pack would still verify.
+	b = append(b, "audit_truncated="+strconv.FormatBool(auditTruncated)+"\n"...)
+	b = append(b, "audit_limit="+strconv.Itoa(auditLimit)+"\n"...)
 	for _, k := range keys {
 		b = append(b, k+":"+sc[k]+";"...)
 	}
@@ -226,7 +232,7 @@ func (s *Service) buildManifest(p *Pack) Manifest {
 		"attachments":     len(p.Attachments),
 		"audit":           len(p.Audit),
 	}
-	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, sc)
+	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, p.AuditTruncated, p.AuditLimit, sc)
 	digest := sha256.Sum256(msg)
 	m := Manifest{
 		Algorithm:       "sha256",
@@ -269,7 +275,7 @@ func Verify(p *Pack, trustedPubKey ed25519.PublicKey) error {
 		}
 	}
 	// 2. Recompute the signed message from the (verified) section checksums + envelope.
-	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, got)
+	msg := digestInput(p.SchemaVersion, p.GeneratedBy, p.GeneratedAt, p.TenantID, p.AuditTruncated, p.AuditLimit, got)
 	// 3. Verify the signature against the TRUSTED key.
 	sig, err := base64.StdEncoding.DecodeString(p.Manifest.Signature.Value)
 	if err != nil {

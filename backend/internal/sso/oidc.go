@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -40,9 +41,12 @@ type Client struct {
 	discover func(ctx context.Context, issuer string) (*Metadata, error)
 }
 
-// NewClient builds a client with real discovery over HTTPS.
+// NewClient builds a client with real discovery over HTTPS. The HTTP client is a
+// netsafe.SafeClient (H-NEW): discovery, token exchange and JWKS are all fetched from
+// tenant-controlled URLs (issuer + the endpoints in its discovery doc), so the dial-time
+// guard rejects internal/metadata IPs (SSRF / DNS-rebinding safe) on every outbound call.
 func NewClient() *Client {
-	c := &Client{http: &http.Client{Timeout: 15 * time.Second}}
+	c := &Client{http: netsafe.SafeClient(15 * time.Second)}
 	c.discover = c.discoverHTTP
 	return c
 }

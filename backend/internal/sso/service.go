@@ -3,6 +3,7 @@ package sso
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
@@ -47,6 +49,16 @@ func NewService(repo *Repository, oidc *Client, cipher crypto.SecretCipher, dir 
 func (s *Service) CreateConnection(ctx context.Context, tenantID uuid.UUID, in CreateInput) (*Connection, error) {
 	if in.Issuer == "" || in.ClientID == "" || in.ClientSecret == "" || in.RedirectURI == "" {
 		return nil, httpx.ErrBadRequest("issuer, client_id, client_secret and redirect_uri are required")
+	}
+	// H-NEW: validate the issuer at save time (absolute https + non-internal host). Discovery,
+	// token exchange and JWKS all fetch from URLs derived from this tenant-controlled issuer; the
+	// SafeClient guards the dial, this rejects an obvious internal/metadata issuer at the door.
+	iu, perr := url.Parse(strings.TrimSpace(in.Issuer))
+	if perr != nil || iu.Scheme != "https" || iu.Host == "" {
+		return nil, httpx.ErrBadRequest("issuer must be an absolute https URL")
+	}
+	if netsafe.IsInternalHost(iu.Hostname()) {
+		return nil, httpx.ErrBadRequest("issuer host is not permitted")
 	}
 	if in.DefaultRole == "" {
 		in.DefaultRole = string(auth.RoleCustomerViewer)

@@ -84,20 +84,23 @@ func (q *PostgresQueue) Claim(ctx context.Context, n int) ([]Job, error) {
 	return jobs, rows.Err()
 }
 
-// Complete marks a job done.
+// Complete marks a job done. The state='running' guard (carry-forward Low) makes this a no-op if
+// the reaper already reclaimed this job after a stall — a slow worker's late Complete must not flip
+// a job another worker now owns (or re-completes a reaped one).
 func (q *PostgresQueue) Complete(ctx context.Context, id uuid.UUID) error {
-	_, err := q.pool.Exec(ctx, `UPDATE ingest_jobs SET state='done', finished_at=now() WHERE id=$1`, id)
+	_, err := q.pool.Exec(ctx, `UPDATE ingest_jobs SET state='done', finished_at=now() WHERE id=$1 AND state='running'`, id)
 	return err
 }
 
-// Fail requeues with backoff, or dead-letters after MaxAttempts.
+// Fail requeues with backoff, or dead-letters after MaxAttempts. Guarded on state='running' (carry-
+// forward Low) so a stale worker's late Fail can't false-dead-letter a job the reaper already requeued.
 func (q *PostgresQueue) Fail(ctx context.Context, id uuid.UUID, reason string) error {
 	_, err := q.pool.Exec(ctx,
 		`UPDATE ingest_jobs
 		    SET state = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'queued' END,
 		        run_at = now() + ($3 || ' seconds')::interval,
 		        last_error = $4
-		  WHERE id = $1`,
+		  WHERE id = $1 AND state = 'running'`,
 		id, MaxAttempts, backoffSeconds, reason)
 	return err
 }

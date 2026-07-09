@@ -69,6 +69,10 @@ func (s *Service) Assess(ctx context.Context, tenantID uuid.UUID, frameworkKey s
 	// Leaves (parent_ref != "") assessed first; grouped under their parent function.
 	leavesByParent := map[string][]ControlAssessment{}
 	var functions []Control
+	parentRefOf := map[string]string{} // controlRef -> its own parent_ref (for the depth guard)
+	for _, c := range controls {
+		parentRefOf[c.ControlRef] = c.ParentRef
+	}
 	for _, c := range controls {
 		if c.ParentRef == "" {
 			functions = append(functions, c)
@@ -76,6 +80,16 @@ func (s *Service) Assess(ctx context.Context, tenantID uuid.UUID, frameworkKey s
 		}
 		ca := assessLeaf(ctx, s.repo, tenantID, c, manual)
 		leavesByParent[c.ParentRef] = append(leavesByParent[c.ParentRef], ca)
+	}
+	// Depth guard (carry-forward Low): the rollup is two-level (function → leaf children). A control
+	// whose parent is ITSELF a child (3+ levels) would be assessed as a leaf while its own children —
+	// keyed under it in leavesByParent — are never rolled up (that key is not a top-level function),
+	// silently dropping them from the score. Current seeds are ≤2 levels; fail LOUD before a deeper
+	// catalogue is loaded rather than emit a silently-wrong posture (compliance never fabricates).
+	for parent := range leavesByParent {
+		if parentRefOf[parent] != "" {
+			return nil, httpx.ErrInternal("framework has >2-level control nesting, which the rollup does not yet support")
+		}
 	}
 
 	cov := &Coverage{Framework: frameworkKey, Summary: map[string]int{}}
