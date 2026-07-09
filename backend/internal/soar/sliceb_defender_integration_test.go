@@ -193,6 +193,48 @@ func TestDefenderRound_ReverseUnisolates(t *testing.T) {
 	}
 }
 
+// H-1 (round #34 regression): a crash AFTER the isolate POST but before Phase-C commit must NOT strand the
+// endpoint isolated-with-no-release. Resume → PreCheck avoids the double-POST (C-3) AND the step stays
+// reversible → ReverseRun unisolates. Before the seam fix, reverse silently skipped (changed=false).
+func TestDefenderRound_ReverseAfterCrashResume(t *testing.T) {
+	sup, repo, db, tid, mock := setupDefender(t)
+	ctx := context.Background()
+	actor := auth.Principal{UserID: uuid.New(), Email: "a@t", TenantID: tid}
+	_ = repo.SetSoarSettings(ctx, tid, soar.SoarSettings{DestructiveEnabled: true, MaxClass3PerHour: 5})
+	runID := uuid.New()
+
+	// Isolate takes effect (1 POST), then simulate the crash: revert to 'executing' (Phase C never committed).
+	if st, _, err := sup.ExecuteConnectorStep(ctx, tid, actor, runID, 0, isoAct(), "host:WIN-EDR-3", nil); err != nil || st != soar.StatusExecuted {
+		t.Fatalf("isolate should execute, got %s err=%v", st, err)
+	}
+	if err := db.WithTenant(ctx, tid, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `UPDATE soar_action_execution SET status='executing' WHERE run_id=$1 AND step_index=0`, runID)
+		return e
+	}); err != nil {
+		t.Fatalf("simulate crash: %v", err)
+	}
+
+	// Resume: no double-POST (C-3) — the machine is isolated exactly once.
+	if st, _, err := sup.ExecuteConnectorStep(ctx, tid, actor, runID, 0, isoAct(), "host:WIN-EDR-3", nil); err != nil || st != soar.StatusExecuted {
+		t.Fatalf("resume should execute, got %s err=%v", st, err)
+	}
+	if n := atomic.LoadInt32(&mock.isolateCalls); n != 1 {
+		t.Fatalf("resume must not double-POST, got %d", n)
+	}
+
+	// The endpoint is isolated by OUR action → reverse MUST release it (H-1: not a silent skipped_noop).
+	res, err := sup.ReverseRun(ctx, tid, actor, runID)
+	if err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != "reversed" {
+		t.Fatalf("H-1: crash-resumed isolate must be reversible, got %+v", res)
+	}
+	if n := atomic.LoadInt32(&mock.unisolCalls); n != 1 {
+		t.Fatalf("H-1: reverse must unisolate the crash-resumed isolation once, got %d", n)
+	}
+}
+
 // C-6: an MDE API error → the step fails (not stuck executing), and no phantom effect is recorded.
 func TestDefenderRound_APIErrorFails(t *testing.T) {
 	sup, repo, _, tid, mock := setupDefender(t)

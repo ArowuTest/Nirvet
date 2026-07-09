@@ -81,7 +81,7 @@ func (s *Supervisor) ExecuteConnectorStep(ctx context.Context, tenantID uuid.UUI
 		case StatusWithheld:
 			return StatusWithheld, existing.Reason, nil
 		case "executing":
-			return s.phaseBC(ctx, tenantID, actor, existing, act, target, params)
+			return s.phaseBC(ctx, tenantID, actor, existing, act, target, params, true) // resume of our own claim
 		}
 	}
 
@@ -151,13 +151,14 @@ func (s *Supervisor) ExecuteConnectorStep(ctx context.Context, tenantID uuid.UUI
 		return "", "", nil // a concurrent claim owns it; caller re-drives
 	}
 	ex.DryRun = outcome == gateDryRun
-	return s.phaseBC(ctx, tenantID, actor, ex, act, target, params)
+	return s.phaseBC(ctx, tenantID, actor, ex, act, target, params, false) // fresh claim this call
 }
 
 // phaseBC runs Phase B (out of tx: kill-switch re-read, decrypt, connector call, capture prior_state)
 // then Phase C (tx2: outcome + audit). Safe to call on a freshly-claimed row OR to resume an 'executing'
-// row after a crash — it never re-claims, so the budget/intent audit stay exactly-once.
-func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth.Principal, ex *ActionExecution, act ActionCatalog, target string, params map[string]any) (status, note string, err error) {
+// row after a crash — it never re-claims, so the budget/intent audit stay exactly-once. `resumed` is true
+// only when re-driving an already-'executing' row (crash recovery); it drives the H-1 reversibility fix below.
+func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth.Principal, ex *ActionExecution, act ActionCatalog, target string, params map[string]any, resumed bool) (status, note string, err error) {
 	// Phase-B kill-switch re-read: an emergency stop must abort a claimed-but-unexecuted step.
 	if !ex.DryRun {
 		if plat, e := s.repo.GetPlatformFlags(ctx); e == nil && plat.KillSwitch {
@@ -195,6 +196,22 @@ func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth
 		s.finish(ctx, tenantID, ex, StatusFailed, "", "execution failed: "+callErr.Error(), prior,
 			outcomeEntry(actor, act, target, "failed", callErr.Error()))
 		return StatusFailed, "execution failed: " + callErr.Error(), nil
+	}
+	// H-1 (round #34): on a RESUME, a PreCheck no-op (prior_state.changed=false) means the Actioner found
+	// the target already in the end state — but this is OUR OWN in-flight action being re-driven after a
+	// crash (this step's claim row is what makes it a resume). A fresh claim that finds the target already
+	// done is a FOREIGN pre-existing effect and correctly stays non-reversible; a resume is ours, so it MUST
+	// remain reversible or a crash-mid-isolate would strand the endpoint isolated with reverse silently
+	// refusing to release it. Attribute the resumed no-op to this step. Fixes it for every PreCheck Actioner
+	// (Defender today, Entra/PAN later) at the seam, not per-vendor.
+	if resumed {
+		if prior == nil {
+			prior = map[string]any{}
+		}
+		if changed, _ := prior["changed"].(bool); !changed {
+			prior["changed"] = true
+			prior["resume_attributed"] = true // audit breadcrumb: reversibility restored on crash-resume
+		}
 	}
 	s.finish(ctx, tenantID, ex, StatusExecuted, ref, "", prior,
 		outcomeEntry(actor, act, target, "executed", ref))

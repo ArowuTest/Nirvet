@@ -97,6 +97,32 @@ func TestDefenderClient_LookupIsolateReverse(t *testing.T) {
 	}
 }
 
+// M-1 (round #34): a hostname containing a single quote must be escaped (doubled) so it cannot break out
+// of the OData string literal and mis-target the machine lookup.
+func TestDefenderClient_ODataQuoteEscaped(t *testing.T) {
+	if got := odataQuote("x' or computerDnsName ne 'z"); got != "x'' or computerDnsName ne ''z" {
+		t.Fatalf("odataQuote did not double quotes: %q", got)
+	}
+	var gotFilter string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"access_token":"mde-token","expires_in":3600}`)
+	})
+	mux.HandleFunc("/api/machines", func(w http.ResponseWriter, r *http.Request) {
+		gotFilter = r.URL.Query().Get("$filter") // decoded OData filter
+		_, _ = io.WriteString(w, `{"value":[{"id":"m-guid-1"}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := newDefenderClient(srv.URL+"/token", srv.URL, "", "cid", "secret", srv.Client())
+	if _, err := c.resolveMachineID(context.Background(), "evil' or '1'='1"); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !strings.Contains(gotFilter, "computerDnsName eq 'evil'' or ''1''=''1'") {
+		t.Fatalf("crafted quote not escaped in filter: %q", gotFilter)
+	}
+}
+
 func TestDefenderClient_PreCheckSeesPending(t *testing.T) {
 	// The crash-while-Pending signal (C-3): a prior Isolate in Pending must be visible to PreCheck.
 	srv := mockMDE(t, "Pending")

@@ -133,9 +133,15 @@ func (c *defenderClient) do(ctx context.Context, method, path string, body map[s
 	return c.http.Do(req)
 }
 
+// odataQuote escapes a value for safe embedding inside an OData single-quoted string literal by doubling
+// the single quote (per the OData spec). Without it, a crafted hostname (which can derive from attacker-
+// influenced telemetry) could break out of the $filter literal and resolve the WRONG machine — i.e. isolate
+// the wrong endpoint (M-1, round #34). url.QueryEscape only handles URL transport, not OData literal syntax.
+func odataQuote(s string) string { return strings.ReplaceAll(s, "'", "''") }
+
 // resolveMachineID returns the MDE machine id for a device DNS name.
 func (c *defenderClient) resolveMachineID(ctx context.Context, hostname string) (string, error) {
-	q := "/api/machines?$filter=" + url.QueryEscape("computerDnsName eq '"+hostname+"'") + "&$top=1"
+	q := "/api/machines?$filter=" + url.QueryEscape("computerDnsName eq '"+odataQuote(hostname)+"'") + "&$top=1"
 	resp, err := c.do(ctx, http.MethodGet, q, nil)
 	if err != nil {
 		return "", err
@@ -171,7 +177,7 @@ type machineActionStatus struct {
 // which is what makes crash-while-Pending resume-safe (C-3) — the in-flight action is visible before
 // the machine ever reaches a terminal isolated state.
 func (c *defenderClient) latestMachineAction(ctx context.Context, machineID, actionType string) (*machineActionStatus, bool, error) {
-	f := "machineId eq '" + machineID + "' and type eq '" + actionType + "'"
+	f := "machineId eq '" + odataQuote(machineID) + "' and type eq '" + actionType + "'"
 	q := "/api/machineactions?$filter=" + url.QueryEscape(f) + "&$orderby=" + url.QueryEscape("creationDateTime desc") + "&$top=1"
 	resp, err := c.do(ctx, http.MethodGet, q, nil)
 	if err != nil {
