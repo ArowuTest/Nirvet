@@ -1547,6 +1547,22 @@ NOT a new epic. Build when the owner picks it up; run test-first, reviewer landi
 silent-source-health checks. Full spec: build/NIRVET_IMPL_SPEC_AI_PROVIDER_AND_HOST_TELEMETRY.md Part 2. Do not
 interleave with other work mid-build.
 
+**✅ H-1..H-3 LANDED (HEAD 2d32581) — awaiting reviewer landing round.** Dormant until a tenant configures a
+host_osquery/host_wazuh source. H-1 (89965d1) connector kinds + §6.5 host/process/file/user/network field groups +
+normalizeOsquery/Wazuh → 4 OCSF classes (Process 1007/File 1001/Auth 3002/Network 4001), unit-tested. H-2 (b486b4d)
+nested field-group resolution in the detection engine (data.process.cmdline; flat-key-first, back-compat) + migration
+0069 seed pack (4 global ATT&CK rules T1105/T1053/T1003/T1110) + end-to-end test (osquery curl → seeded rule FIRES;
+benign ls does not over-fire; Wazuh failed-auth fires). H-3 (2d32581) silent-source health US-032: last-seen already
+recorded on keyed ingest (MarkSuccess); SilenceSweeper alerts once per silence episode via a SECURITY DEFINER
+cross-tenant read (migration 0070), wired into the worker. migrations → 0070, from-zero clean; ingestion + detection
++ connector + schemacheck + outbound-http all green.
+
+**Verify-plan status for the reviewer round:** ✅ 4-class OCSF mapping (H-1) · ✅ seeded host detection FIRES (H-2) ·
+✅ silent-source health fires (H-3). REUSE-EXISTING (reviewer to confirm, not rebuilt): source auth rejects bad HMAC
+(US-036 keyed webhook path), oversized/malformed payload rejected-not-panicked (existing ingest size caps/validation),
+tenant isolation (existing RLS on the event path — host sources use the same collector). Reviewer headline probes per
+gate: tenant-isolation + silent-source health.
+
 ### Round #34 remediation (7d69689) — H-1 + M-1 fixed
 - **H-1 (High)** crash-resume reversibility, fixed at the supervisor SEAM: `phaseBC(resumed bool)` — a resume + PreCheck-noop attributes `changed=true` (our own in-flight action → reverse can release), a fresh claim finding target already-done stays `changed=false` (foreign). Covers every future PreCheck Actioner. Test: reverse-after-crash-resume asserts unisolate fires once.
 - **M-1 (Medium)** OData filter injection escaped (`odataQuote` doubles single quotes in resolveMachineID + latestMachineAction). Unit-tested.
