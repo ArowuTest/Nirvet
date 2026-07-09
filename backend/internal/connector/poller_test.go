@@ -77,6 +77,10 @@ func TestPollerIngestsFromGraph(t *testing.T) {
 	t.Cleanup(func() { _ = connSvc.Delete(ctx, tenantID, connID) })
 
 	poller := NewPoller(repo, vault, ingestSvc, log).WithEndpoints(srv.URL+"/token", srv.URL)
+	// Test-only seam: prod NewPoller bakes in netsafe.SafeClient (SSRF-safe), which correctly
+	// refuses to dial the loopback httptest mock. Swap in a plain client so this integration test
+	// can reach the mock; the prod default is unchanged (this assignment lives only in _test.go).
+	poller.http = srv.Client()
 	if _, err := poller.RunOnce(ctx); err != nil {
 		t.Fatalf("poll: %v", err)
 	}

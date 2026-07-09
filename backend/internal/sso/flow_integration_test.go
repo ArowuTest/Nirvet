@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -29,9 +31,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// mockIdP is a minimal OIDC provider: discovery, JWKS and token endpoints.
+// mockIdP is a minimal OIDC provider: discovery, JWKS and token endpoints, served over TLS.
+//
+// The prod SSO client uses netsafe.SafeClient, which (correctly) refuses to dial a loopback
+// address — so the mock must be reachable another way WITHOUT loosening that guard. Two things
+// make that work: (1) the issuer uses host "example.com", a non-internal name that legitimately
+// passes netsafe.IsInternalHost AND is a SAN on the httptest default TLS cert; (2) the test injects
+// a client (see client()) whose dialer sends "example.com" back to the loopback listener. No real
+// DNS/network is used, and the prod dial-time SSRF guard is untouched.
 type mockIdP struct {
 	srv      *httptest.Server
+	issuer   string // https://example.com:PORT — non-internal host, valid on the httptest cert
 	key      *rsa.PrivateKey
 	clientID string
 	idToken  string // returned by the token endpoint (set per-test after Start)
@@ -46,12 +56,11 @@ func newMockIdP(t *testing.T, clientID string) *mockIdP {
 	m := &mockIdP{key: key, clientID: clientID}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		base := m.srv.URL
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"issuer":                 base,
-			"authorization_endpoint": base + "/authorize",
-			"token_endpoint":         base + "/token",
-			"jwks_uri":               base + "/jwks",
+			"issuer":                 m.issuer,
+			"authorization_endpoint": m.issuer + "/authorize",
+			"token_endpoint":         m.issuer + "/token",
+			"jwks_uri":               m.issuer + "/jwks",
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
@@ -64,16 +73,36 @@ func newMockIdP(t *testing.T, clientID string) *mockIdP {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": m.idToken})
 	})
-	m.srv = httptest.NewServer(mux)
+	m.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(m.srv.Close)
+	_, port, _ := net.SplitHostPort(m.srv.Listener.Addr().String())
+	m.issuer = "https://example.com:" + port
 	return m
+}
+
+// client returns an HTTP client that dials the "example.com" issuer back to the loopback listener.
+// This is the test-only substitute for the prod SafeClient; it is injected via SetHTTPClientForTest
+// and never reaches a prod build. InsecureSkipVerify is safe and intentional here — the client only
+// ever talks to this test's own loopback mock, and the SSRF guard it stands in for (SafeClient) is
+// exercised unchanged in prod. The prod dial-time internal-address guard is not touched.
+func (m *mockIdP) client() *http.Client {
+	addr := m.srv.Listener.Addr().String()
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only loopback mock
+		},
+	}
 }
 
 // signID mints an id_token for the given email + nonce (valid unless overridden).
 func (m *mockIdP) signID(t *testing.T, email, nonce string, mutate func(jwt.MapClaims)) string {
 	t.Helper()
 	claims := jwt.MapClaims{
-		"iss": m.srv.URL, "aud": m.clientID, "sub": "idp|" + email,
+		"iss": m.issuer, "aud": m.clientID, "sub": "idp|" + email,
 		"email": email, "email_verified": true, "nonce": nonce,
 		"iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix(),
 	}
@@ -110,16 +139,20 @@ func TestSSO_OIDCFlow(t *testing.T) {
 	cipher, _ := crypto.NewLocal(base64.StdEncoding.EncodeToString(key), nil)
 	tokens := auth.NewManager("sso-test-secret", "nirvet", 15*time.Minute)
 	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens, cipher)
-	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, "state-secret")
+	idp := newMockIdP(t, "client-123")
+	// Inject the test client (trusts the mock cert, dials example.com→loopback) in place of the
+	// prod SafeClient — the only way to reach a loopback IdP without weakening the SSRF guard.
+	oidcClient := sso.NewClient()
+	oidcClient.SetHTTPClientForTest(idp.client())
+	ssoSvc := sso.NewService(sso.NewRepository(db), oidcClient, cipher, iamSvc, tokens, db, "state-secret")
 
 	// Unique per-run domain: email_domain is globally unique among enabled
 	// connections (a domain maps to one IdP), so tests must not reuse a fixed one.
 	domain := "d" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12] + ".example.com"
 	user := "sso-user@" + domain
 
-	idp := newMockIdP(t, "client-123")
 	conn, err := ssoSvc.CreateConnection(ctx, tn.ID, sso.CreateInput{
-		Issuer: idp.srv.URL, ClientID: "client-123", ClientSecret: "shh",
+		Issuer: idp.issuer, ClientID: "client-123", ClientSecret: "shh",
 		RedirectURI: "https://app.nirvet.local/sso/callback",
 		DefaultRole: string(auth.RoleCustomerViewer), EmailDomain: domain,
 	})
