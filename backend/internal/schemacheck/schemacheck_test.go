@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ArowuTest/nirvet/internal/ai"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
@@ -139,6 +140,9 @@ func enumRegistry() map[string][]string {
 		"incidents.severity":       sev,
 		// SOAR §9.5 risk classes (source: reference-nirvet-srs-spine / soar_action_catalog seed).
 		"soar_action_catalog.risk_class": {"informational", "low", "medium", "high", "business_critical"},
+		// §6.12 #117 admin-configurable AI providers.
+		"ai_provider.provider_kind":           {string(ai.KindAnthropic), string(ai.KindOpenAICompatible), string(ai.KindDisabled)},
+		"ai_provider_allowed_endpoint.scheme": {string(ai.SchemeHTTP), string(ai.SchemeHTTPS)},
 	}
 }
 

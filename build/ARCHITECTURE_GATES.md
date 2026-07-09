@@ -1440,10 +1440,25 @@ surfacing) — the allowlist guard is NOT negotiable to match a mockup that show
 - [x] Config shape decided now (this gate) so no other AI feature accretes on the hardcoded gateway.
 - [x] Build precondition met: SOAR slice C + Entra vendor landed (this gate was held for them).
 - [x] Seam verified in code (singleton `gw` at 2 sites → per-tenant resolver; refactor contained to `ai/`).
-- [ ] **Reviewer confirms the ALLOWLIST-not-block guard framing + chunk plan before code (the one careless-fix trap).** ← awaiting pre-code pass
-- [ ] Build A-1..A-6 test-first after clearance; dedicated adversarial round on landing (allowlist guard + internal-endpoint-works are the headline checks).
+- [x] **Reviewer confirms the ALLOWLIST-not-block guard framing + chunk plan (CLEARED FOR A-1, tracked task #39).**
+- [ ] Build A-1..A-6 test-first; dedicated adversarial round on landing (allowlist guard + internal-endpoint-works are the headline checks).
 
-**→ READY FOR REVIEWER PRE-CODE PASS.** No code until the reviewer confirms the guard framing + chunk plan (gated-approach rule).
+**✅ CLEARED FOR A-1 (reviewer, task #39).** Allowlist-not-block stated exactly right; internal-endpoint-works crux in
+the test list; resolver fail-closed handles the restricted-tenant case correctly; chunk plan sound. Five minor
+build-time notes to FOLD IN (none block):
+1. **Cleartext-egress warning** — when an `http` (non-TLS) allowlist entry has a configured api key, warn/flag at
+   save: the key crosses the wire in cleartext. Approved on-prem http is allowed, but surface the exposure.
+2. **`api_key_ref` nullable** — a keyless local model (no auth) is legitimate; don't force a vault ref. Provider
+   builds with no key when null; only anthropic/keyed-openai require one.
+3. **Bounded `openai_compatible` client timeout** — the provider's `http.Client` gets an explicit finite timeout
+   (mirror the 30s gateway budget), never a zero/unbounded client, so a hung sovereign endpoint can't wedge a call.
+4. **Assistive-only carries to the new provider** — `GuardNoAutoContain` / `Assistive:true` must hold for
+   openai_compatible exactly as for anthropic; an alternate provider must not become an auto-action path.
+5. **Framing stays explicit** — the allowlist is a DATA-EGRESS / RESIDENCY control (§1903), not just SSRF hardening;
+   keep that in the code comments + audit so the residency intent is legible, not incidental.
+
+**→ BUILDING A-1→A-6 test-first, folding in the 5 notes. Design-file pass DEFERRED to A-4 (reconcile the two AI
+screens against the BUILT contract, not the spec). Dedicated adversarial round on landing.**
 
 ---
 
