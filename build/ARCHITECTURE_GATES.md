@@ -1404,10 +1404,46 @@ present; `GuardNoAutoContain` intact; **AI-off tenant still functions**. Adversa
 unless a platform admin explicitly allowlisted it (trust is the admin's, by design); redirect off the allowlisted host
 blocked; lower role cannot loosen `tenant_ai_policy`.
 
+**Current seam (verified at HEAD f327698, so the resolver refactor is real, not hypothetical).** `ai.Service` holds
+ONE startup-built `gw *Gateway` (`cmd/api/main.go:265` = `ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey,
+cfg.AIModel), …)`), called at exactly TWO sites — `service.go:137` (alert summary) and `:236` (incident summary) —
+both gated by `s.gw.Available()`, with `s.gw.Model()` used for the audit label (`:131`, `:227`). The refactor is
+therefore small and contained: introduce a `Provider` interface (`Available()`/`Model()`/`Complete(ctx,system,user)`)
+that the existing `*Gateway` already satisfies structurally, and replace the singleton field with a
+`resolve(ctx, tenantID) Provider` call at those two sites (both already operate on a tenant-scoped alert/incident, so
+the tenant id is in hand). No call-signature churn leaks outside `ai/`.
+
+**Proposed chunks (test-first; keep build/vet/soar+connector green each step; DORMANT until a provider row is set).**
+- **A-1** migrations: `ai_provider` (+ seed one global `anthropic` = current default so existing tenants are byte-for-byte
+  unchanged), `ai_provider_allowed_endpoint`, `tenant_ai_policy`; FORCE RLS + `schemacheck` invariants + from-zero migrate.
+- **A-2** `Provider` interface + `anthropicProvider` (wraps today's Gateway, netsafe-exempt fixed host) + `disabledProvider`
+  (`Available()==false` → existing `fallbackSummary`). Pure unit tests; no behavior change yet (resolver still returns the
+  global anthropic row → identical output).
+- **A-3** `openaiCompatibleProvider` (allowlisted base_url + fixed `/v1/chat/completions`, redirects DISALLOWED, plain
+  `http.Client` NOT SafeClient — the load-bearing guard) + `resolve()` fail-closed (tenant→global→disabled;
+  kind∉allowed_kinds→disabled+audit; base_url∉allowlist→disabled+audit). Unit + RLS tests incl. the internal-endpoint-works crux.
+- **A-4** config surface: platform-admin `GET/PUT /admin/ai/provider`, `GET/POST/DELETE /admin/ai/allowed-endpoints`,
+  `PUT /admin/tenants/{id}/ai-policy`; tenant-admin `GET/PUT /tenant/ai/provider` (kind∈allowed + base_url∈allowlist else
+  403/400; tighten-only — a tenant can't loosen its platform-set policy). Vault `api_key_ref` + decrypt-audit on unseal.
+- **A-5** wire `resolve()` into the two `service.go` call sites + audit provider_kind+endpoint+model on every call; confirm
+  `GuardNoAutoContain` intact and an AI-off tenant still summarizes via fallback.
+- **A-6** dedicated adversarial round (the Verify list above): allowlist-not-block crux, resolver order, restriction
+  fail-closed, SSRF-to-metadata rejected-unless-explicitly-allowlisted, redirect-off-host blocked, FORCE-RLS cross-tenant,
+  lower-role-can't-loosen.
+
+**UI reconciliation (owner granted design-tweak authority).** The admin/tenant config surface maps to the designer's
+`nirvet-soc-settings-policies.html` (policy/provider settings) and `nirvet-soc-ai-copilot.html`. I'll reconcile those to
+the real contract as A-4 lands (allowed_kinds gating, allowlist-validated base_url field, disabled state, decrypt-audit
+surfacing) — the allowlist guard is NOT negotiable to match a mockup that shows a free-form URL field.
+
 **Gate checklist.**
 - [x] Config shape decided now (this gate) so no other AI feature accretes on the hardcoded gateway.
-- [ ] Reviewer confirms the ALLOWLIST-not-block guard framing before code (the one careless-fix trap).
-- [ ] Build after SOAR slice C, test-first; reviewer pass on landing (allowlist guard + internal-endpoint-works are the specific checks).
+- [x] Build precondition met: SOAR slice C + Entra vendor landed (this gate was held for them).
+- [x] Seam verified in code (singleton `gw` at 2 sites → per-tenant resolver; refactor contained to `ai/`).
+- [ ] **Reviewer confirms the ALLOWLIST-not-block guard framing + chunk plan before code (the one careless-fix trap).** ← awaiting pre-code pass
+- [ ] Build A-1..A-6 test-first after clearance; dedicated adversarial round on landing (allowlist guard + internal-endpoint-works are the headline checks).
+
+**→ READY FOR REVIEWER PRE-CODE PASS.** No code until the reviewer confirms the guard framing + chunk plan (gated-approach rule).
 
 ---
 
