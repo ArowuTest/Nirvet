@@ -72,6 +72,9 @@ type Step struct {
 	Action           string    `json:"action"`
 	Risk             RiskClass `json:"risk"`
 	RequiresApproval bool      `json:"requires_approval"`
+	// Target is the entity a connector containment step acts on (host:/user:/ip:) — passed to the
+	// Actioner in slice B. Optional; empty for internal/notify steps (§6.11 slice B).
+	Target string `json:"target,omitempty"`
 }
 
 // Playbook is a response workflow (global or tenant-owned).

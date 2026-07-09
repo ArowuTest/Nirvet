@@ -58,6 +58,22 @@ func (h *Handler) SetActionCatalog(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, a)
 }
 
+// Reverse handles POST /soar/runs/{id}/reverse — undo a run's real containment (MUST-3).
+func (h *Handler) Reverse(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid run id"))
+		return
+	}
+	res, err := h.svc.Reverse(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"reversed": res})
+}
+
 // GetSettings handles GET /soar/settings (per-tenant destructive-action config).
 func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

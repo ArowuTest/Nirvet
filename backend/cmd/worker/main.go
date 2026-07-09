@@ -24,6 +24,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
+	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 )
@@ -111,7 +112,20 @@ func main() {
 	// the dispatcher in production; the api runs it only in inline-worker (dev) mode.
 	go notifySvc.StartDispatcher(ctx, log, 15*time.Second, 200)
 
-	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper + notify dispatcher)")
+	// §6.11 slice B crash-recovery: re-drive SOAR runs stranded with a connector step 'executing'
+	// past the visibility window (Phase B/C interrupted by a hard crash). The supervisor resumes at
+	// Phase B (never re-runs the claim), so the rate budget + intent audit happen exactly once. The
+	// worker owns this loop; the Actioner registry is empty until real vendor actions register, so
+	// this is dormant (no stranded connector steps exist) until destructive execution is enabled.
+	soarRepo := soar.NewRepository(db)
+	soarExecs := soar.NewExecutors().
+		Register("notify_analyst", soar.NewNotifyExecutor(outboxRepo)).
+		Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))
+	soarSup := soar.NewSupervisor(soarRepo, soar.NewActionerRegistry(), nil, log)
+	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs).WithSupervisor(soarSup)
+	go soarSvc.StartResumeLoop(ctx, log, time.Minute, 300)
+
+	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper + notify dispatcher + soar resume)")
 	wk.Start(ctx, time.Second)
 	log.Info("nirvet worker stopped")
 }

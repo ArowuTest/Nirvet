@@ -136,3 +136,31 @@ func (r *Repository) setCurrentStepTx(ctx context.Context, tx pgx.Tx, runID uuid
 	_, err := tx.Exec(ctx, `UPDATE playbook_runs SET current_step=$2 WHERE id=$1`, runID, step)
 	return err
 }
+
+// staleRun identifies a run with an execution stranded 'executing' past the visibility window.
+type staleRun struct {
+	TenantID uuid.UUID
+	RunID    uuid.UUID
+}
+
+// staleRuns returns runs with a step stranded 'executing' past visibility, at the SYSTEM level (spans
+// tenants) via the SECURITY DEFINER soar_stale_executions function — the crash-resume driver.
+func (r *Repository) staleRuns(ctx context.Context, visibilitySecs int) ([]staleRun, error) {
+	var out []staleRun
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT tenant_id, run_id FROM soar_stale_executions($1)`, visibilitySecs)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s staleRun
+			if e := rows.Scan(&s.TenantID, &s.RunID); e != nil {
+				return e
+			}
+			out = append(out, s)
+		}
+		return rows.Err()
+	})
+	return out, err
+}

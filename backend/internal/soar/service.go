@@ -25,14 +25,43 @@ type Authorizer interface {
 
 // Service orchestrates playbook runs under authority-to-act with approval gates.
 type Service struct {
-	repo  *Repository
-	authz Authorizer
-	execs *Executors
+	repo      *Repository
+	authz     Authorizer
+	execs     *Executors
+	sup       *Supervisor       // §6.11 slice B: drives real connector containment two-phase (optional)
+	actioners *ActionerRegistry // registered real connector actions (empty = none → slice-A behavior)
 }
 
 // NewService builds the service. The executor registry starts empty (every action simulates); real
 // executors are registered via WithExecutors at wiring time.
-func NewService(repo *Repository) *Service { return &Service{repo: repo, execs: NewExecutors()} }
+func NewService(repo *Repository) *Service {
+	return &Service{repo: repo, execs: NewExecutors(), actioners: NewActionerRegistry()}
+}
+
+// WithSupervisor wires the slice-B two-phase supervisor + its Actioner registry. A run is supervisor-driven
+// only when a step's action has a registered Actioner; with none wired (or none matching), Run/Approve keep
+// the exact slice-A inline behavior — so the slice-A suite is unaffected.
+func (s *Service) WithSupervisor(sup *Supervisor) *Service {
+	if sup != nil {
+		s.sup = sup
+		s.actioners = sup.actioners
+	}
+	return s
+}
+
+// supervisedNeeded reports whether any planned step is a real connector action (has a registered
+// Actioner) — in which case the supervisor owns the whole run in order (the handoff rule).
+func (s *Service) supervisedNeeded(plans []stepPlan) bool {
+	if s.sup == nil {
+		return false
+	}
+	for i := range plans {
+		if _, ok := s.actioners.lookup(plans[i].act.ConnectorKey, plans[i].act.ActionKey); ok {
+			return true
+		}
+	}
+	return false
+}
 
 // WithAuthorizer wires the per-action authority store (tenant.Service, the single source of truth:
 // authority_policies). Always wired in production; a nil authorizer resolves fail-closed to 'observe'
@@ -130,9 +159,10 @@ func (s *Service) GetRun(ctx context.Context, tenantID, id uuid.UUID) (*Playbook
 
 // stepPlan is a resolved step decided in Run's read phase (no side effects yet).
 type stepPlan struct {
-	act  ActionCatalog
-	auto bool // may auto-execute now (permitted by authority, no approval, in-hours)
-	sr   StepResult
+	act    ActionCatalog
+	auto   bool   // may auto-execute now (permitted by authority, no approval, in-hours)
+	target string // entity a connector step acts on (slice B)
+	sr     StepResult
 }
 
 // Run starts a playbook against an incident. It resolves each step's §9.5 risk class + authority in
@@ -169,7 +199,13 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 			sr.Status = StatusAwaitingApproval
 			sr.Note = fmt.Sprintf("business-hours-only: deferred to approval (class %s, authority '%s')", act.RiskClass, mode)
 		}
-		plans = append(plans, stepPlan{act: act, auto: autoEligible && !businessHours, sr: sr})
+		plans = append(plans, stepPlan{act: act, auto: autoEligible && !businessHours, target: st.Target, sr: sr})
+	}
+
+	// §6.11 slice B: if any step is a real connector containment action (registered Actioner), the
+	// supervisor owns the whole run in order (two-phase). Otherwise keep the exact slice-A inline path.
+	if s.supervisedNeeded(plans) {
+		return s.runSupervised(ctx, p, pb, plans, incidentID)
 	}
 
 	// Phase 2 — one tx: idempotency check, dispatch permitted steps, persist run + audit atomically.
@@ -293,6 +329,37 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 			return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", p.Role, act.RiskClass))
 		}
 		steps = append(steps, approvedStep{idx: i, act: act})
+	}
+
+	// §6.11 slice B: a supervised run (any registered connector Actioner) resumes through the two-phase
+	// supervisor from its cursor after approval, instead of inline dispatch. The approver-floor check
+	// above still gates it; claim-then-act still serialises concurrent approves.
+	if pb, perr := s.repo.GetPlaybook(ctx, p.TenantID, run.PlaybookID); perr == nil {
+		plans := s.replan(ctx, p.TenantID, pb, true)
+		if s.supervisedNeeded(plans) {
+			claimed := false
+			if e := s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+				ok, ce := s.repo.claimPendingTx(ctx, tx, run.ID)
+				if ce != nil {
+					return ce
+				}
+				if !ok {
+					return nil
+				}
+				claimed = true
+				return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_approve",
+					Target: "run:" + run.ID.String(), Metadata: map[string]any{"supervised": true}})
+			}); e != nil {
+				return nil, httpx.ErrInternal("could not approve run")
+			}
+			if !claimed {
+				return nil, httpx.ErrConflict("run is no longer pending approval (already decided)")
+			}
+			run.ApprovedBy = &p.UserID
+			run.Status = RunRunning
+			s.advanceRun(ctx, p, run, plans, run.IncidentID, 0)
+			return run, nil
+		}
 	}
 
 	// Execution phase (one tx): CLAIM the run (pending_approval→running) before dispatching, so two

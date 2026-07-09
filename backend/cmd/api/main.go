@@ -236,7 +236,13 @@ func main() {
 	soarExecs := soar.NewExecutors().
 		Register("notify_analyst", soar.NewNotifyExecutor(outboxRepo)).
 		Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))
-	soarSvc := soar.NewService(soar.NewRepository(db)).WithAuthorizer(tenantSvc).WithExecutors(soarExecs)
+	soarRepo := soar.NewRepository(db)
+	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs)
+	// §6.11 slice B: wire the two-phase supervisor. The Actioner registry starts EMPTY — real vendor
+	// containment actions (Defender isolate/release, Entra disable, PAN block) register incrementally
+	// (registration, not an engine change), and stay dormant until a tenant enables destructive actions.
+	// With no registered Actioner, every connector step keeps the truthful-simulation slice-A behavior.
+	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soar.NewActionerRegistry(), nil, log))
 	soarH := soar.NewHandler(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
@@ -462,6 +468,7 @@ func main() {
 	mux.Handle("GET /soar/runs/{id}", provider(soarH.GetRun))
 	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))
 	mux.Handle("POST /soar/runs/{id}/reject", soarApprover(soarH.Reject))
+	mux.Handle("POST /soar/runs/{id}/reverse", soarApprover(soarH.Reverse)) // §6.11 slice B: undo containment (MUST-3)
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	mux.Handle("GET /soar/action-catalog", provider(soarH.ListActionCatalog))
 	mux.Handle("PUT /soar/action-catalog", padmin(soarH.SetActionCatalog))
