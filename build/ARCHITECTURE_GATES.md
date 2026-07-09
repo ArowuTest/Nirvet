@@ -1731,3 +1731,54 @@ AND fail-closed. That is a real, documented property of the destructive model, n
 **Decision log:** D1 CONFIRMED by owner — second vendor = **Entra ID disable-user**. Remaining before E-1: reviewer's
 pre-code confirming pass on the terminal-state fail-SAFE attribution decision (+ D3 confirm nil-vs-read-back). D4
 (revoke_sessions non-reversible) stays a separate later gate. No code until that pass.
+
+### D5 — Protected-identity guard (blast-radius containment) — REQUIRED before E-1 (reviewer, non-negotiable)
+
+Attribution answers *whose* action and *whether* it happened; it says NOTHING about *blast radius*. Disabling the
+customer's last Global Admin / a break-glass account / a critical service principal / **the identity Nirvet itself
+authenticates as** is the SELF-SEALING failure: it can lock the customer (or Nirvet) out of the tenant **including
+the ability to reverse it** — no attribution correctness helps. So a protected-target refusal is a first-class
+outcome that must exist BEFORE the disable Actioner is auto-runnable.
+
+**A protected target → WITHHELD + mandatory human escalation (awaiting_customer) + audit (SOAR-006) + HIGH alert —
+never a silent skip, never a plain fail.** Evaluated at PreCheck (a read, before any mutation). Three layers, because
+any one alone misses cases:
+
+- **L1 — static deny-list (config-first, per-tenant + global seed, tighten-only).** New `protected_identities`
+  (tenant_id NULL = global; identity ref = objectId|upn; reason). The customer names their break-glass / critical
+  service accounts. Config-first per the no-hardcoding rule; a tenant may add, and remove a global default only for a
+  false positive — except the L3 self entry, which is immutable.
+- **L2 — dynamic Graph directory-role check (a static list WILL miss someone — the reviewer's point).** At act time,
+  Graph-query the target's ACTIVE directory roles (`/users/{id}/transitiveMemberOf/microsoft.graph.directoryRole`).
+  Refuse/escalate if the target holds a protected role (config `protected_directory_roles`, seeded: Global
+  Administrator, Privileged Role Administrator, Security Administrator, User Administrator; tenant-tunable). PLUS the
+  **last-of-role** guard: refuse if disabling this user would leave a protected role with ZERO remaining *enabled*
+  members (enumerate role members, count `accountEnabled`). Needs `RoleManagement.Read.Directory` /
+  `Directory.Read.All`. This is a read → adds latency but is mandatory; a Graph error here → fail CLOSED (refuse).
+- **L3 — self-protection (hard, non-configurable).** Never disable the identity Nirvet authenticates as (the app
+  registration's own service principal / the client_id in the connector creds), nor a Nirvet-operated admin. Immutable
+  refuse; cannot be removed from any deny-list.
+
+**Generalization (documented; the reviewer keeps pulling this forward).** The same protected-TARGET seam retrofits to
+MDE isolate as a HOST blast-radius guard — refuse/escalate isolating a crown-jewel / critical asset (the §6.15 asset
+inventory already carries crown-jewel + criticality tags). Ship the guard as a vendor-aware seam so "don't-disable-
+protected-identity" and "don't-isolate-critical-server" are one mechanism. Building the Defender host-guard is a
+named follow-on (not this gate), but the SEAM lands with Entra.
+
+**Config (no-hardcoding):** `protected_identities` (deny-list) + `protected_directory_roles` (which roles are
+protected, seeded) — both admin-configurable with seeded defaults. L3 self is code-derived from the connector
+identity, not config.
+
+**Revised chunk plan:** E-1 Entra Graph action client (accountEnabled read, disable/enable, directory-role +
+role-member reads; injectable base/scope; Microsoft-host allowlist) + unit tests · **E-2 the protected-target guard
+(L1/L2/L3) as a supervisor-consulted seam + config tables + a `ErrProtectedTarget`→withheld/awaiting_customer+alert
+outcome** · E-3 the two Actioners (terminal-state PreCheck; Confirm=nil) + register + wire (catalog `disable_user`
+seeded) · E-4 adversarial round: own/foreign-already-disabled-never-re-enabled/crash-resume-fail-safe/reverse/dry-run/
+kill-switch/rate PLUS the D5 cases — deny-listed identity → withheld+escalate; Global-Admin role → withheld;
+last-of-role → withheld; **self (Nirvet's own SP) → withheld, immutable**. Dedicated adversarial review on landing.
+
+**Gate checklist (Entra vendor):**
+- [x] D1 owner: Entra disable-user.  [x] D2 reviewer: terminal-state fail-SAFE PreCheck.  [x] D3 reviewer: Confirm=nil.
+- [x] D4 reviewer: revoke_sessions non-reversible → separate later gate.
+- [x] D5 reviewer: protected-identity guard (L1 deny-list + L2 dynamic role/last-of-role + L3 self) folded in above.
+- [ ] Reviewer clears the updated gate → build E-1..E-4 test-first; dedicated adversarial round on landing.
