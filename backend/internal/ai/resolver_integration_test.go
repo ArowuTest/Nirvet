@@ -81,7 +81,7 @@ func setPolicy(t *testing.T, db *database.DB, tid uuid.UUID, kinds []string) {
 func testResolver(db *database.DB) *Resolver {
 	// cfg key/model stand in for the platform default; the key resolver seals a ref deterministically (vault is A-5).
 	return NewResolver(NewRepository(db), "cfg-key", "cfg-model",
-		KeyResolverFunc(func(_ context.Context, ref string) (string, error) { return "unsealed:" + ref, nil }))
+		KeyResolverFunc(func(_ context.Context, _ uuid.UUID, ref string) (string, error) { return "unsealed:" + ref, nil }))
 }
 
 // Global anthropic seed → a fresh tenant with no override resolves to anthropic-from-config (back-compat anchor).

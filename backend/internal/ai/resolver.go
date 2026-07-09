@@ -20,18 +20,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// KeyResolver unseals a vault api_key_ref to a plaintext key. Wired to the real vault (with decrypt-audit) in A-5;
-// nil ref means keyless/config-default and never calls this.
+// KeyResolver unseals a vault api_key_ref to a plaintext key. scope is the seal scope — the tenant id for a tenant
+// override row, uuid.Nil for the global row — so the ciphertext stays bound to the scope it was sealed under. Wired
+// to the real vault in A-5; a nil api_key_ref means keyless/config-default and never calls this.
 type KeyResolver interface {
-	ResolveKey(ctx context.Context, ref string) (string, error)
+	ResolveKey(ctx context.Context, scope uuid.UUID, ref string) (string, error)
 }
 
 // KeyResolverFunc adapts a plain func.
-type KeyResolverFunc func(ctx context.Context, ref string) (string, error)
+type KeyResolverFunc func(ctx context.Context, scope uuid.UUID, ref string) (string, error)
 
 // ResolveKey implements KeyResolver.
-func (f KeyResolverFunc) ResolveKey(ctx context.Context, ref string) (string, error) {
-	return f(ctx, ref)
+func (f KeyResolverFunc) ResolveKey(ctx context.Context, scope uuid.UUID, ref string) (string, error) {
+	return f(ctx, scope, ref)
 }
 
 // Resolution is the outcome of resolving a tenant's provider: the Provider plus the facts the caller audits.
@@ -79,6 +80,12 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID uuid.UUID) Resolution {
 		return disabled("kind_restricted") // §1903: tenant policy forbids this kind
 	}
 
+	// Key-unseal scope: a tenant override's key was sealed under the tenant; the global row's under uuid.Nil.
+	scope := tenantID
+	if row.IsGlobal {
+		scope = uuid.Nil
+	}
+
 	switch row.Kind {
 	case KindDisabled:
 		// Explicitly configured off — the intended state, not a fallback (no audit reason).
@@ -87,7 +94,7 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID uuid.UUID) Resolution {
 	case KindAnthropic:
 		key := r.cfgKey
 		if row.APIKeyRef != "" {
-			k, kerr := r.unseal(ctx, row.APIKeyRef)
+			k, kerr := r.unseal(ctx, scope, row.APIKeyRef)
 			if kerr != nil {
 				return disabled("key_unseal_error")
 			}
@@ -113,7 +120,7 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID uuid.UUID) Resolution {
 		}
 		key := ""
 		if row.APIKeyRef != "" {
-			k, kerr := r.unseal(ctx, row.APIKeyRef)
+			k, kerr := r.unseal(ctx, scope, row.APIKeyRef)
 			if kerr != nil {
 				return disabled("key_unseal_error")
 			}
@@ -133,11 +140,11 @@ func (r *Resolver) Resolve(ctx context.Context, tenantID uuid.UUID) Resolution {
 	}
 }
 
-func (r *Resolver) unseal(ctx context.Context, ref string) (string, error) {
+func (r *Resolver) unseal(ctx context.Context, scope uuid.UUID, ref string) (string, error) {
 	if r.keys == nil {
 		return "", fmt.Errorf("ai: no key resolver configured but api_key_ref set")
 	}
-	return r.keys.ResolveKey(ctx, ref)
+	return r.keys.ResolveKey(ctx, scope, ref)
 }
 
 func contains(xs []string, v string) bool {

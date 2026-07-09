@@ -89,6 +89,7 @@ type Assets interface {
 // calls the gateway (or falls back offline), and logs every call.
 type Service struct {
 	gw        *Gateway
+	resolver  *Resolver // §6.12 #117: per-tenant provider resolution (A-5). nil → use the startup gateway (back-compat).
 	alerts    *alert.Service
 	incidents Incidents
 	assets    Assets
@@ -105,6 +106,37 @@ func (s *Service) WithIncidentContext(i Incidents, a Assets) *Service {
 	s.incidents = i
 	s.assets = a
 	return s
+}
+
+// WithResolver wires the admin-configurable provider resolver (§6.12 #117 A-5). Once set, each call resolves the
+// tenant's provider (anthropic / openai_compatible / disabled) instead of using the single startup gateway.
+func (s *Service) WithResolver(r *Resolver) *Service {
+	s.resolver = r
+	return s
+}
+
+// resolve picks the provider for a tenant. Without a resolver wired it falls back to the startup gateway so
+// existing behavior/tests are unchanged.
+func (s *Service) resolve(ctx context.Context, tenantID uuid.UUID) (Provider, Resolution) {
+	if s.resolver != nil {
+		r := s.resolver.Resolve(ctx, tenantID)
+		return r.Provider, r
+	}
+	return s.gw, Resolution{Provider: s.gw, Kind: KindAnthropic, Model: s.gw.Model()}
+}
+
+// withProviderMeta folds the resolved provider facts into an AI-call audit record: which provider/endpoint served
+// the call, and — critically — the fallback reason if the tenant's configured provider was NOT used (no silent
+// downgrade). The api_key itself is never recorded.
+func withProviderMeta(m map[string]any, res Resolution) map[string]any {
+	m["provider_kind"] = string(res.Kind)
+	if res.Endpoint != "" {
+		m["provider_endpoint"] = res.Endpoint
+	}
+	if res.Fallback {
+		m["provider_fallback_reason"] = res.Reason
+	}
+	return m
 }
 
 // SummariseAlert produces an evidence-linked summary of an alert for an analyst.
@@ -128,13 +160,14 @@ func (s *Service) SummariseAlert(ctx context.Context, p auth.Principal, alertID 
 	userContent := fenceBlock(evidence) +
 		"\n\nUsing only the data above, summarise what happened, why it matters, and suggested next investigative steps."
 
-	sum := &Summary{Model: s.gw.Model(), Evidence: []string{"alert:" + a.ID.String()}, Assistive: true}
+	prov, res := s.resolve(ctx, p.TenantID) // §6.12 #117: the tenant's configured provider (fail-closed to disabled)
+	sum := &Summary{Model: prov.Model(), Evidence: []string{"alert:" + a.ID.String()}, Assistive: true}
 	if a.EventID != nil {
 		sum.Evidence = append(sum.Evidence, "event:"+a.EventID.String())
 	}
 
-	if s.gw.Available() {
-		text, err := s.gw.Complete(ctx, systemPrompt, userContent)
+	if prov.Available() {
+		text, err := prov.Complete(ctx, systemPrompt, userContent)
 		if err == nil {
 			sum.Text = text
 			sum.Confidence = "inferred"
@@ -148,12 +181,12 @@ func (s *Service) SummariseAlert(ctx context.Context, p auth.Principal, alertID 
 		sum.Confidence = "observed"
 	}
 
-	// Audit the AI call (model + output size) — guardrail: full logging.
+	// Audit the AI call (model + output + provider kind/endpoint + fallback reason) — guardrail: full logging.
 	_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "ai.summarise_alert",
 			Target:   "alert:" + a.ID.String(),
-			Metadata: auditMeta(sum.Model, sum.Text),
+			Metadata: withProviderMeta(auditMeta(sum.Model, sum.Text), res),
 		})
 	})
 	return sum, nil
@@ -224,7 +257,8 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 		"(consider severity, SLA status and affected-asset criticality), and the recommended next steps " +
 		"(to be executed by a human via the approval workflow)."
 
-	sum := &Summary{Model: s.gw.Model(), Assistive: true, Evidence: []string{"incident:" + inc.ID.String()}}
+	prov, res := s.resolve(ctx, p.TenantID) // §6.12 #117: the tenant's configured provider (fail-closed to disabled)
+	sum := &Summary{Model: prov.Model(), Assistive: true, Evidence: []string{"incident:" + inc.ID.String()}}
 	for _, a := range alerts {
 		sum.Evidence = append(sum.Evidence, "alert:"+a.ID.String())
 	}
@@ -232,8 +266,8 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 		sum.Evidence = append(sum.Evidence, "asset:"+as.Ref)
 	}
 
-	if s.gw.Available() {
-		if text, gerr := s.gw.Complete(ctx, systemPrompt, userContent); gerr == nil {
+	if prov.Available() {
+		if text, gerr := prov.Complete(ctx, systemPrompt, userContent); gerr == nil {
 			sum.Text = text
 			sum.Confidence = "inferred"
 		} else {
@@ -250,7 +284,7 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "ai.triage_incident",
 			Target:   "incident:" + inc.ID.String(),
-			Metadata: auditMeta(sum.Model, sum.Text), // persist the copilot's output (R3 L-Triage-Audit)
+			Metadata: withProviderMeta(auditMeta(sum.Model, sum.Text), res), // persist output + provider (R3 L-Triage-Audit)
 		})
 	})
 	return sum, nil

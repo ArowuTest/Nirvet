@@ -265,6 +265,9 @@ func main() {
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
 	aiSvc.WithIncidentContext(incidentSvc, assetSvc)
+	// §6.12 #117 A-5: resolve the tenant's configured provider per call (anthropic / openai_compatible / disabled),
+	// fail-closed. The global anthropic seed keeps current behavior; api keys unseal through the same vault.
+	aiSvc.WithResolver(ai.NewResolver(ai.NewRepository(db), cfg.AnthropicAPIKey, cfg.AIModel, ai.NewVaultKeyResolver(vault)))
 	aiH := ai.NewHandler(aiSvc)
 	// §6.12 #117 admin-configurable AI providers: config surface (global default + per-tenant override + platform
 	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
