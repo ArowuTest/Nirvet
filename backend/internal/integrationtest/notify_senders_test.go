@@ -6,12 +6,12 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
-	"os"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/notify"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -22,10 +22,7 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disca
 // vault-encrypted secret (COMM-001) — the secret round-trips through the cipher, is never returned, and
 // is isolated per tenant.
 func TestIntegration_NotificationSenders(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {
@@ -105,10 +102,7 @@ func TestIntegration_NotificationSenders(t *testing.T) {
 // TestIntegration_NotificationTemplatesThrottle exercises §6.16 slice C: template render + localization
 // (COMM-007/008), tenant override, and throttle de-dup (COMM-006).
 func TestIntegration_NotificationTemplatesThrottle(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

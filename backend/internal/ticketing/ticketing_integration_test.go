@@ -12,12 +12,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/ticketing"
 	"github.com/google/uuid"
@@ -89,10 +89,7 @@ func TestJiraProvider_RequiresProjectKey(t *testing.T) {
 }
 
 func TestMirrorIncident_DBPath(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run the ticketing DB path")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

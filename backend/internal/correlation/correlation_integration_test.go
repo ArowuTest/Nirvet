@@ -4,22 +4,19 @@ package correlation_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 func TestCorrelation_ClustersByEntity(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run correlation integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {
@@ -131,10 +128,7 @@ func (s *stubIncidenter) OpenFromCorrelation(_ context.Context, _ uuid.UUID, _, 
 }
 
 func TestCorrelation_AutoPromotesHighRisk(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run correlation integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {
@@ -189,10 +183,7 @@ func TestCorrelation_AutoPromotesHighRisk(t *testing.T) {
 // (COR-007), storm status trips at the configured threshold (COR-008), and over-correlation metrics
 // compute (COR-010).
 func TestCorrelation_SuppressionStormMetrics(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run correlation integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

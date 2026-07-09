@@ -7,21 +7,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/google/uuid"
 )
 
 func TestThreatIntelSliceB(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run threat-intel slice B tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

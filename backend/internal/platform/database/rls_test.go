@@ -2,9 +2,9 @@ package database
 
 import (
 	"context"
-	"os"
 	"testing"
 
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -16,10 +16,7 @@ import (
 //
 //	NIRVET_TEST_DATABASE_URL=postgres://nirvet_app:nirvet_app@localhost:5433/nirvet?sslmode=disable go test ./internal/platform/database/ -run RLS
 func TestRLSIsolation(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run the RLS integration test")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := Connect(ctx, dsn)
 	if err != nil {
@@ -79,10 +76,7 @@ func TestRLSIsolation(t *testing.T) {
 // TestNoTenantContextIsFailClosed verifies that without a tenant GUC set, RLS
 // returns nothing (fail-closed) rather than leaking all rows.
 func TestNoTenantContextIsFailClosed(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run the RLS integration test")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := Connect(ctx, dsn)
 	if err != nil {

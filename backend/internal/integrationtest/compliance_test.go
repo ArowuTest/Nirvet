@@ -2,12 +2,12 @@ package integrationtest
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -16,10 +16,7 @@ import (
 // frameworks/controls are visible, Assess produces a per-control status from live state, a manual
 // override persists and wins over the auto signal, and tenant status is isolated.
 func TestIntegration_ComplianceAssessment(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

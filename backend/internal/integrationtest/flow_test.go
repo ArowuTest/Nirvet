@@ -35,6 +35,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/platform/totp"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
@@ -84,10 +85,7 @@ func (stubTicketer) MirrorIncident(_ context.Context, _ uuid.UUID, _, _, _ strin
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

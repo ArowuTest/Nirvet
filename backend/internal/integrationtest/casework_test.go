@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -18,10 +18,7 @@ import (
 // (CASE-005), config-driven categories (CASE-007), and parent/child + major incidents (CASE-006) with
 // the cycle + cross-tenant guards.
 func TestIntegration_CaseworkSliceB(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {
@@ -140,10 +137,7 @@ func (f *fakeBlob) Put(_ context.Context, tenantID uuid.UUID, key string, _ []by
 // TestIntegration_CaseworkSliceC exercises §6.8 slice C: attachment chain-of-custody (CASE-008) and
 // knowledge-base links (CASE-010).
 func TestIntegration_CaseworkSliceC(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

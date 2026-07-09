@@ -5,11 +5,11 @@ package soar_test
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
@@ -39,10 +39,7 @@ func (c *callCounter) actioner(connectorKey, action string, idempotent bool) soa
 
 func setupSup(t *testing.T) (*soar.Supervisor, *soar.Repository, *database.DB, uuid.UUID, *callCounter) {
 	t.Helper()
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run SOAR supervisor tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	db, err := database.Connect(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -115,7 +112,10 @@ func TestSupervisor_NonIdempotentForcedManual(t *testing.T) {
 	// A registry whose action is NOT idempotent → contract refuses auto-run → awaiting_customer, no call.
 	nc := &callCounter{}
 	reg := soar.NewActionerRegistry().Register(soar.Actioner{ConnectorKey: "flaky", Action: "block", Idempotent: false, PreCheck: false,
-		Fn: func(context.Context, []byte, string, map[string]any) (string, map[string]any, error) { nc.n++; return "x", nil, nil }})
+		Fn: func(context.Context, []byte, string, map[string]any) (string, map[string]any, error) {
+			nc.n++
+			return "x", nil, nil
+		}})
 	sup2 := soar.NewSupervisor(soar.NewRepository(db), reg, mockCreds{}, nil)
 	act := soar.ActionCatalog{ActionKey: "block", ConnectorKey: "flaky", RiskClass: soar.RiskHigh, Executor: soar.ExecutorConnector, Enabled: true}
 	st, _, err := sup2.ExecuteConnectorStep(ctx, tid, actor, uuid.New(), 0, act, "ip:1.2.3.4", nil)

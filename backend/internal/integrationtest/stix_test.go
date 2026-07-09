@@ -3,11 +3,11 @@ package integrationtest
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/google/uuid"
@@ -17,10 +17,7 @@ import (
 // Postgres: bundle import, idempotent re-import, STIX-typed enrichment, global-feed visibility, and
 // tenant isolation. Gated on NIRVET_TEST_DATABASE_URL like the rest of the suite.
 func TestIntegration_StixStoreAndEnrichment(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

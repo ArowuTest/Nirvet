@@ -4,19 +4,16 @@ package queue
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestPostgresQueue_ReapStale(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run queue reaper test")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {

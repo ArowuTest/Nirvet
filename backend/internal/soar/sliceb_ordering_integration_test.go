@@ -5,11 +5,11 @@ package soar
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,10 +25,7 @@ func (r *recExec) Execute(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, ac
 
 func orderingSetup(t *testing.T) (*database.DB, uuid.UUID) {
 	t.Helper()
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run ordering tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	db, err := database.Connect(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)

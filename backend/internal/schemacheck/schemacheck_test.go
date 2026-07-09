@@ -7,29 +7,27 @@
 //   - a UNIQUE/PK on a tenant table that omits tenant_id → cross-tenant collision (R5-H3 stix_objects);
 //   - a Go enum drifting from its column's CHECK constraint → an insert that fails at runtime, or a dead
 //     DB value the code never emits.
+//
 // They query the live catalog, so they cannot be fooled by SQL formatting the way a text grep could.
 package schemacheck_test
 
 import (
 	"context"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
-	"github.com/ArowuTest/nirvet/internal/detection"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 )
 
 func connect(t *testing.T) *database.DB {
 	t.Helper()
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run schema-invariant checks")
-	}
+	dsn := testsupport.RequireDSN(t)
 	db, err := database.Connect(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)

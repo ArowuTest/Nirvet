@@ -4,21 +4,18 @@ package soar_test
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
 )
 
 func TestSoarSettingsAndPlatformFlags(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run SOAR slice B config tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {

@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +24,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/sso"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/golang-jwt/jwt/v5"
@@ -119,10 +119,7 @@ func (m *mockIdP) signID(t *testing.T, email, nonce string, mutate func(jwt.MapC
 }
 
 func TestSSO_OIDCFlow(t *testing.T) {
-	dsn := os.Getenv("NIRVET_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NIRVET_TEST_DATABASE_URL to run SSO integration tests")
-	}
+	dsn := testsupport.RequireDSN(t)
 	ctx := context.Background()
 	db, err := database.Connect(ctx, dsn)
 	if err != nil {
