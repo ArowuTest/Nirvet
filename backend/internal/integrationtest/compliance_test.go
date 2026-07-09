@@ -81,6 +81,25 @@ func TestIntegration_ComplianceAssessment(t *testing.T) {
 		t.Fatalf("DETECT should be met once the tenant has its own detection rule, got %+v", de)
 	}
 
+	// R6-C3: flat-seeded frameworks (CIS v8.1) must produce a real score — every control is a childless
+	// top-level control with a signal, and must be assessed as its own leaf (not a null rollup → 0).
+	cis, err := svc.Assess(ctx, tnA.ID, "cis_v8_1")
+	if err != nil {
+		t.Fatalf("assess CIS: %v", err)
+	}
+	if len(cis.Functions) == 0 || cis.Score == 0 {
+		t.Fatalf("CIS v8.1 must score (flat framework), got %d functions score=%d", len(cis.Functions), cis.Score)
+	}
+	metOrGap := 0
+	for _, f := range cis.Functions {
+		if f.Status != compliance.StatusNotApplicable {
+			metOrGap++
+		}
+	}
+	if metOrGap == 0 {
+		t.Fatal("CIS controls must be assessed (not all not_applicable)")
+	}
+
 	// Manual override wins over the auto signal and persists. Override RC.RP → met.
 	if err := svc.SetControlStatus(ctx, tnA.ID, compliance.SetStatusInput{
 		FrameworkKey: "nist_csf_2_0", ControlRef: "RC.RP", Status: compliance.StatusMet,

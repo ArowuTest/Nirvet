@@ -86,27 +86,40 @@ func (s *Service) Assess(ctx context.Context, tenantID uuid.UUID, frameworkKey s
 		weightOf[c.ControlRef] = c.Weight
 	}
 
+	tally := func(ref, status string, score int) {
+		cov.Summary[status]++
+		if status == StatusNotApplicable {
+			return
+		}
+		w := weightOf[ref]
+		if w <= 0 {
+			w = 1
+		}
+		totalScore += score * w
+		totalWeight += w
+	}
+
 	for _, fn := range functions {
 		kids := leavesByParent[fn.ControlRef]
 		fa := FunctionAssessment{ControlRef: fn.ControlRef, Title: fn.Title, Controls: kids}
-		if m, ok := manual[fn.ControlRef]; ok {
-			// A manual override on the function itself wins over the child roll-up.
-			fa.Status, fa.Score = m.Status, m.Score
+		if len(kids) > 0 {
+			// A top-level control WITH children is a rollup: status derives from the children (a manual
+			// override on the parent is display-only), and the CHILDREN are the tallied units (NIST CSF).
+			if m, ok := manual[fn.ControlRef]; ok {
+				fa.Status, fa.Score = m.Status, m.Score
+			} else {
+				fa.Score, fa.Status = rollup(kids, weightOf)
+			}
+			for _, ca := range kids {
+				tally(ca.ControlRef, ca.Status, ca.Score)
+			}
 		} else {
-			fa.Score, fa.Status = rollup(kids, weightOf)
-		}
-		// Tally leaves (not the function rows) into the framework summary + weighted score.
-		for _, ca := range kids {
-			cov.Summary[ca.Status]++
-			if ca.Status == StatusNotApplicable {
-				continue
-			}
-			w := weightOf[ca.ControlRef]
-			if w <= 0 {
-				w = 1
-			}
-			totalScore += ca.Score * w
-			totalWeight += w
+			// R6-C3: a CHILDLESS top-level control (flat-seeded CIS v8.1 / ISO 27001) is an assessed leaf
+			// in its own right — resolve its signal / manual override and tally it, so the framework does
+			// not score 0/not_applicable. This also makes a manual override on such a control count.
+			ca := assessLeaf(ctx, s.repo, tenantID, fn, manual)
+			fa.Status, fa.Score = ca.Status, ca.Score
+			tally(fn.ControlRef, ca.Status, ca.Score)
 		}
 		cov.Functions = append(cov.Functions, fa)
 	}
