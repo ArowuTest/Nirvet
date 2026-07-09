@@ -1612,3 +1612,76 @@ notification AND an internal alert/incident, so it lands in the SOC's triage que
   alerts (not global sweep counts) and confirm their rows at cleanup — a reused DB with accumulated
   unconfirmed rows makes the sweep slow (many HTTP confirms); a fresh CI DB never hits this.
 - [x] Built R-1..R-4 test-first; LOW folded. Reviewer landing review = task #37.
+
+---
+
+## Gate — §6.11 SOAR second vendor Actioner — DESIGN REVIEW / SCOPING (pre-code) — Jul 2026
+
+**Status:** scoping while the reconciler landing review (task #37) is pending. BUILD after the reviewer clears the
+reconciler. Held deliberately (the reviewer's rule): a second vendor built on the wrong attribution pattern would
+re-open H-1b. This gate exists to pick the vendor AND settle the one thing that does NOT transfer cleanly from
+slice C — own-vs-foreign attribution for a vendor with no per-action correlator field.
+
+**What DOES transfer for free (the seam is ready):** the two-phase supervisor, the gate (kill-switch / destructive_
+enabled default OFF / dry-run / per-class rate cap), MUST-1..4, reverse, the reconciler (D-3), the CredDecryptor,
+the config-first catalog, and the round-#34 test harness. A second vendor is a new `defenderClient`-shaped client +
+two Actioners + a catalog seed — UNLESS its attribution needs something the seam can't give.
+
+**THE deciding question — how does the vendor answer "did WE cause this state?" (H-1b).** Slice C stamps a
+correlator (`[nirvet:<run>:<step>]`) into the MDE machineAction `requestorComment` and matches it on PreCheck. That
+works only for a vendor whose action carries a writable, readable per-action field. The two candidates differ
+exactly here:
+
+### Candidate A — Entra ID disable-user ⇄ enable-user (RECOMMENDED)
+- **Cheapest build:** `entra-id` connector kind already exists; `disable_user` + `revoke_sessions` catalog rows
+  already seeded (Class-3 high, connector, entra-id); the Graph client + client-credentials pattern is reusable
+  (scope `https://graph.microsoft.com/.default`, permission `User.EnableDisableAccount` / `Directory.ReadWrite.All`).
+  Action = `PATCH /users/{id} {"accountEnabled": false}`; reverse = `true`. Target `user:<id|upn>`.
+- **Synchronous** (PATCH 204 = done) → NOT async like MDE → the reconciler `Confirm` can be `nil` (confirmed on
+  sight), OR optionally a read-back of `accountEnabled==false`. Simpler than MDE.
+- **Attribution — comment-less, but it FAILS SAFE (the important insight):** a Graph user object has no per-action
+  comment to stamp a correlator into. PreCheck reads the TERMINAL state (`accountEnabled`):
+  - fresh, enabled → we disable → `changed=true` (reversible);
+  - fresh, already disabled (FOREIGN — an admin/another run) → no PATCH, `changed=false` → reverse never re-enables.
+    **The H-1b fail-open is naturally closed** for a state-read vendor: a foreign-disabled account read on resume is
+    still `accountEnabled=false` → `changed=false` → fail-CLOSED (never wrongly re-enable).
+  - **Residual (fail-SAFE, not fail-open):** a crash AFTER our PATCH but before Phase-C commit → resume reads
+    `accountEnabled=false` and cannot tell own-from-foreign → `changed=false` → a genuinely-ours disable becomes
+    non-reversible (stranded disabled = availability gap). This is the SAFE direction (the reviewer's stated
+    preference), and the reconciler already surfaces the unconfirmed action for a human.
+  - **To also close the residual (optional, reviewer decision):** a durable PRE-OBSERVATION — the supervisor
+    persists the observed `accountEnabled` BEFORE the PATCH (a small committed step between claim and act), so on
+    any resume the before-state is known and `changed = was_enabled`. This is the general mechanism for ALL
+    comment-less vendors and a small ENGINE refinement (an optional `Observe` hook). RECOMMEND: ship Entra V1 on the
+    fail-SAFE terminal-state PreCheck (simplest, correct-direction), and add the durable pre-observation only if the
+    reviewer wants own-crash reversibility now rather than as a follow-on.
+
+### Candidate B — Palo Alto block-IP ⇄ unblock-IP
+- **Reuses the correlator seam cleanly:** a PAN dynamic-address-group / registered-IP entry can carry a tag/
+  description, so we stamp `[nirvet:<run>:<step>]` exactly like MDE → own-vs-foreign attribution is identical to
+  slice C (no new mechanism, no engine change). This is the vendor that literally "inherits the seam."
+- **But the biggest build:** new connector kind, new client (PAN-OS XML API or Panorama), new auth (API key, not
+  OAuth). `block_ip` is seeded but mis-pointed at connector_key `defender` (would be corrected to a `palo-alto`
+  kind). Higher blast radius (an IP block is network-wide; a shared-egress IP is a real hazard) → arguably wants a
+  lower default or an extra confirm.
+
+**Recommendation:** **Entra disable-user first.** Highest SOC value (contain a compromised identity), cheapest build
+(existing kind + catalog + Graph client), synchronous (no async reconciler needed), and its comment-less attribution
+FAILS SAFE — which is the correct direction and, notably, a cleaner story than MDE for the foreign case. It also
+forces us to solve comment-less attribution, which generalizes to every future non-taggable vendor. PAN is the right
+SECOND-second vendor once a network-containment engagement pulls it.
+
+**Open decisions (owner + reviewer) before E-1:**
+- D1 (owner): Entra disable-user as the next vendor? (vs PAN block-IP.)
+- D2 (reviewer): accept Entra V1 on the fail-SAFE terminal-state PreCheck (own-crash → stranded-disabled, surfaced
+  by the reconciler), OR require the durable pre-observation (`Observe` hook) now to restore own-crash reversibility?
+- D3 (reviewer): Entra confirm — `nil` (synchronous, PATCH-204-is-truth) or a read-back of `accountEnabled`?
+- D4: `revoke_sessions` (revokeSignInSessions) is NOT cleanly reversible (you cannot un-revoke a session) → declare
+  it non-reversible → MUST-1 forces human-confirm for a Class-3 non-reversible action. Scope it as a LATER,
+  separate action (its own gate), not part of the disable-user pair.
+
+**Chunks (mirror slice C, after clearance):** E-1 Entra Graph action client (get accountEnabled, disable/enable;
+injectable base/scope; D-1-style Microsoft-host allowlist) + unit tests · E-2 the two Actioners (PreCheck terminal
+state; +Observe hook iff D2 chosen) + register + (catalog already seeded) · E-3 wire into api/worker registry · E-4
+adversarial round (own/foreign/crash-resume-fail-safe/reverse/dry-run/kill-switch/rate — the slice-C matrix, plus
+the Entra-specific foreign-already-disabled-never-re-enabled). Its own dedicated adversarial review on landing.
