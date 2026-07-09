@@ -1596,3 +1596,19 @@ notification AND an internal alert/incident, so it lands in the SOC's triage que
 - [x] Reviewer confirmed D-a..D-d; G-1/G-2 folded above; landing review queued as reviewer task #37.
 - [x] Owner confirmed alert channel = BOTH outbox HIGH + internal alert/incident.
 - [ ] Build R-1..R-4 test-first (fold in the round-#34 LOW at R-2); ping reviewer on landing.
+
+### LANDED (ffe7424) — reconciler R-1..R-4 built, dormant
+
+- R-1 (2db73b0) schema 0065 + repo (confirm/fail lifecycle; G-1/G-2 enforced in the SECURITY-DEFINER list).
+- R-2 (3dbd2da) Actioner.Confirm + Defender getMachineAction/confirm + FOLD the round-#34 LOW (delimited
+  correlator token, so `:1` can't substring-match `:10`).
+- R-3+R-4 (ffe7424) Supervisor.ReconcileOnce (D-3 terminal-state table, read-only poll, panic-guarded) +
+  StartReconcileLoop in cmd/worker; ContainmentAlerter → soarContainmentAlerter = BOTH internal triage alert
+  (alert.RaisePlatform) + durable HIGH outbox notification, deduped per execution; adversarial suite green.
+- G-1 (poll the bare prior_state.action_id, not the display connector_ref) + G-2 (only reconcile rows we
+  caused, prior_state.changed=true) both folded and pinned with tests. Sweep bounded ORDER BY claimed_at
+  LIMIT 500/tick (no unbounded scan). Full repo suite green on a fresh DB; build/vet/gofmt clean.
+- Test lesson: ReconcileOnce is system-level, so integration tests assert on THEIR row + THEIR tenant's
+  alerts (not global sweep counts) and confirm their rows at cleanup — a reused DB with accumulated
+  unconfirmed rows makes the sweep slow (many HTTP confirms); a fresh CI DB never hits this.
+- [x] Built R-1..R-4 test-first; LOW folded. Reviewer landing review = task #37.
