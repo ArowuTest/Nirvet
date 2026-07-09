@@ -43,7 +43,7 @@ func (r *Repository) countClassExecutedLastHourTx(ctx context.Context, tx pgx.Tx
 	var n int
 	err := tx.QueryRow(ctx,
 		`SELECT count(*) FROM soar_action_execution
-		  WHERE tenant_id=$1 AND risk_class=$2 AND status='executed'
+		  WHERE tenant_id=$1 AND risk_class=$2 AND status='executed' AND dry_run=false
 		    AND claimed_at > now() - interval '1 hour'`, tenantID, string(risk)).Scan(&n)
 	return n, err
 }
