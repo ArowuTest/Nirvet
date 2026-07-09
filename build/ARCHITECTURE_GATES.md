@@ -1257,7 +1257,9 @@ this slice supplies the vendor implementation behind the seam, it does NOT chang
    app-registration must grant Machine.Isolate. All dials via `netsafe.SafeClient`.
 3. **Two `Actioner`s** registered into the previously-empty registry at api+worker startup:
    `defender:isolate` (`Idempotent=false, PreCheck=true, Reversible=true, Inverse="release"`) and
-   `defender:release`. PreCheck is mandatory here and load-bearing (see invariant C-3 below). Once registered,
+   `defender:release`. PreCheck is mandatory + load-bearing (C-3): it reads the **machineAction history** and
+   treats a matching Isolate in `Pending|InProgress|Succeeded` as already-requested (async-safe, not terminal-state).
+   Once registered,
    `supervisedNeeded` matches a playbook isolate step → the real two-phase path engages **iff** a matching
    Defender connector is configured AND that tenant's `destructive_enabled=true`.
 4. **Catalog seed** (migration): `isolate_endpoint`/`release_endpoint` → `executor=connector, connector_key=defender,
@@ -1276,27 +1278,37 @@ this slice supplies the vendor implementation behind the seam, it does NOT chang
 - Live smoke against a real Defender tenant (needs owner app-registration creds w/ Machine.Isolate).
 
 **Key design decisions — reviewer, please confirm these four (the honest wrinkles):**
-- **D-1 API surface + scope.** Use the MDE API (`api.securitycenter.microsoft.com`, `Machine.Isolate`), base
-  URL + scope injectable so tests hit a mock and prod is config-driven. Accept that this needs a broader app-
-  registration than the alert-pull connector (owner-side config).
-- **D-2 "already isolated" read for MUST-3.** MDE exposes no clean isolation boolean; the reliable signal is
-  the machine's most-recent Isolate/Unisolate `machineAction` (or `healthStatus`). PreCheck reads that; if the
-  machine is already in the target state → `prior_state.changed=false` (skip the POST, record no-op). **If the
-  state is indeterminate:** recommend still issuing isolate (it is safe to re-request; MDE dedups) and recording
-  `changed=unknown` — reverse then treats unknown as "do not auto-undo" (fail-safe: never auto-release on a guess).
-  Reviewer: confirm the indeterminate policy (act-on-isolate / don't-auto-reverse).
-- **D-3 "submitted = executed" for V1.** Given async, `executed` means accepted-by-MDE (machineAction id captured),
-  not confirmed-isolated; reverse is symmetric. Completion reconciler is a follow-on. Confirm acceptable for V1.
-- **D-4 target contract.** Step `target` carries the machine id (or a hostname the Fn resolves). No upstream
-  incident→machine mapping in this slice.
+- **D-1 API surface + scope (CONFIRMED, + host allowlist).** Use the MDE API (`api.securitycenter.microsoft.com`,
+  `Machine.Isolate`), base URL + scope injectable so tests hit a mock and prod is config-driven. Needs a broader
+  app-registration than the alert-pull connector (owner-side config). **Reviewer add:** validate the config-driven
+  base URL against an **allowlist of expected Microsoft hosts** (e.g. `*.securitycenter.microsoft.com` /
+  `*.security.microsoft.com`) — defense-in-depth *over* `netsafe`, so a misconfigured/hostile base URL can't
+  redirect a real containment call to an attacker endpoint even if it resolves to a public IP.
+- **D-2 PreCheck keys off machineAction HISTORY, not terminal state (CONFIRMED, sharpened).** MDE exposes no
+  clean isolation boolean, AND isolation is async — so PreCheck must NOT wait for a terminal "isolated" state.
+  It reads the machine's **machineAction history** and treats a matching **Isolate** action in
+  **`Pending | InProgress | Succeeded`** as "already requested → `prior_state.changed=false`, skip the POST."
+  This is what makes crash-while-`Pending` safe (see C-3): the terminal state may not be reached yet, but the
+  in-flight action is visible. **Indeterminate** (history unreadable) → still issue isolate (safe to re-request;
+  MDE dedups) and record `changed=unknown`; reverse treats `unknown` as "do NOT auto-undo" (fail-safe — never
+  auto-release on a guess).
+- **D-3 "submitted = executed" for V1 (CONFIRMED, + `confirmed=false`).** Given async, `executed` means
+  accepted-by-MDE (machineAction id captured), not confirmed-isolated; reverse is symmetric. The execution row
+  records **`confirmed=false`** for submitted-not-yet-confirmed so a later completion reconciler (named follow-on)
+  can flip it. Reviewer confirmed acceptable for V1.
+- **D-4 target contract (CONFIRMED).** Step `target` carries the machine id (or a hostname the Fn resolves). No
+  upstream incident→machine mapping in this slice.
 
 **Correctness invariants (must hold — round #34).**
 - **C-1** `destructive_enabled=false` → step `withheld` + audited, **zero** isolate POSTs (mock call-count 0).
 - **C-2** `dry_run=true` → PreCheck read only, **zero** isolate POSTs, recorded `simulated`.
-- **C-3 (THE ONE):** crash **after** the external POST but **before** Phase-C commit → reaper resumes at Phase B →
-  the Actioner's **PreCheck observes the machine is now isolated → does NOT POST again** → step recorded `executed`
-  exactly once (mock isolate call-count stays 1). This is why MUST-1 forbids a non-idempotent action without
-  PreCheck; PreCheck is the resume-idempotency guard for a real destructive call. **Must be explicitly tested.**
+- **C-3 (THE ONE — crash-while-`Pending`):** crash **after** the external POST but **before** Phase-C commit →
+  reaper resumes at Phase B. Because isolate is async, the machine may still be **`Pending`** (not terminally
+  isolated) at resume — so PreCheck keying off terminal state would double-POST. PreCheck instead reads the
+  **machineAction history** and sees the in-flight **Isolate action in `Pending`** → treats it as already-requested
+  → **does NOT POST again** → step recorded `executed` exactly once (mock isolate call-count stays 1). This is why
+  MUST-1 forbids a non-idempotent action without PreCheck; PreCheck (history-based) is the resume-idempotency guard
+  for a real async destructive call. **Round #34 headline probe: crash-while-`Pending` must not double-isolate.**
 - **C-4** reverse honors `prior_state.changed`: `true` → POST unisolate; `false`/`unknown` → skip (no-op), audited.
 - **C-5** Class-3 under `observe`/`approval` authority → `awaiting_approval`, no auto-exec; four-eyes on approve.
 - **C-6** MDE API error → step `failed` (not stuck `executing`), reason recorded; run continues/ends per SOAR-009.
@@ -1317,8 +1329,13 @@ by default; turning it on per-tenant is an explicit admin action. Live smoke wai
 sandbox creds. Ping reviewer for their dedicated round #34 on landing.
 
 **Gate checklist.**
-- [ ] Reviewer confirms D-1..D-4 (API surface/scope, indeterminate-state policy, submitted=executed, target contract).
-- [ ] Reviewer confirms C-3 (crash-after-POST resume-idempotency via PreCheck) is the load-bearing invariant + must-test.
-- [ ] Owner confirms Defender is the right first vendor (vs Entra disable-user) and that OFF-by-default + explicit
-      enable is the desired safety posture.
-- [ ] On green → build C-1..C-4 test-first; dedicated adversarial round #34 on landing.
+- [x] Reviewer confirms D-1..D-4 — with edits folded: D-1 base-URL Microsoft-host allowlist; D-2 PreCheck keys off
+      machineAction history (`Pending|InProgress|Succeeded`), not terminal state; D-3 record `confirmed=false` for
+      submitted-not-yet-confirmed; D-4 as written.
+- [x] Reviewer confirms C-3 is the load-bearing invariant + must-test — **sharpened to crash-while-`Pending`**
+      (round #34 headline probe: a resume while the isolate is still `Pending` must not double-POST).
+- [x] Reviewer endorses Defender-isolate-first (risk-ordered: fully reversible, single-machine blast radius,
+      pre-checkable) over leading with Entra disable-user; OFF-by-default + explicit per-tenant enable = correct posture.
+- [ ] **Owner's final nod** (the one open box): Defender-isolate-first + OFF-by-default.
+- [ ] On owner nod → build C-1..C-4 test-first (A+B suites green each chunk); dedicated adversarial round #34 vs
+      mock MDE on landing, headline probe = crash-while-`Pending` double-POST.
