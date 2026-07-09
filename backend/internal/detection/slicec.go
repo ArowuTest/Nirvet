@@ -5,6 +5,7 @@ package detection
 
 import (
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
+	"github.com/google/cel-go/cel"
 	"github.com/google/uuid"
 )
 
@@ -81,26 +82,26 @@ type TestRun struct {
 	Results []TestResult `json:"results"`
 }
 
-// evalRule evaluates a rule body against an event using the same primitives as the live
-// engine: a CEL expression when set, else the native Condition. Compilation is ad-hoc (the
-// test path is cold, not the ingestion hot path). Returns false if a CEL expression fails to
-// compile (a rule that would never fire).
-func evalRule(rule *Rule, ev eventstore.NormalizedEvent) bool {
-	if rule.Expression != "" {
-		prog, err := CompileCEL(rule.Expression)
-		if err != nil {
-			return false
-		}
-		return EvalCEL(prog, ev)
-	}
-	return rule.Condition.Matches(ev)
-}
-
-// runCases evaluates a set of test cases against a rule and aggregates the run.
+// runCases evaluates a set of test cases against a rule and aggregates the run. M1: a CEL rule is
+// compiled ONCE here (not per sample) — compiling per case turned a large sample array into thousands of
+// CEL/RE2 compilations in one request. A compile error leaves prog nil → every case is a non-match, the
+// same defensive-skip result the live engine produces.
 func runCases(rule *Rule, cases []TestCase) TestRun {
+	var prog cel.Program
+	if rule.Expression != "" {
+		if p, err := CompileCEL(rule.Expression); err == nil {
+			prog = p
+		}
+	}
+	eval := func(ev eventstore.NormalizedEvent) bool {
+		if rule.Expression != "" {
+			return prog != nil && EvalCEL(prog, ev)
+		}
+		return rule.Condition.Matches(ev)
+	}
 	run := TestRun{RuleID: rule.ID, Results: make([]TestResult, 0, len(cases))}
 	for _, tc := range cases {
-		actual := evalRule(rule, tc.Sample.toEvent())
+		actual := eval(tc.Sample.toEvent())
 		passed := actual == tc.ExpectedMatch
 		run.Results = append(run.Results, TestResult{
 			Name: tc.Name, ExpectedMatch: tc.ExpectedMatch, ActualMatch: actual, Passed: passed,

@@ -45,6 +45,20 @@ func (r *Repository) MarkEnqueued(ctx context.Context, tenantID, id uuid.UUID) e
 	})
 }
 
+// UpsertSource records that a source has been ingested for the tenant (M3): the detection-coverage
+// endpoint reads this small per-tenant set instead of DISTINCT-scanning raw_events. Called behind an
+// in-memory guard so the DB is touched at most once per (tenant, source) per window, not per event.
+func (r *Repository) UpsertSource(ctx context.Context, tenantID uuid.UUID, source string) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO tenant_ingested_sources (tenant_id, source, last_seen)
+			 VALUES ($1,$2, now())
+			 ON CONFLICT (tenant_id, source) DO UPDATE SET last_seen=now()`,
+			tenantID, source)
+		return err
+	})
+}
+
 // UnenqueuedRaw is a raw event whose normalize job was never enqueued.
 type UnenqueuedRaw struct {
 	ID        uuid.UUID

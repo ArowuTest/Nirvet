@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
@@ -34,11 +35,40 @@ type Service struct {
 	q     queue.Queue
 	quota QuotaChecker
 	blobs blobstore.Store
+
+	// M3: in-memory guard so tenant_ingested_sources is upserted at most once per (tenant, source) per
+	// window, keeping the coverage-source record fresh without a DB write on every event.
+	srcMu   sync.Mutex
+	srcSeen map[string]time.Time
 }
+
+// sourceUpsertWindow bounds how often a given (tenant, source) is re-written; a new source is written
+// on first sight (cache miss), so coverage sees it immediately.
+const sourceUpsertWindow = 5 * time.Minute
 
 // NewService builds the service. quota may be nil to disable quota enforcement.
 func NewService(repo *Repository, q queue.Queue, quota QuotaChecker, blobs blobstore.Store) *Service {
-	return &Service{repo: repo, q: q, quota: quota, blobs: blobs}
+	return &Service{repo: repo, q: q, quota: quota, blobs: blobs, srcSeen: map[string]time.Time{}}
+}
+
+// recordSource upserts the (tenant, source) into the coverage set, guarded in memory so the DB is
+// touched at most once per window per source. Best-effort — a failure never blocks ingest.
+func (s *Service) recordSource(ctx context.Context, tenantID uuid.UUID, source string) {
+	key := tenantID.String() + "|" + source
+	now := time.Now()
+	s.srcMu.Lock()
+	if last, ok := s.srcSeen[key]; ok && now.Sub(last) < sourceUpsertWindow {
+		s.srcMu.Unlock()
+		return
+	}
+	s.srcSeen[key] = now
+	s.srcMu.Unlock()
+	if err := s.repo.UpsertSource(ctx, tenantID, source); err != nil {
+		// Roll back the in-memory stamp so the next event retries the write.
+		s.srcMu.Lock()
+		delete(s.srcSeen, key)
+		s.srcMu.Unlock()
+	}
 }
 
 // Ingest persists the raw event and enqueues normalization. Idempotent via the
@@ -99,6 +129,9 @@ func (s *Service) Ingest(ctx context.Context, tenantID uuid.UUID, in IngestInput
 	if err != nil {
 		return "", httpx.ErrInternal("could not persist raw event")
 	}
+	// M3: record the source in the tenant's coverage set (guarded, best-effort) — even a duplicate
+	// re-ingest confirms the source is live, so this runs regardless of `inserted`.
+	s.recordSource(ctx, tenantID, in.Source)
 	// Idempotency: a duplicate re-ingest is a no-op — do not re-enqueue, so
 	// normalization and detection never run twice for the same event.
 	if !inserted {

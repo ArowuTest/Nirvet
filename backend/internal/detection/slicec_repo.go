@@ -157,14 +157,15 @@ func (r *Repository) FeedbackByRule(ctx context.Context, tenantID uuid.UUID) ([]
 	return out, err
 }
 
-// RecentSources returns the distinct event sources ingested for the tenant within the window
-// (DET-009 coverage ground truth — what data is actually arriving, from raw_events).
+// RecentSources returns the event sources ingested for the tenant within the window (DET-009 coverage
+// ground truth). M3: reads the maintained per-tenant tenant_ingested_sources set (one PK-indexed row
+// per source) rather than DISTINCT-scanning raw_events on every coverage call.
 func (r *Repository) RecentSources(ctx context.Context, tenantID uuid.UUID, windowDays int) (map[string]bool, error) {
 	out := map[string]bool{}
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT DISTINCT source FROM raw_events
-			  WHERE received_at > now() - make_interval(days => $1)`, windowDays)
+			`SELECT source FROM tenant_ingested_sources
+			  WHERE last_seen > now() - make_interval(days => $1)`, windowDays)
 		if err != nil {
 			return err
 		}

@@ -205,8 +205,13 @@ func (s *Service) Settings(ctx context.Context, tenantID uuid.UUID) (Settings, e
 	return set, nil
 }
 
-// SetSettings validates and upserts the tenant's detection settings.
-func (s *Service) SetSettings(ctx context.Context, tenantID uuid.UUID, in Settings) (Settings, error) {
+// SetSettings validates and upserts the tenant's detection settings. isSenior gates the ONE field that
+// is a guardrail rather than a tuning knob: require_tests_for_production. M2 — promotion to production is
+// a detEng action, so if a detEng could also flip this off there would be no four-eyes on shipping an
+// untested rule (a guardrail removable by the role it constrains). Loosening it (true→false) therefore
+// requires a senior role; tightening or leaving it unchanged is open to detEng, matching the
+// "overrides may only tighten" pattern used elsewhere.
+func (s *Service) SetSettings(ctx context.Context, tenantID uuid.UUID, in Settings, isSenior bool) (Settings, error) {
 	if in.FPRateThreshold < 0 || in.FPRateThreshold > 1 {
 		return Settings{}, httpx.ErrBadRequest("fp_rate_threshold must be between 0 and 1")
 	}
@@ -215,6 +220,13 @@ func (s *Service) SetSettings(ctx context.Context, tenantID uuid.UUID, in Settin
 	}
 	if in.CoverageWindowDays < 1 || in.CoverageWindowDays > 90 {
 		return Settings{}, httpx.ErrBadRequest("coverage_window_days must be between 1 and 90")
+	}
+	cur, err := s.repo.GetSettings(ctx, tenantID)
+	if err != nil {
+		return Settings{}, httpx.ErrInternal("could not load current settings")
+	}
+	if cur.RequireTestsForProduction && !in.RequireTestsForProduction && !isSenior {
+		return Settings{}, httpx.ErrForbidden("disabling require_tests_for_production requires a senior role")
 	}
 	if err := s.repo.SetSettings(ctx, tenantID, in); err != nil {
 		return Settings{}, httpx.ErrInternal("could not save settings")

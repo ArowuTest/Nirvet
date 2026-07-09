@@ -11,6 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// maxAdHocSamples bounds the inline sample array a single ad-hoc test run may carry (M1). Test cases
+// are hand-authored; 100 is far above any real authoring batch and stops a request forcing a huge eval.
+const maxAdHocSamples = 100
+
 // AddTestCase handles POST /detections/{id}/tests.
 func (h *Handler) AddTestCase(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
@@ -99,6 +103,11 @@ func (h *Handler) RunSamples(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.ErrBadRequest("at least one sample is required"))
 		return
 	}
+	// M1: bound the ad-hoc sample array so a single request can't force a huge eval batch.
+	if len(in.Samples) > maxAdHocSamples {
+		httpx.Error(w, httpx.ErrBadRequest("too many samples (max 100 per request)"))
+		return
+	}
 	run, err := h.svc.RunSamples(r.Context(), p.TenantID, ruleID, in.Samples)
 	if err != nil {
 		httpx.Error(w, err)
@@ -164,7 +173,7 @@ func (h *Handler) SetSettings(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	set, err := h.svc.SetSettings(r.Context(), p.TenantID, in)
+	set, err := h.svc.SetSettings(r.Context(), p.TenantID, in, auth.IsSenior(p.Role))
 	if err != nil {
 		httpx.Error(w, err)
 		return

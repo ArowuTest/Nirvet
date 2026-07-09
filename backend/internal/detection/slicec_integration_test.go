@@ -13,6 +13,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestDetectionSliceC(t *testing.T) {
@@ -102,6 +103,44 @@ func TestDetectionSliceC(t *testing.T) {
 		t.Fatal("expected a coverage gap for the rule with unfed dependencies")
 	}
 
+	// M3: once a source is ingested (recorded in tenant_ingested_sources), it drops off the gap list.
+	if err := db.WithTenant(ctx, tn.ID, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `INSERT INTO tenant_ingested_sources (tenant_id, source) VALUES ($1,'defender')`, tn.ID)
+		return e
+	}); err != nil {
+		t.Fatalf("seed ingested source: %v", err)
+	}
+	gaps2, err := svc.CoverageGaps(ctx, tn.ID)
+	if err != nil {
+		t.Fatalf("coverage2: %v", err)
+	}
+	for _, g := range gaps2 {
+		if g.RuleID == rule.ID {
+			if len(g.MissingDeps) != 1 || g.MissingDeps[0] != "m365" {
+				t.Fatalf("after ingesting 'defender', only 'm365' should be missing, got %v", g.MissingDeps)
+			}
+		}
+	}
+
+	// M2: loosening require_tests_for_production is senior-only (a detEng can't disable the guardrail
+	// it is also subject to). isSenior=false must be rejected; isSenior=true allowed.
+	if _, err := svc.SetSettings(ctx, tn.ID, detection.Settings{
+		FPRateThreshold: 0.5, MinFeedbackSample: 1, CoverageWindowDays: 7, RequireTestsForProduction: false,
+	}, false); err == nil {
+		t.Fatal("non-senior must not be able to disable require_tests_for_production")
+	}
+	if _, err := svc.SetSettings(ctx, tn.ID, detection.Settings{
+		FPRateThreshold: 0.5, MinFeedbackSample: 1, CoverageWindowDays: 7, RequireTestsForProduction: false,
+	}, true); err != nil {
+		t.Fatalf("senior should be able to loosen the guardrail: %v", err)
+	}
+	// Restore the guardrail (tightening is open to non-senior).
+	if _, err := svc.SetSettings(ctx, tn.ID, detection.Settings{
+		FPRateThreshold: 0.5, MinFeedbackSample: 1, CoverageWindowDays: 7, RequireTestsForProduction: true,
+	}, false); err != nil {
+		t.Fatalf("non-senior should be able to tighten the guardrail: %v", err)
+	}
+
 	// DET-007 feedback loop: an alert from this rule, dispositioned false_positive, is fed back.
 	alertSvc := alert.NewService(alert.NewRepository(db)).WithFeedbackSink(svc)
 	ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: tn.ID, Source: "s", Severity: "high", ClassName: "malware x"}
@@ -127,7 +166,7 @@ func TestDetectionSliceC(t *testing.T) {
 	// Settings round-trip (config-first). Lower the min sample so this single FP triggers the tuning view.
 	if _, err := svc.SetSettings(ctx, tn.ID, detection.Settings{
 		FPRateThreshold: 0.5, MinFeedbackSample: 1, CoverageWindowDays: 7, RequireTestsForProduction: true,
-	}); err != nil {
+	}, true); err != nil {
 		t.Fatalf("set settings: %v", err)
 	}
 	tuning, err := svc.TuningView(ctx, tn.ID)
