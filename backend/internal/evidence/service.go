@@ -74,6 +74,11 @@ func (s *Service) PublicKey() string {
 	return base64.StdEncoding.EncodeToString(s.signer.Public().(ed25519.PublicKey))
 }
 
+// auditCap bounds the audit rows folded into a pack (keeps the artifact and its signature
+// bounded). When the incident has more than this, the pack is flagged AuditTruncated so a
+// truncated trail is never mistaken for the complete record (R6).
+const auditCap = 500
+
 // Build assembles the evidence pack for an incident in the caller's tenant, stamped
 // at `now`. Events are the distinct events referenced by the incident's alerts; the
 // audit trail is every log row whose action/target carries the incident id.
@@ -131,9 +136,17 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read attachments")
 	}
-	auditRows, err := audit.FindByActionContains(ctx, s.db, p.TenantID, incidentID.String(), 500)
+	// R6: fetch cap+1 so we can DETECT truncation and declare it in the pack. A cap silently
+	// presented as the complete audit trail would let a pack with more than `auditCap` audit rows
+	// read as authoritative-and-whole when it is not — corrosive for an evidence artifact.
+	auditRows, err := audit.FindByActionContains(ctx, s.db, p.TenantID, incidentID.String(), auditCap+1)
 	if err != nil {
 		return nil, httpx.ErrInternal("could not read audit trail")
+	}
+	auditTruncated := false
+	if len(auditRows) > auditCap {
+		auditRows = auditRows[:auditCap]
+		auditTruncated = true
 	}
 	pack := &Pack{
 		SchemaVersion:   PackSchemaVersion,
@@ -148,6 +161,10 @@ func (s *Service) Build(ctx context.Context, p auth.Principal, incidentID uuid.U
 		Vulnerabilities: vulns,
 		Attachments:     attachments,
 		Audit:           auditRows,
+		AuditTruncated:  auditTruncated,
+	}
+	if auditTruncated {
+		pack.AuditLimit = auditCap
 	}
 	pack.Manifest = s.buildManifest(pack)
 	return pack, nil

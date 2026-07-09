@@ -40,6 +40,14 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, error) {
 	if in.IsolationTier == "" {
 		in.IsolationTier = IsolationPooled
 	}
+	// R6: validate the tier enums so a typo (e.g. isolation_tier:"banana") can't silently misconfigure
+	// the deployment model — there is no DB CHECK on these columns.
+	if !validServiceTier[in.ServiceTier] {
+		return nil, httpx.ErrBadRequest("invalid service_tier")
+	}
+	if !validIsolationTier[in.IsolationTier] {
+		return nil, httpx.ErrBadRequest("invalid isolation_tier")
+	}
 	t := &Tenant{
 		ID:            uuid.New(),
 		Name:          in.Name,

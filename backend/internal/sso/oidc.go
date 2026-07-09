@@ -182,8 +182,33 @@ func (c *Client) VerifyIDToken(ctx context.Context, m *Metadata, clientID, idTok
 	if sub == "" || email == "" {
 		return nil, fmt.Errorf("oidc: id_token missing sub/email")
 	}
-	ev, _ := claims["email_verified"].(bool)
+	// R6: enforce email_verified. If the IdP ASSERTS the address is unverified we must not
+	// JIT-provision on it (an attacker who controls an unverified-email IdP account would
+	// otherwise land in the tenant on a squatted address). A missing claim means the IdP does
+	// not assert verification either way — allowed, since the tenant's email-domain allowlist
+	// is the binding control there. Some IdPs encode the claim as the string "true"/"false".
+	ev, present := boolClaim(claims["email_verified"])
+	if present && !ev {
+		return nil, fmt.Errorf("oidc: email not verified at identity provider")
+	}
 	return &IDClaims{Subject: sub, Email: strings.ToLower(email), EmailVerified: ev}, nil
+}
+
+// boolClaim reads a JSON claim that may be a real bool or the string "true"/"false"
+// (some IdPs stringify email_verified). Returns present=false when the claim is absent.
+func boolClaim(v any) (val, present bool) {
+	switch t := v.(type) {
+	case bool:
+		return t, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 type jwk struct {

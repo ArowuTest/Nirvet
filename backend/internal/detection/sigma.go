@@ -9,6 +9,7 @@ package detection
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -125,7 +126,9 @@ func translateSelection(sel map[string]any) (all, anyPreds []Predicate, err erro
 		case int:
 			all = append(all, Predicate{Field: field, Op: op, Value: fmt.Sprintf("%d", v)})
 		case float64:
-			all = append(all, Predicate{Field: field, Op: op, Value: strings.TrimRight(fmt.Sprintf("%f", v), "0")})
+			// R6: FormatFloat(-1) prints the shortest exact form — a whole number renders "80", not the
+			// "80." that TrimRight(%f,"0") produced (which matched nothing → silent dead rule).
+			all = append(all, Predicate{Field: field, Op: op, Value: strconv.FormatFloat(v, 'f', -1, 64)})
 		case bool:
 			all = append(all, Predicate{Field: field, Op: op, Value: fmt.Sprintf("%t", v)})
 		case []any:

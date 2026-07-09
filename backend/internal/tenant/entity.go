@@ -29,6 +29,14 @@ const (
 	IsolationSovereign IsolationTier = "sovereign" // in-region deployment
 )
 
+// validServiceTier / validIsolationTier gate Create against the enum sets (R6: no DB CHECK on these).
+var validServiceTier = map[ServiceTier]bool{
+	TierEssential: true, TierStandard: true, TierAdvanced: true, TierCritical: true, TierEnterprise: true,
+}
+var validIsolationTier = map[IsolationTier]bool{
+	IsolationPooled: true, IsolationDedicated: true, IsolationSovereign: true,
+}
+
 // Status of a tenant.
 type Status string
 

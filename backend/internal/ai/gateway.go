@@ -89,5 +89,12 @@ func (g *Gateway) Complete(ctx context.Context, system, user string) (string, er
 	if len(out.Content) == 0 {
 		return "", fmt.Errorf("anthropic: empty response")
 	}
-	return out.Content[0].Text, nil
+	// R6: return the first TEXT block, not blindly Content[0] — a response whose first block is a
+	// non-text type (thinking/tool_use) would otherwise yield an empty string presented as the answer.
+	for _, c := range out.Content {
+		if c.Type == "text" && c.Text != "" {
+			return c.Text, nil
+		}
+	}
+	return "", fmt.Errorf("anthropic: response contained no text block")
 }

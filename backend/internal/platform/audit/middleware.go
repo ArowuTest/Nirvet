@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -31,7 +32,9 @@ func Mutations(db *database.DB) httpx.Middleware {
 			if !ok {
 				return
 			}
-			_ = db.WithTenant(r.Context(), p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+			// R6: a swallowed write here means a SUCCESSFUL mutation went un-audited (NFR-003) with no
+			// trace. We cannot fail the (already-committed) response, but the gap must be diagnosable.
+			if aerr := db.WithTenant(r.Context(), p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 				return Record(ctx, tx, Entry{
 					ActorID:    p.UserID,
 					ActorEmail: p.Email,
@@ -39,7 +42,11 @@ func Mutations(db *database.DB) httpx.Middleware {
 					Metadata:   map[string]any{"status": rec.status},
 					RequestID:  httpx.RequestIDFrom(r.Context()),
 				})
-			})
+			}); aerr != nil {
+				slog.Error("audit middleware failed to record mutation (NFR-003 gap)",
+					"tenant", p.TenantID, "actor", p.UserID,
+					"action", r.Method+" "+r.URL.Path, "err", aerr)
+			}
 		})
 	}
 }

@@ -64,7 +64,9 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID) (*Summary, er
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM alerts WHERE status IN ('new','assigned')`).Scan(&sum.OpenAlerts); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE stage <> 'closed'`).Scan(&sum.OpenIncidents); err != nil {
+		// R6: "open" is defined consistently as closed_at IS NULL (matches the SLA block below). Using
+		// stage<>'closed' disagreed for post_incident_review (closed_at set, stage≠closed).
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE closed_at IS NULL`).Scan(&sum.OpenIncidents); err != nil {
 			return err
 		}
 		// SLA posture (§6.8) in one pass over incidents.

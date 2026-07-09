@@ -58,15 +58,20 @@ func (r *OutboxRepository) Enqueue(ctx context.Context, tenantID uuid.UUID, chan
 	})
 }
 
-// pending returns undelivered notifications across all tenants via the SECURITY DEFINER
-// drain function (the table is RLS-FORCEd, so a plain WithSystem select would see nothing).
+// claimVisibilitySecs is how long a 'sending' row may sit before a new drain re-claims it (worker crash).
+const claimVisibilitySecs = 120
+
+// pending CLAIMS up to limit deliverable notifications across all tenants and marks them 'sending' under
+// FOR UPDATE SKIP LOCKED (via the SECURITY DEFINER claim function), so two dispatcher instances never
+// send the same row (no duplicate customer notifications). The table is RLS-FORCEd, hence WithSystem +
+// SECURITY DEFINER. A crashed worker's 'sending' rows are re-claimed after the visibility window.
 func (r *OutboxRepository) pending(ctx context.Context, limit int) ([]OutboxItem, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
 	var out []OutboxItem
 	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id, tenant_id, channel, recipient, subject, body, attempts FROM notification_outbox_pending($1)`, limit)
+		rows, err := tx.Query(ctx, `SELECT id, tenant_id, channel, recipient, subject, body, attempts FROM notification_outbox_claim($1, $2)`, limit, claimVisibilitySecs)
 		if err != nil {
 			return err
 		}

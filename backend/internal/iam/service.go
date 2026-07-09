@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
@@ -49,6 +51,9 @@ type CreateInput struct {
 
 // Create provisions a user in the given tenant.
 func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput) (*User, error) {
+	// R6: normalize email on write so it matches the case-insensitive login lookup (lower(email)) and the
+	// UNIQUE(tenant_id,email) — otherwise Bob@ and bob@ coexist and login is non-deterministic.
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
 	if in.Email == "" || in.Password == "" {
 		return nil, httpx.ErrBadRequest("email and password are required")
 	}
@@ -139,7 +144,11 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 		return nil, httpx.ErrTooManyRequests("account temporarily locked due to repeated failed logins; try again later")
 	}
 	if !auth.ComparePassword(u.PasswordHash, password) {
-		_ = s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow)
+		// R6: a swallowed counter-write silently loses the increment → the brute-force lockout may never
+		// trip. Log the failure so a degrading security control is diagnosable.
+		if ferr := s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow); ferr != nil {
+			slog.Warn("failed to record login failure (lockout may not trip)", "tenant", u.TenantID, "user", u.ID, "err", ferr)
+		}
 		return nil, httpx.ErrUnauthorized("invalid credentials")
 	}
 	if u.MFAEnabled {

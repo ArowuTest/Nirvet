@@ -64,7 +64,11 @@ func (s *Service) Ingest(ctx context.Context, tenantID uuid.UUID, in IngestInput
 	// Per-tenant ingest quota / backpressure (ADR-0003).
 	if s.quota != nil {
 		ok, qerr := s.quota.WithinIngestQuota(ctx, tenantID, int64(len(payload)))
-		if qerr == nil && !ok {
+		if qerr != nil {
+			// R6: the quota check fails OPEN (availability), but the error must not be silent — a broken
+			// billing backend silently disabling per-tenant backpressure should be diagnosable.
+			slog.Warn("ingest quota check failed; admitting event (fail-open)", "tenant", tenantID, "err", qerr)
+		} else if !ok {
 			return "", httpx.ErrTooManyRequests("ingest quota exceeded for tenant")
 		}
 	}

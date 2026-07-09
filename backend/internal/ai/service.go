@@ -158,7 +158,13 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 	if err != nil {
 		return nil, err
 	}
-	alerts, _ := s.alerts.ListByIncident(ctx, p.TenantID, incidentID)
+	// R6: the incident's alerts ARE the grounding evidence for the triage. If retrieval fails,
+	// fail loudly rather than triaging on an empty set and presenting the (baseless) result as
+	// authoritative — a silent read error would degrade an assistive control into a misleading one.
+	alerts, aerr := s.alerts.ListByIncident(ctx, p.TenantID, incidentID)
+	if aerr != nil {
+		return nil, httpx.ErrInternal("could not load incident alerts for triage")
+	}
 
 	// Distinct entity refs + ATT&CK techniques across the incident's alerts.
 	var refs []string
@@ -184,13 +190,22 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 	sort.Strings(techniques)
 
 	var assets []asset.Asset
-	if s.assets != nil {
-		assets, _ = s.assets.FindByRefs(ctx, p.TenantID, refs)
+	assetsIncomplete := false
+	if s.assets != nil && len(refs) > 0 {
+		var ferr error
+		if assets, ferr = s.assets.FindByRefs(ctx, p.TenantID, refs); ferr != nil {
+			// Asset criticality is enrichment, not core grounding — degrade rather than fail,
+			// but R6: mark it so the assessment does not imply full asset context it never had.
+			assetsIncomplete = true
+		}
 	}
 
 	// The incident's title, techniques and asset refs are event-derived (untrusted), so
 	// the whole fact block is fenced (R2 H-A); the instruction lives OUTSIDE the fence.
 	facts := triageFacts(inc, alerts, assets, techniques)
+	if assetsIncomplete {
+		facts = append(facts, "Note: affected-asset criticality context was unavailable for this assessment.")
+	}
 	userContent := fenceBlock(facts) +
 		"\n\nUsing only the data above, provide a concise triage assessment: what this incident appears to be, why it matters " +
 		"(consider severity, SLA status and affected-asset criticality), and the recommended next steps " +
