@@ -27,7 +27,36 @@ import (
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
+	"github.com/google/uuid"
 )
+
+// soarContainmentAlerter implements soar.ContainmentAlerter: it surfaces a failed/stalled containment as BOTH
+// an internal triage alert AND a durable HIGH notification (owner decision). Idempotent per execution — the
+// notification fires only when the alert is NEWLY raised (RaisePlatform dedupes on the key), so re-observing a
+// stalled action across ticks does not spam.
+type soarContainmentAlerter struct {
+	alerts *alert.Service
+	outbox *notify.OutboxRepository
+}
+
+func (a soarContainmentAlerter) ContainmentFailed(ctx context.Context, tenantID, executionID uuid.UUID, actionKey, target, status string, stalled bool) error {
+	kind := "failed"
+	if stalled {
+		kind = "stalled"
+	}
+	dedupe := "soar-containment-" + kind + ":" + executionID.String()
+	title := "SOAR containment " + kind + ": " + actionKey + " on " + target + " (" + status + ")"
+	inserted, err := a.alerts.RaisePlatform(ctx, tenantID, dedupe, title, "high", target, "soar-reconciler")
+	if err != nil {
+		return err
+	}
+	if inserted {
+		_ = a.outbox.Enqueue(ctx, tenantID, "log", "soc", title,
+			"A SOAR containment action was not confirmed by the vendor — the endpoint may NOT be contained. "+
+				"action="+actionKey+" target="+target+" status="+status+" execution="+executionID.String())
+	}
+	return nil
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -129,11 +158,16 @@ func main() {
 	for _, a := range connector.NewDefenderActioner("", "", "", nil).Actioners() {
 		soarReg.Register(a)
 	}
-	soarSup := soar.NewSupervisor(soarRepo, soarReg, soarCreds, log)
+	// §6.11 reconciler (D-3): surface a failed/stalled containment as BOTH an internal triage alert and a
+	// durable HIGH notification (owner decision), then run the confirmation loop in the worker.
+	soarSup := soar.NewSupervisor(soarRepo, soarReg, soarCreds, log).
+		WithAlerter(soarContainmentAlerter{alerts: alertSvc, outbox: outboxRepo})
 	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs).WithSupervisor(soarSup)
 	go soarSvc.StartResumeLoop(ctx, log, time.Minute, 300)
+	// §6.11 reconciler: confirm submitted containments took effect; surface failures/stalls (read-only poll).
+	go soarSup.StartReconcileLoop(ctx, log, time.Minute)
 
-	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper + notify dispatcher + soar resume)")
+	log.Info("nirvet worker running (ingest + connector poller + reconciler + sla sweeper + notify dispatcher + soar resume + soar reconcile)")
 	wk.Start(ctx, time.Second)
 	log.Info("nirvet worker stopped")
 }

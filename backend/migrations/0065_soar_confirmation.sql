@@ -22,9 +22,9 @@ ALTER TABLE soar_platform
 -- soar_stale_executions. Returns the BARE machineAction id from prior_state.action_id (G-1) — never the
 -- display connector_ref — plus the age in seconds (DB clock is authoritative) for the stall check.
 CREATE OR REPLACE FUNCTION soar_unconfirmed_executions(p_grace_secs int)
-RETURNS TABLE (tenant_id uuid, id uuid, action_key text, connector_key text, action_id text, age_secs int)
+RETURNS TABLE (tenant_id uuid, id uuid, action_key text, connector_key text, target text, action_id text, age_secs int)
 LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
-  SELECT tenant_id, id, action_key, connector_key,
+  SELECT tenant_id, id, action_key, connector_key, target,
          coalesce(prior_state->>'action_id', ''),
          extract(epoch FROM now() - claimed_at)::int
     FROM soar_action_execution
@@ -32,6 +32,8 @@ LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
      AND connector_key <> ''
      AND (prior_state->>'changed')::boolean IS TRUE
      AND claimed_at < now() - make_interval(secs => p_grace_secs)
+   ORDER BY claimed_at ASC
+   LIMIT 500  -- bound each reconcile tick (oldest first); the remainder is picked up on the next tick
 $$;
 REVOKE ALL ON FUNCTION soar_unconfirmed_executions(int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION soar_unconfirmed_executions(int) TO nirvet_app;

@@ -18,6 +18,7 @@ type unconfirmedExecution struct {
 	ID           uuid.UUID
 	ActionKey    string
 	ConnectorKey string
+	Target       string // the entity acted on (host/user/ip) — for the alert
 	ActionID     string // bare vendor machineAction id (prior_state.action_id, G-1)
 	AgeSecs      int    // seconds since claim (DB clock), for the stall check
 }
@@ -29,14 +30,14 @@ func (r *Repository) unconfirmedExecutions(ctx context.Context, graceSecs int) (
 	var out []unconfirmedExecution
 	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
-			`SELECT tenant_id, id, action_key, connector_key, action_id, age_secs FROM soar_unconfirmed_executions($1)`, graceSecs)
+			`SELECT tenant_id, id, action_key, connector_key, target, action_id, age_secs FROM soar_unconfirmed_executions($1)`, graceSecs)
 		if e != nil {
 			return e
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var u unconfirmedExecution
-			if e := rows.Scan(&u.TenantID, &u.ID, &u.ActionKey, &u.ConnectorKey, &u.ActionID, &u.AgeSecs); e != nil {
+			if e := rows.Scan(&u.TenantID, &u.ID, &u.ActionKey, &u.ConnectorKey, &u.Target, &u.ActionID, &u.AgeSecs); e != nil {
 				return e
 			}
 			out = append(out, u)

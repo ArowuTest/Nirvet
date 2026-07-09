@@ -44,15 +44,27 @@ func TestReconcileRepo_G1G2AndLifecycle(t *testing.T) {
 		}
 	}
 
+	// unconfirmedExecutions is system-level (all tenants); this test asserts only on ITS tenant's rows.
+	mine := func() []unconfirmedExecution {
+		all, err := repo.unconfirmedExecutions(ctx, 0)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		var out []unconfirmedExecution
+		for _, u := range all {
+			if u.TenantID == tid {
+				out = append(out, u)
+			}
+		}
+		return out
+	}
+
 	ownRun, foreignRun := uuid.New(), uuid.New()
 	insert(ownRun, true, "iso-own-1")      // ours (changed=true)
 	insert(foreignRun, false, "iso-fgn-1") // foreign no-op (changed=false) — G-2 must exclude
 
 	// G-2: only the own row is listed. G-1: it carries the bare action id, not "own-isolate:...".
-	got, err := repo.unconfirmedExecutions(ctx, 0)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
+	got := mine()
 	if len(got) != 1 {
 		t.Fatalf("G-2: expected only the own row, got %d", len(got))
 	}
@@ -67,16 +79,15 @@ func TestReconcileRepo_G1G2AndLifecycle(t *testing.T) {
 	if err := repo.markConfirmed(ctx, tid, got[0].ID, "Succeeded"); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	if again, _ := repo.unconfirmedExecutions(ctx, 0); len(again) != 0 {
+	if again := mine(); len(again) != 0 {
 		t.Fatalf("confirmed row must not relist, got %d", len(again))
 	}
 
 	// A failed containment flips executed→failed and is thereby EXCLUDED from reverse (nothing to undo).
 	failRun := uuid.New()
 	insert(failRun, true, "iso-fail-1")
-	list, _ := repo.unconfirmedExecutions(ctx, 0)
 	var failID uuid.UUID
-	for _, u := range list {
+	for _, u := range mine() {
 		if u.ActionID == "iso-fail-1" {
 			failID = u.ID
 		}

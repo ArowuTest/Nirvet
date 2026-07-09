@@ -63,6 +63,17 @@ type Spec struct {
 	MITRE       []string
 }
 
+// RaisePlatform raises a PLATFORM-generated alert (no source detection event) into the triage queue — e.g. a
+// SOAR containment the vendor reported failed/stalled (reconciler D-3). Idempotent on dedupeKey; returns
+// whether a new alert was created (false = already raised, so callers avoid duplicate downstream side effects).
+func (s *Service) RaisePlatform(ctx context.Context, tenantID uuid.UUID, dedupeKey, title, severity, targetRef, source string) (bool, error) {
+	a := &Alert{
+		ID: uuid.New(), TenantID: tenantID, DedupeKey: dedupeKey,
+		Title: title, Severity: severity, Source: source, Status: StatusNew, TargetRef: targetRef,
+	}
+	return s.repo.Create(ctx, a)
+}
+
 // CreateFromEvent raises an alert from a normalized event + detection spec.
 // Idempotent on the spec's dedupe key; returns whether a new alert was created.
 func (s *Service) CreateFromEvent(ctx context.Context, ev eventstore.NormalizedEvent, spec Spec) (*Alert, bool, error) {

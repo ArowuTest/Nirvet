@@ -44,6 +44,7 @@ type Supervisor struct {
 	actioners *ActionerRegistry
 	creds     CredDecryptor
 	log       *slog.Logger
+	alerter   ContainmentAlerter // optional; surfaces a failed/stalled containment (reconciler D-3)
 }
 
 // NewSupervisor builds the engine. A nil actioner registry means "no real containment wired" (every

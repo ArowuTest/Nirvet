@@ -39,13 +39,15 @@ func (defCreds) ConnectorCreds(context.Context, uuid.UUID, string) ([]byte, erro
 // machine appear isolated by a FOREIGN actor (a Pending Isolate carrying a non-nirvet comment) independent
 // of any POST of ours — the case that was previously unrepresentable. failIsolate makes isolate 500 (C-6).
 type mdeMock struct {
-	srv          *httptest.Server
-	isolateCalls int32
-	unisolCalls  int32
-	failIsolate  bool
-	mu           sync.Mutex
-	ownComment   string // requestorComment captured from our isolate POST
-	foreign      string // non-empty => a foreign Pending Isolate exists regardless of our POSTs
+	srv           *httptest.Server
+	isolateCalls  int32
+	unisolCalls   int32
+	confirmCalls  int32
+	failIsolate   bool
+	mu            sync.Mutex
+	ownComment    string // requestorComment captured from our isolate POST
+	foreign       string // non-empty => a foreign Pending Isolate exists regardless of our POSTs
+	confirmStatus string // terminal status returned by GET /api/machineactions/{id} (reconciler); "" => Succeeded
 }
 
 func newMDEMock(t *testing.T) *mdeMock {
@@ -97,6 +99,18 @@ func newMDEMock(t *testing.T) *mdeMock {
 	mux.HandleFunc("/api/machines/m-guid-1/unisolate", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&m.unisolCalls, 1)
 		_, _ = w.Write([]byte(`{"id":"unl-act-1","type":"Unisolate","status":"Pending"}`))
+	})
+	// Single-action GET (reconciler confirm poll). Subtree route so it doesn't shadow the list handler above.
+	mux.HandleFunc("/api/machineactions/", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&m.confirmCalls, 1)
+		m.mu.Lock()
+		status := m.confirmStatus
+		m.mu.Unlock()
+		if status == "" {
+			status = "Succeeded"
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/machineactions/")
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "type": "Isolate", "status": status})
 	})
 	m.srv = httptest.NewServer(mux)
 	t.Cleanup(m.srv.Close)
