@@ -180,6 +180,54 @@ func TestSupervisor_CrashResumeClaimOnce(t *testing.T) {
 	}
 }
 
+// mockGuard is a stand-in ProtectedTargetGuard for the seam test.
+type mockGuard struct {
+	protected bool
+	reason    string
+	err       error
+}
+
+func (m mockGuard) CheckProtected(context.Context, uuid.UUID, string, string, string, []byte) (bool, string, error) {
+	return m.protected, m.reason, m.err
+}
+
+// TestSupervisor_ProtectedTargetWithholds (D5): a protected target → withheld + escalate (awaiting_customer) +
+// alert, and the Actioner is NEVER called. A guard error fails the same way (fail-closed).
+func TestSupervisor_ProtectedTargetWithholds(t *testing.T) {
+	ctx := context.Background()
+	run := func(g soar.ProtectedTargetGuard) (string, int, int) {
+		sup, repo, _, tid, cc := setupSup(t)
+		actor := auth.Principal{UserID: uuid.New(), Email: "a@t", TenantID: tid}
+		_ = repo.SetSoarSettings(ctx, tid, soar.SoarSettings{DestructiveEnabled: true, MaxClass3PerHour: 5})
+		al := &mockAlerter{}
+		sup.WithAlerter(al).WithGuard(g)
+		st, _, err := sup.ExecuteConnectorStep(ctx, tid, actor, uuid.New(), 0, hiAct(), "user:admin", nil)
+		if err != nil {
+			t.Fatalf("unexpected engine error: %v", err)
+		}
+		return st, cc.n, al.failed(tid)
+	}
+
+	// Protected → withheld+escalate, no actioner call, alerted.
+	if st, calls, alerts := run(mockGuard{protected: true, reason: "Global Administrator"}); st != soar.StatusAwaitingCustomer || calls != 0 || alerts != 1 {
+		t.Fatalf("protected must withhold+escalate+alert with no effect: st=%s calls=%d alerts=%d", st, calls, alerts)
+	}
+	// Guard ERROR → fail closed (same outcome).
+	if st, calls, _ := run(mockGuard{err: errGuard}); st != soar.StatusAwaitingCustomer || calls != 0 {
+		t.Fatalf("guard error must fail closed (withhold, no effect): st=%s calls=%d", st, calls)
+	}
+	// Not protected → the actioner runs (control).
+	if st, calls, _ := run(mockGuard{protected: false}); st != soar.StatusExecuted || calls != 1 {
+		t.Fatalf("unprotected must execute normally: st=%s calls=%d", st, calls)
+	}
+}
+
+var errGuard = errGuardT("graph unreachable")
+
+type errGuardT string
+
+func (e errGuardT) Error() string { return string(e) }
+
 // seedExecuting inserts a claimed-but-unexecuted execution row (simulating a crash after Phase A).
 func seedExecuting(t *testing.T, db *database.DB, tenantID, runID uuid.UUID, step int) {
 	t.Helper()

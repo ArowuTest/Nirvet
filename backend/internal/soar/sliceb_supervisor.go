@@ -44,7 +44,8 @@ type Supervisor struct {
 	actioners *ActionerRegistry
 	creds     CredDecryptor
 	log       *slog.Logger
-	alerter   ContainmentAlerter // optional; surfaces a failed/stalled containment (reconciler D-3)
+	alerter   ContainmentAlerter   // optional; surfaces a failed/stalled containment (reconciler D-3)
+	guard     ProtectedTargetGuard // optional; blast-radius refusal for a protected target (D5)
 }
 
 // NewSupervisor builds the engine. A nil actioner registry means "no real containment wired" (every
@@ -192,6 +193,27 @@ func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth
 		}
 		creds = c
 	}
+
+	// D5 blast-radius guard: refuse (withhold + escalate) a destructive action against a PROTECTED target
+	// (last Global-Admin / break-glass / crown-jewel host / the identity Nirvet authenticates as). Consulted
+	// AFTER creds decrypt (the check may need them) and BEFORE the Actioner call. A guard ERROR fails CLOSED —
+	// when we cannot verify the blast radius we refuse rather than act.
+	if s.guard != nil {
+		protected, reason, gerr := s.guard.CheckProtected(ctx, tenantID, act.ConnectorKey, act.ActionKey, target, creds)
+		if gerr != nil || protected {
+			msg := "protected target: " + reason
+			if gerr != nil {
+				msg = "protected-target check failed (fail-closed): " + gerr.Error()
+			}
+			s.finish(ctx, tenantID, ex, StatusWithheld, "", msg, nil,
+				denyEntry(actor, act, target, "protected_withheld", msg))
+			if s.alerter != nil {
+				_ = s.alerter.ContainmentFailed(ctx, tenantID, ex.ID, act.ActionKey, target, "withheld_protected", false)
+			}
+			return StatusAwaitingCustomer, msg, nil
+		}
+	}
+
 	// H-1 (round #34): a destructive PreCheck Actioner must attribute reversibility by CORRELATION, not by
 	// "is this a resume". The engine injects a STABLE per-step correlator (run_id:step_index — identical on
 	// the first attempt and any crash-resume) into params; the Actioner embeds it in the external action's
