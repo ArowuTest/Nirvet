@@ -88,6 +88,7 @@ func canAutoRun(reg *ActionerRegistry, connectorKey, action string, risk RiskCla
 // soar_action_execution). PriorState is captured in Phase B (MUST-3) so reverse only undoes real changes.
 type ActionExecution struct {
 	ID           uuid.UUID      `json:"id"`
+	TenantID     uuid.UUID      `json:"tenant_id"`
 	RunID        uuid.UUID      `json:"run_id"`
 	StepIndex    int            `json:"step_index"`
 	ActionKey    string         `json:"action_key"`
@@ -95,6 +96,7 @@ type ActionExecution struct {
 	Target       string         `json:"target"`
 	Status       string         `json:"status"` // executing | executed | failed | withheld
 	Reason       string         `json:"reason"`
+	ParamsHash   string         `json:"params_hash,omitempty"`
 	PriorState   map[string]any `json:"prior_state,omitempty"`
 	ConnectorRef string         `json:"connector_ref,omitempty"`
 	DryRun       bool           `json:"dry_run"`
