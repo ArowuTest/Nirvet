@@ -1151,3 +1151,80 @@ exposure in audit/logs, a compromised-playbook mass-containment scenario.
 - [ ] Class3 vs Class4 handling matches §9.5 (Class4 = no autonomous in V1).
 - [ ] Config surfaces (kill-switch, per-tenant enablement, dry-run, rate-limit) are the right set and are tighten-only.
 - [ ] Anything you want added to the adversarial round.
+
+### Revision 2 — reviewer conditions folded in (pre-code, 2026-07)
+
+Conditional sign-off received; the four must-adds + cheap should-adds below are now part of the design.
+Theme (again): turn each documented requirement into a STRUCTURAL guarantee the type system / control
+flow enforces, not reviewer vigilance.
+
+**MUST-1 — Idempotency + reversibility are declared at Actioner registration and structurally enforced.**
+The whole crash-safety argument rests on "the Actioner is idempotent or pre-checks." So registration
+carries that as data, not prose: `Actioner{ Fn, Idempotent bool, PreCheck bool, Inverse string,
+Reversible bool }`. The engine **refuses to AUTO-run** any connector action that is not
+(`Idempotent || PreCheck`) — it is forced to `awaiting_customer` (human-confirm) instead. The reaper's
+"re-drive is safe" invariant is therefore guaranteed by the registration contract: an un-idempotent,
+un-prechecked action can never reach the two-phase auto path, so re-drive can never double-fire it.
+Likewise a Class3+ action with `Reversible=false` and no declared `Inverse` cannot be registered as
+auto-runnable. First-add-of-`block_ip`-without-a-precheck is caught at wiring, not in prod.
+
+**MUST-2 — Run-level supervisor model (the run is no longer one atomic tx).** With a connector step going
+two-phase, a run mixing an internal step and a connector step CANNOT commit atomically — it is
+legitimately partially-committed with one step parked `executing`. So: the **step is the durable unit**;
+the **run is a supervisor** that resumes from the last non-terminal step. `Approve`/`Run` no longer wrap
+the whole run in one tx — each step commits its own state; a crash mid-run re-drives the outstanding step
+then continues. **Steps execute strictly in order; the supervisor must not advance past an `executing`
+step** — real containment ordering depends on it ("collect evidence" must complete before "isolate
+endpoint", or isolating first destroys volatile evidence). A `soar_run` gains a `current_step` cursor;
+the supervisor is itself reaper-resumable.
+
+**MUST-3 — Reverse honors OBSERVED prior state captured in Phase B, not the nominal inverse.** "disable
+user" whose blind inverse is "enable user" is a landmine: if the account was ALREADY disabled by the
+customer for an unrelated reason, SOAR's disable is a no-op, and a later auto-reverse would wrongly
+RE-ENABLE an account the customer wanted off. So Phase B's pre-check records the observed prior state
+(`prior_state` jsonb: `was_isolated`/`was_disabled`/…) on the execution row, and **reverse only undoes
+actions that ACTUALLY changed state** (skip where prior_state already matched the target). This binds
+MUST-1's pre-check to reversibility: capture prior state or you may not auto-reverse.
+
+**MUST-4 — Every gate DENIAL is audited + surfaced (SOAR-006), not a silent status.** The envelope
+audited actions that EXECUTE; a SOC's forensic question is often "why did containment NOT fire?" Every
+withhold — rate-budget exhausted, kill-switch, tenant-disabled, dry-run, four-eyes-fail, not-idempotent-
+so-forced-manual — writes an audit row with the reason AND emits a visible signal (notification /
+run-timeline entry), never just a status flip. A silently-withheld isolation is the worst SOC failure
+(R5 silent-gap theme applied to containment).
+
+**Should-adds (folded in):**
+- **Phase B re-reads the kill-switch immediately before the connector call** — the one legitimate
+  second read: an emergency "STOP, we're mass-isolating prod" must abort steps already CLAIMED but not
+  yet executed, not only steps that haven't claimed. Emergency-stop semantics operators expect.
+- **Re-drive resumes at Phase B, never re-runs Phase A** — the claim (rate-budget decrement + intent
+  audit + cred-decrypt audit) happens exactly once; a crash-loop cannot double-decrement the budget or
+  double-write intent. The execution row's `status=executing` marks "Phase A done, resume at B."
+- **Class4 in V1 = a human work-item with NO connector execution at all** (the safe reading): it creates
+  an `awaiting_customer` step + incident-commander task and STOPS; it never enters the two-phase path in
+  V1. (When V2 enables it, it will run the same gated two-phase path behind IC+customer authority.)
+- **Dry-run runs the FULL gate** (authority + four-eyes + idempotency-declaration checks all evaluated)
+  but does not decrement real budget and marks every audit row `dry_run=true`, so a tenant can validate
+  the exact decision path before going live.
+- **Target identity legible in the intent audit:** secret params are hashed, but the human-meaningful
+  target ("isolated host X", "disabled user Y") is readable — the audit must answer "what did we
+  contain?" without decrypting anything.
+
+**Adversarial round — expanded (must reproduce + prove closed):** reverse-wrong-way (re-enable an
+account the customer independently disabled → MUST-3); reaper double-fire on a non-idempotent action
+(registration refuses auto-run → MUST-1); kill-switch flipped between claim and call (Phase-B re-read
+aborts → should-add); withheld containment not audited/surfaced (→ MUST-4); crash mid-run leaves the run
+partially committed and resumes at the outstanding step in order (→ MUST-2); supervisor races ahead past
+an `executing` step / evidence-after-isolate ordering (→ MUST-2); budget double-decrement on crash-loop
+(re-drive resumes at Phase B → should-add); plus the original five (double-execute under retry, Phase-1/
+Phase-A TOCTOU, rate-limit evasion, credential exposure in audit/logs, compromised-playbook mass-
+containment).
+
+**Revised reviewer checklist:**
+- [x] Two-phase durable model — approved.
+- [x] MUST-1 idempotency/reversibility structural at registration + engine refuses auto-run otherwise.
+- [x] MUST-2 run supervisor / step-is-durable-unit / strict in-order / no advance past `executing`.
+- [x] MUST-3 reverse honors observed prior state captured in Phase B.
+- [x] MUST-4 every denial audited + surfaced.
+- [x] Should-adds folded (Phase-B kill-switch re-read, re-drive resumes at B, Class4 no-exec V1, dry-run full gate, legible target in audit).
+- [ ] Reviewer's five-minute confirming pass → fully green → proceed to code + dedicated adversarial round.
