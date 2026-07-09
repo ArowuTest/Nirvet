@@ -9,7 +9,10 @@ package queue
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/safe"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -32,6 +35,9 @@ type Queue interface {
 	Claim(ctx context.Context, n int) ([]Job, error)
 	Complete(ctx context.Context, id uuid.UUID) error
 	Fail(ctx context.Context, id uuid.UUID, reason string) error
+	// ReapStale requeues jobs stranded in 'running' longer than visibility (a worker crashed between
+	// Claim and Complete/Fail). Returns the number reaped. Backends that self-heal (NATS AckWait) no-op.
+	ReapStale(ctx context.Context, visibility time.Duration) (int, error)
 }
 
 // PostgresQueue is the Postgres-backed queue. It runs at the system level (the
@@ -94,6 +100,49 @@ func (q *PostgresQueue) Fail(ctx context.Context, id uuid.UUID, reason string) e
 		  WHERE id = $1`,
 		id, MaxAttempts, backoffSeconds, reason)
 	return err
+}
+
+// ReapStale requeues jobs stranded in 'running' past the visibility timeout — a worker that hard-crashed
+// (OOM/SIGKILL) between Claim and Complete/Fail would otherwise strand the row forever, silently losing a
+// security event (R6-C2). Jobs already at MaxAttempts dead-letter (queryable), the rest return to
+// 'queued' for another worker. Runs at the system level; safe to run in multiple worker processes.
+func (q *PostgresQueue) ReapStale(ctx context.Context, visibility time.Duration) (int, error) {
+	secs := int(visibility.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	ct, err := q.pool.Exec(ctx,
+		`UPDATE ingest_jobs
+		    SET state = CASE WHEN attempts >= $1 THEN 'dead' ELSE 'queued' END,
+		        run_at = now(),
+		        last_error = 'reaped: stale running job (worker crash suspected)'
+		  WHERE state = 'running' AND claimed_at < now() - make_interval(secs => $2)`,
+		MaxAttempts, secs)
+	if err != nil {
+		return 0, err
+	}
+	return int(ct.RowsAffected()), nil
+}
+
+// StartReaper runs ReapStale on a ticker until ctx is cancelled (panic-guarded per tick). visibility is
+// how long a job may sit in 'running' before it is presumed lost.
+func StartReaper(ctx context.Context, q Queue, log *slog.Logger, interval, visibility time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			safe.Do(log, "ingest-queue-reaper", func() {
+				if n, err := q.ReapStale(ctx, visibility); err != nil {
+					log.Warn("queue reap failed", "err", err)
+				} else if n > 0 {
+					log.Warn("queue reaped stale running jobs", "count", n)
+				}
+			})
+		}
+	}
 }
 
 // backoffSeconds is a simple fixed retry delay (scaffold). Production: exponential.

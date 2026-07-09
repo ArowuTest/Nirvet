@@ -220,3 +220,26 @@ func TestNormalizePreservesExplicit(t *testing.T) {
 		t.Fatalf("explicit fields overwritten: class=%q target=%q", out.ClassName, out.TargetRef)
 	}
 }
+
+// TestNormalizeSeverity_CanonicalGuaranteed verifies the R6-C1 fix: every output is in the DB-enforced
+// canonical set, and unknown/vendor variants coerce to a safe value rather than passing through.
+func TestNormalizeSeverity_CanonicalGuaranteed(t *testing.T) {
+	cases := map[string]string{
+		"CRITICAL": "critical", "Severe": "critical", "fatal": "critical", "5": "critical",
+		"High": "high", "error": "high", "4": "high",
+		"warning": "medium", "moderate": "medium", "3": "medium",
+		"Low": "low", "2": "low",
+		"info": "informational", "notice": "informational", "": "informational",
+		// Unknown/non-canonical vendor values must coerce, never pass through (the C1 dead-letter bug).
+		"SEVERITY_UNSPECIFIED": "informational", "unknown": "informational", "banana": "informational",
+	}
+	for in, want := range cases {
+		got := normalizeSeverity(in)
+		if got != want {
+			t.Errorf("normalizeSeverity(%q) = %q, want %q", in, got, want)
+		}
+		if !isCanonicalSeverity(got) {
+			t.Errorf("normalizeSeverity(%q) = %q is NOT canonical", in, got)
+		}
+	}
+}

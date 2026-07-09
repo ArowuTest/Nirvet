@@ -151,6 +151,14 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 	if p, ok := in.Data["product"].(string); ok {
 		ev.Product = p
 	}
+	// R6-C1: final canonical-severity clamp before the event reaches the events CHECK constraint. A
+	// vendor mapper may set a non-canonical severity verbatim (overwriting the early normalize); rather
+	// than let that dead-letter a legitimate security event, coerce to the canonical floor and log.
+	if !isCanonicalSeverity(ev.Severity) {
+		orig := ev.Severity
+		ev.Severity = normalizeSeverity(ev.Severity)
+		wk.log.Warn("coerced non-canonical event severity", "original", orig, "coerced", ev.Severity, "source", ev.Source)
+	}
 	// Enrichment: annotate the event with threat-intel watchlist hits before it is
 	// stored and evaluated by detection.
 	if wk.enricher != nil {

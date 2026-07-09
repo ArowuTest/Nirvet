@@ -103,6 +103,8 @@ func main() {
 	// Ingestion durability: re-enqueue any raw event orphaned by a crash between
 	// StoreRaw and Enqueue (SEC Critical #4). The worker process owns this sweep.
 	go ingestSvc.StartReconciler(ctx, log, 30*time.Second, 60*time.Second, 100)
+	// Requeue jobs stranded in 'running' by a hard worker crash (R6-C2); NATS self-heals (no-op).
+	go queue.StartReaper(ctx, jobs, log, time.Minute, 5*time.Minute)
 	// SLA breach alerting (§6.8): notify + timeline once per breached deadline.
 	go incidentSvc.StartSLASweeper(ctx, log, time.Minute, 200)
 	// Deliver the durable notifications the sweeper enqueues (§6.16). The worker owns

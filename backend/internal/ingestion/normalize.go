@@ -368,24 +368,32 @@ func severityFromGuardDuty(n float64) string {
 	}
 }
 
-// normalizeSeverity coerces vendor severity casing to the canonical set.
+// normalizeSeverity maps a vendor severity to the canonical set (§10.2). It is CANONICAL-GUARANTEED: the
+// return value is always one of informational|low|medium|high|critical, so a non-standard vendor value
+// (e.g. "warning", "SEVERITY_UNSPECIFIED", a numeric level) can never reach the events CHECK constraint
+// and dead-letter a legitimate event (R6-C1). An unrecognized non-empty value coerces to informational
+// (fail-safe: keep the event, do not silently drop it) — the worker logs the coercion.
 func normalizeSeverity(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	switch s {
-	case "info", "informational":
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "informational", "info", "information", "notice", "debug", "trace", "0", "1":
 		return "informational"
-	case "low":
+	case "low", "2":
 		return "low"
-	case "medium", "moderate":
+	case "medium", "moderate", "warning", "warn", "3":
 		return "medium"
-	case "high":
+	case "high", "error", "err", "4":
 		return "high"
-	case "critical", "severe":
+	case "critical", "severe", "crit", "fatal", "emergency", "alert", "5":
 		return "critical"
 	default:
-		if s == "" {
-			return "informational"
-		}
-		return s
+		// Unknown or empty → the safe canonical floor. Never returns a non-canonical value.
+		return "informational"
 	}
 }
+
+// canonicalSeverities is the DB-enforced set; isCanonicalSeverity guards the worker's pre-Append clamp.
+var canonicalSeverities = map[string]bool{
+	"informational": true, "low": true, "medium": true, "high": true, "critical": true,
+}
+
+func isCanonicalSeverity(s string) bool { return canonicalSeverities[s] }

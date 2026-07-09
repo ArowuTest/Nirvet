@@ -160,3 +160,7 @@ func (q *NATSQueue) Fail(ctx context.Context, id uuid.UUID, reason string) error
 	}
 	return msg.NakWithDelay(q.backoff)
 }
+
+// ReapStale is a no-op for JetStream: AckWait already redelivers a message whose ack never arrived (a
+// crashed consumer), so there are no stranded in-flight jobs to reap (R6-C2).
+func (q *NATSQueue) ReapStale(context.Context, time.Duration) (int, error) { return 0, nil }
