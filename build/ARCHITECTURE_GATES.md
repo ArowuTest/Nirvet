@@ -1685,3 +1685,45 @@ injectable base/scope; D-1-style Microsoft-host allowlist) + unit tests · E-2 t
 state; +Observe hook iff D2 chosen) + register + (catalog already seeded) · E-3 wire into api/worker registry · E-4
 adversarial round (own/foreign/crash-resume-fail-safe/reverse/dry-run/kill-switch/rate — the slice-C matrix, plus
 the Entra-specific foreign-already-disabled-never-re-enabled). Its own dedicated adversarial review on landing.
+
+### Attribution decision — refined per reviewer steer (pre-code; the ONE thing to settle before E-1)
+
+The reviewer named the two candidate mechanisms for "did WE disable this account?": (a) the Entra directory audit
+log (by app-registration actor), or (b) committed `prior_state`. Worked through against the SAME crash interleavings
+that broke slice C, BOTH have a failure mode — and the terminal-state read that "just works" fails SAFE. Analysis:
+
+- **(a) Directory-audit-log correlation.** After our PATCH, `auditLogs/directoryAudits` records "Disable account"
+  with `initiatedBy` = our service principal. REJECT for the reverse path: directoryAudits has **ingestion lag**
+  (minutes, sometimes longer) → a reverse issued shortly after containment cannot see the entry yet → cannot
+  attribute → must default anyway. It also needs a broad `AuditLog.Read.All`, and attributes by APP not by run/step
+  (two disables of the same user by the same app are indistinguishable). Fragile exactly when reverse is
+  time-critical. Useful only as an out-of-band audit, not the attribution source of truth.
+
+- **(b) Committed `prior_state` (persist observed `accountEnabled` BEFORE the PATCH).** Closes the own-crash
+  stranded-disabled case — but reintroduces a NARROW FAIL-OPEN: account enabled → we observe+persist
+  `enabled=true` → **crash** → a foreign actor disables the account in the gap → we resume → current already
+  disabled so we skip the PATCH → but `changed = observed_enabled = true` → reverse RE-ENABLES an account a
+  foreign actor disabled. It trades availability for a (narrow) security fail-open — the exact direction H-1b
+  taught us to avoid. Not acceptable as the default on the destructive path.
+
+- **(RECOMMENDED) Terminal-state PreCheck — fail-SAFE under every interleaving.** PreCheck reads `accountEnabled`
+  at act time; a resume that finds the account already disabled records `changed=false` and reverse never
+  re-enables it. Consequence table:
+  - fresh + enabled → disable, `changed=true` (reversible). 
+  - fresh + already-disabled (foreign) → no PATCH, `changed=false` → never re-enabled. 
+  - crash-after-PATCH (ours) → resume reads disabled → `changed=false` → **stranded disabled (fail-SAFE
+    availability gap)** → the RECONCILER surfaces it as an unconfirmed/older action → a human re-enables.
+  - foreign-disables-in-the-crash-gap → still reads disabled → `changed=false` → never re-enabled. 
+  Every ambiguous case resolves to "do NOT auto-re-enable" — the safe direction the reviewer requires. The only
+  cost is a rare stranded-disabled that is loudly surfaced, never a silent wrong re-enable.
+
+**DECISION for reviewer confirming pass:** ship Entra V1 on the **terminal-state fail-SAFE PreCheck**. It is the
+only option that never fail-opens on the destructive path; own-crash reversibility is a DELIBERATE, documented,
+reconciler-surfaced deferral, not a gap we missed. If the reviewer wants own-crash reversibility now, the correct
+way is NOT (b) alone but (b)+ownership-proof (the audit log or a Nirvet marker) to disambiguate the resume — which
+is materially more surface for a rare availability case; recommend deferring it. This supersedes the earlier D2
+"fail-safe vs Observe" framing: Observe/committed-prior_state is rejected as the DEFAULT because it fail-opens.
+
+**Note on the generalization:** this means comment-less vendors attribute by fail-safe terminal state, and only
+vendors with a writable per-action field (MDE requestorComment, a PAN tag) can be BOTH own-reversible-after-crash
+AND fail-closed. That is a real, documented property of the destructive model, not a limitation to paper over.
