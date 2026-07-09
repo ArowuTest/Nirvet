@@ -43,6 +43,9 @@ jobs:
       - name: Guard — outbound HTTP must use netsafe.SafeClient (SSRF)
         working-directory: backend
         run: bash scripts/check-outbound-http.sh
+      - name: Guard — SECURITY DEFINER functions must REVOKE PUBLIC (RLS-bypass)
+        working-directory: backend
+        run: bash scripts/check-security-definer-revoke.sh
       - name: Apply migrations
         working-directory: backend
         env:
