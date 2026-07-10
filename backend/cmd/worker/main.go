@@ -85,7 +85,11 @@ func main() {
 	notifySvc := notify.NewService(log).WithOutbox(outboxRepo)
 	tenantSvc := tenant.NewService(tenant.NewRepository(db))
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
-		WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc)
+		WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc).
+		// §6.18 #122 M-2: the SLA sweeper consults the maintenance gate — a non-critical breach is deferred while
+		// the tenant is inside a pause-SLA window; a critical (P1) always breaks through. Dormant until an admin
+		// opens a window.
+		WithMaintenance(platformadmin.NewMaintenanceService(platformadmin.NewRepository(db)))
 	correlationSvc := correlation.NewService(correlation.NewRepository(db)).WithIncidenter(incidentSvc).WithPolicy(tenantSvc)
 	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc).WithNormQuality(ingestion.NewNormQuality(db))
 

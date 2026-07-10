@@ -76,6 +76,14 @@ type AssetContext interface {
 	TopCriticalityForRefs(ctx context.Context, tenantID uuid.UUID, refs []string) (criticality, ref string, found bool)
 }
 
+// MaintenanceGate answers whether an active maintenance window is currently pausing SLA for a tenant
+// (§6.18 #122 M-2). Implemented by platformadmin.MaintenanceService; optional (nil = no window ever pauses).
+// The gate ALWAYS returns false for a critical severity, so a P1 breach can never be silenced by a window —
+// the "critical breaks through" invariant lives in the service that implements this, not here.
+type MaintenanceGate interface {
+	PauseSLA(ctx context.Context, tenantID uuid.UUID, severity string) bool
+}
+
 // Service holds incident business logic. It depends on the alert service to
 // promote alerts (one-way dependency: incident -> alert) and an optional notifier.
 type Service struct {
@@ -89,6 +97,7 @@ type Service struct {
 	ticketer   Ticketer
 	assets     AssetContext
 	blobs      BlobPutter
+	maint      MaintenanceGate
 }
 
 // NewService builds the service. notifier and assignees may be nil.
@@ -109,6 +118,11 @@ func (s *Service) WithEscalation(r EscalationResolver) *Service { s.escalation =
 // WithSLA wires the tenant's admin-configurable SLA policy resolver (§6.8, Phase 0-D). When
 // unwired, due-times use the built-in default policy.
 func (s *Service) WithSLA(r SLAResolver) *Service { s.sla = r; return s }
+
+// WithMaintenance wires the platform maintenance gate (§6.18 #122 M-2). When wired, the SLA sweeper defers a
+// non-critical breach whose tenant is inside an active pause-SLA window; a critical (P1) always breaks through.
+// Unwired (nil) → no window ever pauses a breach (current behavior).
+func (s *Service) WithMaintenance(g MaintenanceGate) *Service { s.maint = g; return s }
 
 // resolveSLA returns the ack/resolve targets for a severity: the tenant's admin-configured SLA
 // when wired and present, else the built-in default policy — so an incident always gets a valid,
@@ -280,6 +294,13 @@ func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int
 	}
 	n := 0
 	for _, b := range breaches {
+		// §6.18 #122 M-2: if the tenant is inside an active pause-SLA maintenance window, DEFER this breach —
+		// do not claim/alert it this tick (the deadline effectively pauses; the next sweep after the window closes
+		// will alert it if still overdue). A CRITICAL (P1) always returns false from the gate, so it breaks through
+		// immediately — a window can never silence a P1 breach.
+		if s.maint != nil && s.maint.PauseSLA(ctx, b.TenantID, b.Severity) {
+			continue
+		}
 		// Claim + record + enqueue ATOMICALLY: the conditional marker elects exactly one
 		// winning sweeper per breach (R2 M-B dedupe), and the timeline entry + the durable
 		// notification outbox row commit in the SAME tx as the claim. So the notification

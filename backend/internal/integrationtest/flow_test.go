@@ -83,6 +83,16 @@ func (stubTicketer) MirrorIncident(_ context.Context, _ uuid.UUID, _, _, _ strin
 	return "INC-TEST-1", "https://itsm.example/INC-TEST-1", nil
 }
 
+// pauseNonCriticalGate is an incident.MaintenanceGate that pauses SLA for everything EXCEPT a critical (P1) —
+// exactly the §6.18 M-2 contract. The real platformadmin.MaintenanceService satisfies this interface; its
+// window→PauseSLA logic (critical breaks through) is proven in platformadmin's TestMaintenance_CriticalBreaksThrough.
+// This local gate isolates the test to the sweeper's CONSULTATION of the gate (no shared harness state).
+type pauseNonCriticalGate struct{}
+
+func (pauseNonCriticalGate) PauseSLA(_ context.Context, _ uuid.UUID, severity string) bool {
+	return severity != "critical"
+}
+
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	dsn := testsupport.RequireDSN(t)
@@ -1341,6 +1351,65 @@ func TestIntegration(t *testing.T) {
 		}
 		if got := pendingForInc(); got != 0 {
 			t.Fatalf("after dispatch no pending notifications should remain for this incident, got %d", got)
+		}
+	})
+
+	t.Run("SLABreachPausedByMaintenanceWindow_M2", func(t *testing.T) {
+		// §6.18 #122 M-2: while a tenant is inside a pause-SLA maintenance window, the sweeper DEFERS a non-critical
+		// breach (it is NOT lost — a later sweep once the window is no longer pausing still fires it). A CRITICAL
+		// (P1) always breaks through immediately. Proven via a gated incident service; the window→PauseSLA logic
+		// itself is proven in platformadmin's TestMaintenance_CriticalBreaksThrough.
+		gated := incident.NewService(incident.NewRepository(h.db), h.alertSvc, nil).
+			WithEnqueuer(notify.NewOutboxRepository(h.db)).
+			WithMaintenance(pauseNonCriticalGate{})
+
+		mkBreached := func(sev, tag string) uuid.UUID {
+			ev := eventstore.NormalizedEvent{ID: uuid.New(), TenantID: h.tenantID, Severity: sev, Source: "m2"}
+			a, ins, err := h.alertSvc.CreateFromEvent(h.ctx, ev, alert.Spec{Title: "m2-" + tag, Severity: sev, DedupeKey: ev.ID.String() + ":" + tag})
+			if err != nil || !ins {
+				t.Fatalf("seed alert %s: %v", tag, err)
+			}
+			inc, err := h.incSvc.CreateFromAlert(h.ctx, h.principal, a.ID)
+			if err != nil {
+				t.Fatalf("promote %s: %v", tag, err)
+			}
+			if err := h.db.WithTenant(h.ctx, h.tenantID, func(ctx context.Context, tx pgx.Tx) error {
+				_, e := tx.Exec(ctx, `UPDATE incidents SET acknowledged_at=NULL, ack_due_at=now()-interval '2 hours', resolve_due_at=now()-interval '1 hour' WHERE id=$1`, inc.ID)
+				return e
+			}); err != nil {
+				t.Fatalf("backdate %s: %v", tag, err)
+			}
+			return inc.ID
+		}
+		hasBreachNote := func(id uuid.UUID) bool {
+			tl, _ := h.incSvc.Timeline(h.ctx, h.tenantID, id)
+			for _, e := range tl {
+				if strings.Contains(e.Note, "SLA ack deadline breached") || strings.Contains(e.Note, "SLA resolve deadline breached") {
+					return true
+				}
+			}
+			return false
+		}
+
+		lowID := mkBreached("low", "low")
+		critID := mkBreached("critical", "crit")
+
+		// Sweep through the GATED service (tenant is "inside a pause-SLA window").
+		if _, err := gated.SweepSLABreaches(h.ctx, time.Now(), 500); err != nil {
+			t.Fatalf("gated sweep: %v", err)
+		}
+		if hasBreachNote(lowID) {
+			t.Fatal("M-2: a non-critical breach must be DEFERRED while the tenant is inside a pause-SLA window")
+		}
+		if !hasBreachNote(critID) {
+			t.Fatal("M-2: a CRITICAL (P1) breach must break through a maintenance window and alert immediately")
+		}
+		// Not lost: sweeping through the UNGATED harness service (no window) fires the deferred low breach.
+		if _, err := h.incSvc.SweepSLABreaches(h.ctx, time.Now(), 500); err != nil {
+			t.Fatalf("ungated sweep: %v", err)
+		}
+		if !hasBreachNote(lowID) {
+			t.Fatal("M-2: a deferred breach must still fire once SLA is no longer paused (not silently lost)")
 		}
 	})
 

@@ -46,6 +46,18 @@ func seedFlag(t *testing.T, db *database.DB, scope, ref, key string, enabled boo
 	}
 }
 
+// clearFlag removes every row for a key — for a test that must start from a clean baseline for that key on the
+// shared, persistent test DB (seedFlag rows persist across runs).
+func clearFlag(t *testing.T, db *database.DB, key string) {
+	t.Helper()
+	if err := db.WithSystem(context.Background(), func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `DELETE FROM platform_feature_flags WHERE key=$1`, key)
+		return e
+	}); err != nil {
+		t.Fatalf("clear flag: %v", err)
+	}
+}
+
 // Reinf-A: an immutable key resolves from CODE only — a planted DB row saying otherwise is inert.
 func TestResolve_ImmutableIsInert(t *testing.T) {
 	db := paDB(t)
@@ -62,6 +74,28 @@ func TestResolve_UnknownFailSafe(t *testing.T) {
 	tid := paTenant(t, db)
 	if NewFlagResolver(db).Enabled(context.Background(), tid, "totally.unregistered.flag") {
 		t.Fatal("unknown flag must resolve OFF (fail-safe)")
+	}
+}
+
+// P-5 adversarial: a tenant-scoped flag override for tenant A must NOT be visible to tenant B — B resolves the
+// global/secure baseline, never A's row. Cross-tenant flag isolation under RLS + scope_ref filtering.
+func TestResolve_CrossTenantFlagIsolation(t *testing.T) {
+	db := paDB(t)
+	a := paTenant(t, db)
+	b := paTenant(t, db)
+	r := NewFlagResolver(db)
+	ctx := context.Background()
+
+	// Clean baseline for the key (shared persistent DB): no global row, so B's only possible source is its own
+	// tenant row — which it does not have.
+	clearFlag(t, db, "ui.new_dashboard_beta")
+	// Tenant A turns an open flag ON for itself only (secure default is OFF).
+	seedFlag(t, db, "tenant", a.String(), "ui.new_dashboard_beta", true)
+	if !r.Enabled(ctx, a, "ui.new_dashboard_beta") {
+		t.Fatal("tenant A must see its own override (on)")
+	}
+	if r.Enabled(ctx, b, "ui.new_dashboard_beta") {
+		t.Fatal("cross-tenant leak: tenant B must NOT see tenant A's flag override (resolves to secure default off)")
 	}
 }
 

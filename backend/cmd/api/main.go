@@ -44,6 +44,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/ratelimit"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
+	"github.com/ArowuTest/nirvet/internal/platformadmin"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
@@ -273,6 +274,14 @@ func main() {
 	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
 	// boundary. DORMANT — the seeded global anthropic row keeps current behavior until an admin changes it.
 	aiCfgH := ai.NewConfigHandler(ai.NewConfigService(ai.NewRepository(db), vault))
+	// §6.18 #122 platform-admin: safety-classed feature flags, tenant lifecycle (legal hold / uniform offboarding),
+	// maintenance windows. The safety gates (immutable/protected/four-eyes, legal-hold-blocks-delete, critical-breaks-
+	// through) live in the services; the handler is thin plumbing. All routes are padmin-gated below.
+	padminRepo := platformadmin.NewRepository(db)
+	padminH := platformadmin.NewHandler(
+		platformadmin.NewService(padminRepo, alertSvc),
+		platformadmin.NewMaintenanceService(padminRepo),
+	)
 	reportingH := reporting.NewHandler(reporting.NewService(db, events))
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
@@ -466,6 +475,15 @@ func main() {
 	mux.Handle("PUT /admin/tenants/{id}/ai-policy", padmin(aiCfgH.SetTenantPolicy))
 	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
 	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
+	// §6.18 #122 platform-admin surface. Feature-flag set/rollback runs the safety gate (immutable rejected; protected
+	// weakening needs senior+four-eyes+reason+HIGH-alert+time-box). Tenant lifecycle: legal-hold set is routine, CLEAR
+	// needs the elevated envelope (M-3); offboard runs the uniform purge (blocked while on hold) + cert of destruction.
+	mux.Handle("PUT /admin/flags", padmin(padminH.SetFlag))
+	mux.Handle("POST /admin/flags/rollback", padmin(padminH.RollbackFlag))
+	mux.Handle("POST /admin/tenants/{id}/legal-hold", padmin(padminH.SetLegalHold))
+	mux.Handle("DELETE /admin/tenants/{id}/legal-hold", padmin(padminH.ClearLegalHold))
+	mux.Handle("POST /admin/tenants/{id}/offboard", padmin(padminH.OffboardTenant))
+	mux.Handle("POST /admin/maintenance-windows", padmin(padminH.CreateWindow))
 	// detection engineering
 	mux.Handle("GET /detections", provider(detectionH.List))
 	mux.Handle("POST /detections", detEng(detectionH.Create))
