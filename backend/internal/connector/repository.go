@@ -133,6 +133,36 @@ func (r *Repository) SilentHostSources(ctx context.Context, within time.Duration
 	return out, err
 }
 
+// TenantSilentHostSources returns the CALLING tenant's host-telemetry connectors that reported at least once but have
+// gone quiet past `within` — the tenant-scoped view for the investigation data-gap panel (INV-009 / US-032). Unlike
+// the cross-tenant sweeper function (connector_silent_host_sources, SECURITY DEFINER), this reads connector_configs
+// directly under the tenant's RLS context, so it can NEVER see another tenant's sources. No 'silent'-dedup filter:
+// the panel wants every currently-silent source, not the alert-once episode set.
+func (r *Repository) TenantSilentHostSources(ctx context.Context, tenantID uuid.UUID, within time.Duration) ([]SilentSource, error) {
+	var out []SilentSource
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT id, tenant_id, name, kind, last_success
+			  FROM connector_configs
+			 WHERE enabled = true AND kind IN ('host_osquery','host_wazuh')
+			   AND last_success IS NOT NULL
+			   AND last_success < now() - make_interval(secs => $1)
+			 ORDER BY last_success ASC LIMIT 200`, within.Seconds())
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s SilentSource
+			if e := rows.Scan(&s.ID, &s.TenantID, &s.Name, &s.Kind, &s.LastSuccess); e != nil {
+				return e
+			}
+			out = append(out, s)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // MarkSilent flags a connector's health as 'silent' so the sweeper does not re-alert; MarkSuccess resets it to
 // 'healthy' when the source reports again.
 func (r *Repository) MarkSilent(ctx context.Context, tenantID, id uuid.UUID) error {

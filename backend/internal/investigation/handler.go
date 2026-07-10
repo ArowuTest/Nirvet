@@ -5,16 +5,26 @@ package investigation
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 )
 
-// Handler exposes the investigation query endpoints.
-type Handler struct{ svc *Service }
+// Handler exposes the investigation query + entity + timeline + data-gap endpoints.
+type Handler struct {
+	svc      *Service
+	entities *EntityService
+	datagaps *DataGapService
+}
 
 // NewHandler builds the handler.
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+func NewHandler(svc *Service, entities *EntityService, datagaps *DataGapService) *Handler {
+	return &Handler{svc: svc, entities: entities, datagaps: datagaps}
+}
+
+// defaultTimelineWindow is applied when a get-timeline request omits from/to.
+const defaultTimelineWindow = 7 * 24 * time.Hour
 
 // RunHunt handles POST /investigation/run-hunt-query and PATCH /investigation/search-events (same allow-listed engine).
 func (h *Handler) RunHunt(w http.ResponseWriter, r *http.Request) {
@@ -30,4 +40,56 @@ func (h *Handler) RunHunt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, res)
+}
+
+// EntityProfile handles GET /investigation/get-entity-profile?ref=kind:value (API-INV-002).
+func (h *Handler) EntityProfile(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	res, err := h.entities.GetProfile(r.Context(), p, r.URL.Query().Get("ref"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
+// EntityGraph handles GET /investigation/get-entity-graph?ref=kind:value (API-INV-003) — the typed pivot.
+func (h *Handler) EntityGraph(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	res, err := h.entities.Pivot(r.Context(), p, r.URL.Query().Get("ref"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
+// GetTimeline handles GET /investigation/get-timeline?ref=&from=&to= (API-INV-004). from/to are RFC3339; when omitted
+// they default to the last defaultTimelineWindow so the mandatory bounded window is always satisfied.
+func (h *Handler) GetTimeline(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	to := time.Now()
+	from := to.Add(-defaultTimelineWindow)
+	if v := r.URL.Query().Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			to = t
+		}
+	}
+	if v := r.URL.Query().Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			from = t
+		}
+	}
+	res, err := h.svc.GetTimeline(r.Context(), p, r.URL.Query().Get("ref"), from, to)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
+// DataGaps handles GET /investigation/data-gaps (INV-009) — the unified "what you are not seeing" panel.
+func (h *Handler) DataGaps(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	httpx.JSON(w, http.StatusOK, h.datagaps.Get(r.Context(), p))
 }

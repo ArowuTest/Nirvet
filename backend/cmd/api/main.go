@@ -194,7 +194,8 @@ func main() {
 
 	// Entity graph (§6.9): read-only blast-radius view composing alerts/incidents/
 	// correlations/asset for an entity ref.
-	entityGraphH := entitygraph.NewHandler(entitygraph.NewService(alertSvc, incidentSvc, correlationSvc, assetSvc))
+	egSvc := entitygraph.NewService(alertSvc, incidentSvc, correlationSvc, assetSvc)
+	entityGraphH := entitygraph.NewHandler(egSvc)
 
 	// Evidence-pack signing key (R2 H-B): a persistent Ed25519 seed from config, else an
 	// ephemeral per-process key in dev (packs are still really signed, just not verifiable
@@ -283,9 +284,16 @@ func main() {
 		platformadmin.NewService(padminRepo, alertSvc),
 		platformadmin.NewMaintenanceService(padminRepo),
 	)
-	// §6.9 #124 investigation hunt-query surface. The query engine is allow-list-compiles-to-bound-params (the
-	// codebase's first user-predicate surface); RLS-under-WithTenant is the backstop; every query is read-audited.
-	investigationH := investigation.NewHandler(investigation.NewService(investigation.NewRepository(db)))
+	// §6.9 #124 investigation surface. The hunt-query engine is allow-list-compiles-to-bound-params (the codebase's
+	// first user-predicate surface); RLS-under-WithTenant is the backstop; every query/entity-read is read-audited.
+	// The entity profile+pivot (I-3) composes the existing entitygraph service (tenant-scoped) — no cross-tenant reach.
+	invRepo := investigation.NewRepository(db)
+	investigationH := investigation.NewHandler(
+		investigation.NewService(invRepo),
+		investigation.NewEntityService(egSvc, invRepo),
+		// I-5 data-gap panel: unify detection coverage gaps + host-source silence + normalization drift (all tenant-scoped).
+		investigation.NewDataGapService(detectionSvc, normQ, connector.NewRepository(db)),
+	)
 	reportingH := reporting.NewHandler(reporting.NewService(db, events))
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
@@ -483,6 +491,13 @@ func main() {
 	// allow-listed predicates compile to bound-param SQL under the tenant's RLS context, every run read-audited.
 	mux.Handle("POST /investigation/run-hunt-query", provider(investigationH.RunHunt))
 	mux.Handle("PATCH /investigation/search-events", provider(investigationH.RunHunt))
+	// §6.9 #124 I-3 typed entity profile + pivot (INV-003/004 / API-INV-002/003). Composes the tenant-scoped
+	// entitygraph service; a pivot neighbor is derived from the tenant's own alerts, never a cross-tenant ref.
+	mux.Handle("GET /investigation/get-entity-profile", provider(investigationH.EntityProfile))
+	mux.Handle("GET /investigation/get-entity-graph", provider(investigationH.EntityGraph))
+	// §6.9 #124 I-4 structured forensic timeline (INV-002 / API-INV-004) + I-5 data-gap panel (INV-009).
+	mux.Handle("GET /investigation/get-timeline", provider(investigationH.GetTimeline))
+	mux.Handle("GET /investigation/data-gaps", provider(investigationH.DataGaps))
 	// §6.18 #122 platform-admin surface. Feature-flag set/rollback runs the safety gate (immutable rejected; protected
 	// weakening needs senior+four-eyes+reason+HIGH-alert+time-box). Tenant lifecycle: legal-hold set is routine, CLEAR
 	// needs the elevated envelope (M-3); offboard runs the uniform purge (blocked while on hold) + cert of destruction.
