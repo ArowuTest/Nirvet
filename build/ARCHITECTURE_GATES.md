@@ -2376,3 +2376,80 @@ With §6.17 landed, every §6 domain has been through the gate-before-code disci
 - **Resolver:** confirmed single-choke-point. **Use the SD-fn; REJECT the set-aware GUC** (a set-aware GUC would force every existing RLS policy set-aware — a blast radius that weakens the single-tenant customer isolation that is the platform's core).
 
 **→ GREENLIT. Builder folds MA-1..4 and builds the fleet/write primitive; syslog-listener gate proceeds in parallel (independent egress/creds surface). Reviewer continues pass 1 on the composed baseline (`ScopeToTenant`/`WithTenant`, `ServiceAccount` marker, SD cohort, PAM/break-glass); fleet/write landing round re-verifies MA-1..4 + per-target authority.**
+
+## Gate — MA-4 Vendor Posture Oversight (Ghana operator seam #4) — PRE-CODE DESIGN REVIEW — Jul 2026
+
+Last of the four launch-locked security-critical seams. Expands the fleet-gate MA-4 must-add ("the vendor
+posture view MUST be a structurally separate store … 'no code path to content' only holds if content is
+unreachable from the posture repo") into the full pre-code design. This is the accreditation-critical control
+(brief §10): the vendor retains **standing HEALTH/POSTURE oversight (metadata-only BY CONSTRUCTION)** so it can
+spot a neglected major issue and flag/escalate — but has **NO standing content read**. Content, when genuinely
+needed for a disputed claim, is reached only via the **sibling control**: §6.2 PAM **data-owner-visible,
+time-boxed, four-eyes, audited break-glass** (its own gate; reviewer pass-1'ing that path now). Standing content
+surveillance would FAIL CSA accreditation; this design turns the auditor's hardest probe into a credit.
+
+### Model — what posture IS and IS NOT
+- **IS:** a per-tenant **projection of metadata only** — counts + ages + status, no bodies. Candidate columns
+  (all derivable from `incidents`/alert *metadata*, never content): open-incident counts by severity; oldest
+  open-incident age + mean time-in-stage; unacknowledged / ack-overdue counts (`acknowledged_at`/`ack_due_at`);
+  SLA-clock state (breached / at-risk counts from `resolve_due_at`); escalation state; last-activity timestamp.
+  **NEVER:** alert/incident titles or descriptions, telemetry, IOCs, entity/host/user names, evidence, raw events.
+- **IS NOT:** a filtered `VIEW` over the content tables, and not an on-demand reader of them. A view/join over
+  content is a *code path to content* — exactly what MA-4 forbids.
+
+### The crux — the no-import-path invariant (structural, not behavioural)
+MA-4's security value is **structural**, so it is locked at the package boundary, not asserted by an output test:
+- **The `internal/posture` READ package imports NO content package** — not `alert`, `detection`, `incident`,
+  `investigation`, nor any event/normalization/telemetry-ingest package. Its repository reads only its own
+  `tenant_posture` table. Content is *unreachable* from the posture read path by construction.
+- **CI teeth (modeled on `scripts/check-outbound-http.sh`):** a new `scripts/check-posture-no-content-import.sh`
+  runs `go list -deps ./internal/posture/...` and **fails the build** if the transitive dep set contains any
+  content package. Greppable, auditable, un-bypassable — the same shape as the SSRF and SD-REVOKE guards.
+
+### Population — push, not pull
+Posture is **written TO** by the content side on state transitions (a projection updated when an incident
+changes stage / an SLA breach fires [#59] / an escalation routes [#78]) — **never read FROM content on demand**.
+Two candidate mechanisms (open question for the pre-code pass — pick the one that keeps the boundary cleanest):
+- **(a) Outbox/event:** the content side emits a posture-relevant event; a posture ingester projects it. Zero
+  import in EITHER direction (content ↛ posture, posture ↛ content). Strongest boundary; more plumbing.
+- **(b) Writer interface:** content packages call a tiny `posture.Projector` write interface. This is a
+  content → posture import (acceptable — the forbidden direction is posture → content), keeps the read package
+  content-free, less plumbing. The invariant (posture READ ↛ content) holds under either.
+
+### Read authz — vendor posture oversight
+- Read by the **vendor `platform_admin` seat** (DISTINCT from the operator-admin seat that transitions to the
+  gov cyber org, §6.18). Because the store is **metadata-only by construction**, the read is over `tenant_posture`,
+  not content — but it is still a cross-tenant read, so: scope **derived from the authenticated principal** (never
+  a client id), **fail-closed** for any non-vendor principal, **read-audited**. Reuse the MA-1 bounded-read
+  discipline (principal-derived tenant-set; hard cap) — open question whether via the existing fleet SD-fn or a
+  dedicated posture SD-fn.
+- **Posture NEVER links through to content.** A "show me the incident behind this count" action is NOT a posture
+  feature — it is the break-glass control (separate gate), so the read that reveals content is always the
+  data-owner-visible, audited one.
+
+### Scope — slice A
+Posture store (`tenant_posture` migration) + population-on-transition + vendor read endpoint + the
+no-content-import CI guard + centerpiece tests. **Deferred (own gates):** richer/historical posture trend;
+the break-glass content path (reviewer pass-1'ing now); posture-driven auto-escalation beyond the existing
+#59/#78 reuse.
+
+### Centerpiece tests
+1. **Structural (the strongest proof):** `check-posture-no-content-import.sh` fails if `internal/posture` gains a
+   content dependency — proving content is unreachable, not merely unused.
+2. **Behavioural:** the vendor posture read returns only metadata columns (no body/title/telemetry field exists on
+   the DTO); a non-vendor principal → fail-closed (empty); the read is audited.
+3. **Population:** an incident stage change / SLA breach updates the tenant's posture row (projection is live), with
+   no content leaking into the posture row.
+
+### Open questions for the reviewer's pre-code pass
+1. **Population mechanism:** outbox/event (a) vs writer-interface (b) — which does the reviewer prefer for the
+   cleanest, most audit-legible boundary? (Both preserve posture READ ↛ content.)
+2. **Vendor read path:** reuse the fleet SD-fn (MA-1) for the cross-tenant posture read, or a dedicated posture
+   SD-fn? (Posture is metadata-only, but it is still cross-tenant.)
+3. **Vendor scope:** whole-fleet posture for the vendor seat (single-operator instance), or resolver-based like
+   the fleet console? (Leaning whole-fleet for the vendor seat, principal-derived + audited.)
+4. **Metric set:** is the candidate column list above sufficient for "spot a neglected major issue", and is any
+   candidate column secretly content (e.g. does "category" leak sensitivity)? Confirm the metadata/content line.
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit. Builder will then build slice A test-first with the
+no-import CI guard as the crux. Nothing pushed; HEAD b992ec5 local.**
