@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 )
 
@@ -156,5 +157,36 @@ func TestAccessGate(t *testing.T) {
 	}
 	if got := call(auth.RolePlatformAdmin); got != http.StatusOK {
 		t.Fatalf("platform staff must NOT be blocked by a tenant suspension, got %d", got)
+	}
+}
+
+// M-1 regression: the suspension gate must sit BEFORE the role gate in a real interactive chain (the shape every
+// non-padmin chain — provider, aiProvider, manager, … — is now built from). A provider analyst of a suspended
+// tenant must be blocked even though the role gate would otherwise admit them; platform-management passes through.
+// (The original M-1 bug was the aiProvider chain omitting the gate entirely — this proves the composed order works.)
+func TestAccessGate_ComposedBeforeRoleGate(t *testing.T) {
+	db := billDB(t)
+	svc := NewService(NewRepository(db))
+	tid := billTenant(t, db)
+	_ = svc.SuspendTenant(context.Background(), admin(), tid, "nonpay", true)
+
+	providerRoles := []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleAnalystT1, auth.RoleAnalystT2, auth.RoleAnalystT3, auth.RoleDetectionEng}
+	// Mirror the interactive factory: gate THEN role gate (no rate limiter needed for the assertion).
+	chain := httpx.Chain(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+		AccessGate(svc), auth.RequireRole(providerRoles...),
+	)
+	call := func(role auth.Role) int {
+		req := httptest.NewRequest("GET", "/x", nil).
+			WithContext(auth.WithPrincipal(context.Background(), auth.Principal{UserID: uuid.New(), TenantID: tid, Role: role}))
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := call(auth.RoleAnalystT1); got != http.StatusForbidden {
+		t.Fatalf("suspended tenant's analyst must be blocked by the gate before the role gate admits them, got %d", got)
+	}
+	if got := call(auth.RolePlatformAdmin); got != http.StatusOK {
+		t.Fatalf("platform-management must pass the composed chain, got %d", got)
 	}
 }

@@ -332,45 +332,47 @@ func main() {
 	// namespace ("ai"), so it does not interact with the general api bucket.
 	aiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.5, 5, "ai"), ratelimit.ByPrincipal) // ~1 AI call / 2s / principal, burst 5
 	auditMut := audit.Mutations(db)                                                                    // record successful mutations (NFR-003)
-	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut) }
-	// §6.17 slice B: a billing-suspended tenant's non-platform users are blocked at the authenticated API (bsuspend);
-	// ingest/detection never uses this chain, so a suspended tenant keeps being protected.
+	// §6.17 slice B: a billing-suspended tenant's non-management users are blocked at the authenticated API
+	// (bsuspend). ingest/detection/alerting never use these chains, so a suspended tenant keeps being protected;
+	// platform-management (platform_admin/soc_manager) is exempt inside AccessGate so it can still manage the
+	// suspended tenant. See account.go:AccessGate.
 	bsuspend := billing.AccessGate(billingSvc)
-	provider := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, bsuspend, apiLimit, auditMut, auth.RequireRole(providerRoles...))
+	// interactive is the ONE builder for every authenticated, customer-facing chain. Baking bsuspend in here
+	// (M-1 fix) means no interactive chain can silently omit the suspension gate — adding a route can only pick a
+	// (limiter, roles) combination, never a chain without the gate. `lim` lets a chain swap in a tighter bucket
+	// (e.g. the AI bucket). Only `padmin` (platform-only) is built outside this, and AccessGate exempts platform
+	// staff anyway, so it needs no gate.
+	interactive := func(lim httpx.Middleware, roles ...auth.Role) func(http.HandlerFunc) http.Handler {
+		return func(h http.HandlerFunc) http.Handler {
+			return httpx.Chain(h, authn, bsuspend, lim, auditMut, auth.RequireRole(roles...))
+		}
 	}
-	// aiProvider is the provider chain with the tight AI bucket swapped in for apiLimit —
-	// same roles (T1 keeps assistive AI), stricter throughput (R3 AI-rate).
-	aiProvider := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, aiLimit, auditMut, auth.RequireRole(providerRoles...))
-	}
+	// authed: any authenticated principal (no role floor), but still suspension-gated — a suspended tenant's
+	// own users are blocked from general reads too.
+	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, bsuspend, apiLimit, auditMut) }
+	provider := interactive(apiLimit, providerRoles...)
+	// aiProvider is the provider chain with the tight AI bucket swapped in for apiLimit — same roles (T1 keeps
+	// assistive AI), stricter throughput (R3 AI-rate). Now also suspension-gated (M-1): a suspended tenant can no
+	// longer keep burning AI-copilot spend.
+	aiProvider := interactive(aiLimit, providerRoles...)
+	// padmin is platform-admin only and intentionally NOT built from interactive: platform staff manage suspended
+	// tenants (and AccessGate exempts them regardless), so this chain carries no suspension gate.
 	padmin := func(h http.HandlerFunc) http.Handler {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin))
 	}
-	detEng := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng))
-	}
-	// SOAR approvals gate destructive automation, so they are restricted to senior
-	// roles (four-eyes is additionally enforced in the service: requester != approver).
-	soarApprover := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleSOCManager))
-	}
-	// senior = destructive/sensitive actions that a T1 (or a stolen T1 token) must not
-	// reach: connector create/delete (creds / blind detection), playbook run, incident
-	// close, alert promote, threat-intel writes, evidence-pack export (R2 H-D). T1 keeps
-	// reads + triage/assign/note + assistive AI.
-	senior := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(seniorRoles...))
-	}
-	// manager = platform_admin + soc_manager only. Asset writes set criticality that
-	// auto-escalates incident severity + SLA, so they are restricted here (R2 M-D).
-	manager := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(managerRoles...))
-	}
+	detEng := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng)
+	// SOAR approvals gate destructive automation, so they are restricted to senior roles (four-eyes is
+	// additionally enforced in the service: requester != approver).
+	soarApprover := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager)
+	// senior = destructive/sensitive actions that a T1 (or a stolen T1 token) must not reach: connector
+	// create/delete (creds / blind detection), playbook run, incident close, alert promote, threat-intel writes,
+	// evidence-pack export (R2 H-D). T1 keeps reads + triage/assign/note + assistive AI.
+	senior := interactive(apiLimit, seniorRoles...)
+	// manager = platform_admin + soc_manager only. Asset writes set criticality that auto-escalates incident
+	// severity + SLA, so they are restricted here (R2 M-D).
+	manager := interactive(apiLimit, managerRoles...)
 	// SSO connections are managed by the tenant's own admin or a platform admin.
-	ssoAdmin := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin, auth.RoleCustomerAdmin))
-	}
+	ssoAdmin := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleCustomerAdmin)
 
 	mux := http.NewServeMux()
 	// health
