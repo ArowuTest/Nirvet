@@ -2124,3 +2124,13 @@ The security-load-bearing core. UI (INV-001 unified view) is a designer composit
 - Any must-adds in the query-surface family (query-cost ceiling, sensitive-field masking in results, per-role field visibility) to fold structurally before code.
 
 **→ Awaiting reviewer pre-code pass. No code until greenlit; then build I-1..I-6 test-first, dedicated adversarial round on the query surface at landing.**
+
+### ✅ LANDED — §6.9 Investigation slice A complete (HEAD a30f961, migration 0076), awaiting reviewer landing round
+- **I-1 hunt-query** (INV-006) — allow-list→bound-params; all 5 must-adds folded (code-owned registry, type-aware ops, per-field min-role/mask seam, predicate cap + no nesting, cost ceiling on the indexed observed_at). Proven: hostile value/field/op/`in`-member never reach SQL text.
+- **I-2 read-path audit** (INV-007) — fail-closed one-row-per-execution; extended to entity/timeline reads.
+- **I-3 typed entity graph + pivot** (INV-003/004) — code-owned kind allow-list; pivot derives neighbors from the tenant's OWN alerts (cross-tenant pivot isolation proven).
+- **I-4 structured forensic timeline** (INV-002) — the additive event lane (event-vs-ingest time, source, entity, severity, confidence, outcome), built on the I-1 engine.
+- **I-5 data-gap panel** (INV-009) — unifies detection coverage gaps + host-source silence (new tenant-scoped reader) + normalization drift.
+- **I-6 adversarial round** — hostile field/op/`in`/exists all fenced; limit clamped; cross-tenant disproven.
+- Evidence: 23 tests (query/entity/timeline/data-gap + 5 adversarial + RLS-isolation integration), schemacheck, SECURITY-DEFINER guard, build+vet clean, 76/76 from zero. Report: `outputs/NIRVET_69_INVESTIGATION_SLICE_A_LANDING.md`.
+- Deferred to their own gates: notebooks (INV-005), saved-views/shareable-links (INV-008), war-room realtime (INV-010).
