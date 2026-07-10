@@ -183,6 +183,37 @@ func TestApproveForTarget_FourEyesAcrossTenants(t *testing.T) {
 	assertTargetAudit(t, fx.db, fx.target, "soar.run_approve", approver.UserID)
 }
 
+// TestRejectForTarget_CancelsPendingInTarget: an operator can cancel a pending cross-tenant containment
+// (fail-safe — nothing fires), and the run is rejected in the TARGET tenant.
+func TestRejectForTarget_CancelsPendingInTarget(t *testing.T) {
+	fx := newFleetFixture(t, "approval")
+	ctx := context.Background()
+	_ = fx.repo.SetSoarSettings(ctx, fx.target, soar.SoarSettings{DestructiveEnabled: true, MaxClass3PerHour: 5})
+
+	firer := auth.Principal{UserID: uuid.New(), Email: "firer@venture", TenantID: fx.opTenant, Role: auth.RoleSOCManager}
+	runID, _, err := fx.svc.RunForTarget(ctx, firer, fx.target, fx.pbID, nil)
+	if err != nil {
+		t.Fatalf("RunForTarget: %v", err)
+	}
+
+	// Any authorized operator may cancel the pending run (no four-eyes on the fail-safe direction).
+	other := auth.Principal{UserID: uuid.New(), Email: "other@venture", TenantID: fx.opTenant, Role: auth.RoleSOCManager}
+	_, status, err := fx.svc.RejectForTarget(ctx, other, fx.target, runID)
+	if err != nil {
+		t.Fatalf("RejectForTarget: %v", err)
+	}
+	if status != string(soar.RunRejected) {
+		t.Fatalf("rejected run status must be rejected, got %s", status)
+	}
+	if fx.cc.n != 0 {
+		t.Fatalf("reject is fail-safe — nothing fires, got %d actioner calls", fx.cc.n)
+	}
+	run, err := fx.svc.GetRun(ctx, fx.target, runID)
+	if err != nil || run.Status != soar.RunRejected {
+		t.Fatalf("run must be rejected in the TARGET tenant, got %v / %s", err, run.Status)
+	}
+}
+
 // assertTargetAudit confirms an audit row for the given action + actor exists in the TARGET tenant.
 func assertTargetAudit(t *testing.T, db *database.DB, target uuid.UUID, action string, actor uuid.UUID) {
 	t.Helper()

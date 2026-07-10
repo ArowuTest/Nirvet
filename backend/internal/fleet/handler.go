@@ -139,3 +139,25 @@ func (h *Handler) ApproveContainment(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"run_id": rID, "status": status})
 }
+
+// RejectContainment handles POST /fleet/alerts/{id}/contain/{runID}/reject — cancel a pending cross-tenant
+// containment (fail-safe; no effect fires). Same fleet gate as fire/approve.
+func (h *Handler) RejectContainment(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	alertID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid alert id"))
+		return
+	}
+	runID, err := uuid.Parse(r.PathValue("runID"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid run id"))
+		return
+	}
+	rID, status, err := h.svc.RejectContainment(r.Context(), p, alertID, runID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"run_id": rID, "status": status})
+}

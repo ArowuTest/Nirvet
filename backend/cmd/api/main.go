@@ -500,6 +500,7 @@ func main() {
 	// authority is evaluated in the target's context; effect + audit land durably in the target (supervisor).
 	mux.Handle("POST /fleet/alerts/{id}/contain", provider(fleetH.FireContainment))
 	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/approve", provider(fleetH.ApproveContainment))
+	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/reject", provider(fleetH.RejectContainment))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
 	mux.Handle("POST /alerts/{id}/disposition", provider(alertH.Disposition)) // DET-007 FP feedback

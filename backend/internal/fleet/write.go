@@ -37,6 +37,7 @@ type AlertWriter interface {
 type ContainmentRunner interface {
 	RunForTarget(ctx context.Context, operator auth.Principal, targetTenant, playbookID uuid.UUID, incidentID *uuid.UUID) (uuid.UUID, string, error)
 	ApproveForTarget(ctx context.Context, operator auth.Principal, targetTenant, runID uuid.UUID) (uuid.UUID, string, error)
+	RejectForTarget(ctx context.Context, operator auth.Principal, targetTenant, runID uuid.UUID) (uuid.UUID, string, error)
 }
 
 // AssignAlert assigns a fleet alert to an analyst. Target resolved from the resource + scope-checked (#1/#2);
@@ -87,7 +88,43 @@ func (s *Service) FireContainment(ctx context.Context, p auth.Principal, alertID
 	if s.containment == nil {
 		return uuid.Nil, "", httpx.ErrInternal("fleet containment path not configured")
 	}
+	// An incident is dedup/linkage metadata only (it is NOT the containment's action target — that is the
+	// target's own playbook step, executed under the target's creds). Still, refuse a foreign incident so a
+	// target-tenant run never references an incident from another tenant. Validated under the TARGET's RLS.
+	if incidentID != nil {
+		ok, err := s.incidentInTenant(ctx, target, *incidentID)
+		if err != nil {
+			return uuid.Nil, "", httpx.ErrInternal("could not validate incident")
+		}
+		if !ok {
+			return uuid.Nil, "", httpx.ErrBadRequest("incident does not belong to the target tenant")
+		}
+	}
 	return s.containment.RunForTarget(ctx, p, target, playbookID, incidentID)
+}
+
+// incidentInTenant reports whether the incident exists in the given tenant. The query runs under the tenant's
+// RLS, so a foreign incident is invisible (returns false) — never an existence oracle across tenants.
+func (s *Service) incidentInTenant(ctx context.Context, tenantID, incidentID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM incidents WHERE id=$1)`, incidentID).Scan(&exists)
+	})
+	return exists, err
+}
+
+// RejectContainment rejects (cancels) a pending cross-tenant containment run the operator earlier fired.
+// Same fleet gate as fire/approve (target re-resolved from the alert); rejection is fail-safe (nothing
+// executes) so it needs no four-eyes — any authorized operator may cancel a stranded pending run.
+func (s *Service) RejectContainment(ctx context.Context, p auth.Principal, alertID, runID uuid.UUID) (uuid.UUID, string, error) {
+	target, err := s.ResolveTargetTenant(ctx, p, alertID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if s.containment == nil {
+		return uuid.Nil, "", httpx.ErrInternal("fleet containment path not configured")
+	}
+	return s.containment.RejectForTarget(ctx, p, target, runID)
 }
 
 // ApproveContainment approves a pending cross-tenant containment run an operator earlier fired (four-eyes:

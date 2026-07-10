@@ -466,7 +466,25 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 // (Round-4 residual: a concurrent Approve+Reject on one run must be serialised — the loser gets 409,
 // so a run can't be both approved and rejected).
 func (s *Service) Reject(ctx context.Context, p auth.Principal, runID uuid.UUID) (*PlaybookRun, error) {
-	run, err := s.repo.GetRun(ctx, p.TenantID, runID)
+	return s.rejectFor(ctx, p, p.TenantID, runID)
+}
+
+// RejectForTarget rejects a pending cross-tenant fleet run: any authorized operator may CANCEL a containment
+// an operator earlier fired but that is still awaiting approval (unlike Approve, reject is fail-safe — nothing
+// executes — so it needs no four-eyes; a second operator who disagrees can cancel it). The run's TARGET tenant
+// is the explicit param (the caller fleet-scope-resolved it from the alert). Returns (runID, status).
+func (s *Service) RejectForTarget(ctx context.Context, operator auth.Principal, targetTenant, runID uuid.UUID) (uuid.UUID, string, error) {
+	run, err := s.rejectFor(ctx, operator, targetTenant, runID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return run.ID, string(run.Status), nil
+}
+
+// rejectFor is the shared core of Reject/RejectForTarget. tenantID is the run's tenant (own for Reject, the
+// resolved target for the fleet path); `p` supplies the actor identity for the audit + rejection note.
+func (s *Service) rejectFor(ctx context.Context, p auth.Principal, tenantID, runID uuid.UUID) (*PlaybookRun, error) {
+	run, err := s.repo.GetRun(ctx, tenantID, runID)
 	if err != nil {
 		return nil, httpx.ErrNotFound("run not found")
 	}
@@ -474,7 +492,7 @@ func (s *Service) Reject(ctx context.Context, p auth.Principal, runID uuid.UUID)
 		return nil, httpx.ErrBadRequest("run is not pending approval")
 	}
 	claimed := false
-	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+	err = s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		ok, e := s.repo.claimPendingTx(ctx, tx, run.ID)
 		if e != nil {
 			return e

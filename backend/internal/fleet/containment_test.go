@@ -41,6 +41,12 @@ func (f *fakeContainment) ApproveForTarget(_ context.Context, operator auth.Prin
 	return runID, "completed", nil
 }
 
+func (f *fakeContainment) RejectForTarget(_ context.Context, operator auth.Principal, targetTenant, runID uuid.UUID) (uuid.UUID, string, error) {
+	f.calls++
+	f.operator, f.target = operator, targetTenant
+	return runID, "rejected", nil
+}
+
 func TestFleetFireContainment_TargetFromResource_NoPathForOversight(t *testing.T) {
 	db := fleetDB(t)
 	fake := &fakeContainment{}
@@ -88,6 +94,34 @@ func TestFleetFireContainment_TargetFromResource_NoPathForOversight(t *testing.T
 	}
 	if fake.calls != 1 {
 		t.Fatalf("approve by a non-provider MUST NOT invoke the runner, calls=%d", fake.calls)
+	}
+}
+
+// TestFleetRejectContainment_GateAndHandoff: reject enforces the same fleet gate (target from the alert;
+// non-provider refused) and hands off to the runner for an authorized operator.
+func TestFleetRejectContainment_GateAndHandoff(t *testing.T) {
+	db := fleetDB(t)
+	fake := &fakeContainment{}
+	svc := NewService(db).WithContainment(fake)
+	ctx := context.Background()
+	tA := mkTenant(t, db)
+	alertID := mkAlertID(t, db, tA)
+
+	// A non-provider cannot reject a cross-tenant containment — runner never invoked.
+	cust := auth.Principal{UserID: uuid.New(), TenantID: tA, Role: auth.RoleCustomerAdmin}
+	if _, _, err := svc.RejectContainment(ctx, cust, alertID, uuid.New()); err == nil {
+		t.Fatal("a non-provider MUST NOT reject a cross-tenant containment")
+	}
+	if fake.calls != 0 {
+		t.Fatalf("non-provider reject MUST NOT invoke the runner, calls=%d", fake.calls)
+	}
+	// An authorized operator rejects → runner invoked with the alert's tenant.
+	op := auth.Principal{UserID: uuid.New(), TenantID: mkTenant(t, db), Role: auth.RoleSOCManager}
+	if _, _, err := svc.RejectContainment(ctx, op, alertID, uuid.New()); err != nil {
+		t.Fatalf("provider reject: %v", err)
+	}
+	if fake.calls != 1 || fake.target != tA {
+		t.Fatalf("reject must hand off with the alert's tenant (tA=%s), got calls=%d target=%s", tA, fake.calls, fake.target)
 	}
 }
 
