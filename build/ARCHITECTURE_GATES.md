@@ -2266,3 +2266,45 @@ All five money-integrity asks confirmed. Five must-adds fold structurally before
 
 ## 🏁 §6 ROADMAP COMPLETE — all 18 §6 domains gated-and-reviewed
 With §6.17 landed, every §6 domain has been through the gate-before-code discipline (pre-code design gate → reviewer pass → build test-first → landing round). **Next: the whole-platform pre-go-live pass** (owner-endorsed, reviewer strongly recommended) — the cross-cutting review layer the per-slice rounds structurally cannot substitute for: cross-domain auth flows, the full RLS surface at once, secrets/KMS end-to-end, the actual `-race` full suite on a fresh DB, dependency/supply-chain, deploy posture. Scope it as its own multi-part effort.
+
+---
+
+## Gate — §6.17 Billing — slice B: umbrella billing accounts + billing modes + suspension — DESIGN REVIEW (pre-code) — Jul 2026
+
+**SRS:** BILL-007 (partner/reseller pricing + **downstream tenant billing metadata**), BILL-006 (renewal/contract/payment-terms/**service suspension**/upgrade-downgrade), BILL-005 (prevent silent scope creep). Ties to TEN hierarchical/MSSP. Extends §6.17 slice A (usage ledger + packages/rates + `tenant_billing` + `ComputeInvoice`). Parallel gated track alongside the pre-go-live pass (independent surfaces — they don't block each other).
+
+**The use case (owner):** some tenants are metered but NOT billed directly — their cost is covered under an umbrella contract held by a paying entity above them (e.g. Ministry of Education is a live tenant; the Federal Government is the payer). Admin onboards them without direct billing, marks them covered, and we monitor the FG contract for payment — with the ability to suspend covered tenants if the umbrella payer defaults. Plus a genuinely-free `comp` mode (demo/sponsored/anchor tenants).
+
+### Model
+- **`billing_account`** — the payer / contract holder (e.g. "Federal Government of Nigeria"): currency, contract dates, `contract_value_minor`, payment terms, `payment_status` (current | overdue), `account_status` (active | delinquent | suspended). This is where payment monitoring lives.
+- **billing modes** on `tenant_billing`: `direct` (tenant pays its own invoice — slice A), `covered` (metered; charges attribute to a `billing_account`; tenant not directly invoiced), `comp` (metered; zero-charge).
+- **`tenant_billing.billing_account_id`** (nullable) — for a covered tenant, the account its charges roll up to.
+- **account invoice** = the sum of its covered tenants' overage (account-scoped read); the covered tenant's own invoice is informational ("covered by <account>").
+
+### Security spine (builder's 4 + reviewer's 5, merged — must be structural)
+1. **The meter is MODE-AGNOSTIC.** `RecordUsage` never branches on billing mode — covered/comp tenants are metered byte-for-byte identically to direct. Mode is applied ONLY at invoice time. ("Not billed" ≠ "not metered": we always need the numbers for the umbrella reconciliation, margin, and abuse detection — a "free" tenant silently costing huge storage must stay visible.)
+2. **`billing_mode` AND `billing_account_id` are padmin-immutable + audited.** A tenant can NEVER mark itself covered/comp (dodge payment) or re-parent itself to a different/absent account (attribute its cost elsewhere). BOTH fields are platform-admin-only writes; every change audited (the §6.18 protected-class posture). Self-marking and re-parenting are the two fraud paths and both are closed.
+3. **Suspension has a SAFETY dimension — it is NOT a normal SaaS suspend (the reviewer-shaped decision).** For a security platform, "suspend" must NOT mean "stop protecting the customer" — turning off a ministry's monitoring during a payment dispute is a liability, not just a billing lever. **Decision to pin:** `suspend` = restrict ACCESS (portal login / API / report export / new configuration) and flag the account, while INGEST + DETECTION + ALERTING CONTINUE (the security function is never turned off for non-payment). A separate, harder `terminate` (actually stop protecting) is a distinct, more-gated action, out of slice B. Enforcement point: an authenticated-API middleware gate on a suspended tenant — NOT on the ingest/detection path.
+4. **The account-level cross-tenant rollup is a DELIBERATELY-WIDENED cross-tenant read = the new BOLA surface (reviewer-shaped).** It is the ONE intentional exception to per-tenant RLS. It MUST be account-scoped: a payer/account principal sees ONLY the tenants covered by ITS account — never all tenants, never another account's. Implemented as an explicit account-membership-scoped read (a SECURITY DEFINER function keyed on account_id that enumerates only that account's covered tenants + REVOKE PUBLIC, or an account-scoped policy), audited — never a raw cross-tenant scan. A covered tenant still sees only itself (never its siblings or the account total).
+5. **Account-level suspension is HIGH-BLAST-RADIUS.** It darkens/restricts MANY tenants at once (a whole umbrella of ministries). Gate it like a high-consequence action: senior/padmin + reason + a HIGH alert + audit (four-eyes on the account-suspend given the blast radius, TBD with reviewer); fully reversible the moment payment lands. Per-tenant suspend is lower-blast; account-suspend cascades.
+6. **Account currency + contract monitoring + immutable historical attribution.** One currency per account; every covered tenant rolls up in it (reject a covered tenant whose currency ≠ its account — M-4 one level up, no mixed-currency account rollup). Track contract value/dates/payment status so "is the umbrella paying for what they consume?" is answerable. Historical attribution is immutable: a re-parented tenant's already-billed (closed) periods stay attributed where they were (record-don't-drop, one level up).
+
+### Scope — slice B
+- **SB-1 — `billing_account`** (payer/contract record) + padmin CRUD + audit. Contract value/dates/payment_status/account_status.
+- **SB-2 — modes on `tenant_billing`** (`billing_mode` + `billing_account_id`), padmin-immutable + audited; meter stays mode-agnostic (NO change to RecordUsage). Covered tenant's currency pinned to its account.
+- **SB-3 — invoice mode-application**: covered → attribute to account (tenant invoice informational); comp → zero-charge; `ComputeAccountInvoice(account)` = account-scoped sum over covered tenants (BOLA-safe, currency-consistent).
+- **SB-4 — suspension semantics** (the safety decision): per-tenant + account-level suspend/reinstate; suspend = restrict-access-keep-protecting; account-suspend high-blast-radius gated + HIGH alert + reversible; the authenticated-API enforcement middleware (ingest/detection untouched).
+- **SB-5 — account-scoped rollup read (the BOLA surface)** + dedicated adversarial round.
+
+### Deferred (own gates)
+- Reseller/partner **markup pricing** (a partner setting downstream *prices*, not just attribution — the pricing half of BILL-007).
+- Margin dashboards (BILL-008), external finance-system integration (BILL-010), add-on services + commercial-approval / anti-scope-creep (BILL-004/005/009), the harder `terminate` (stop-protecting) tier.
+
+### Reviewer pre-code asks (confirm before SB-1)
+- Endorse the **suspend = restrict-access-keep-protecting** semantics for a sovereign security platform (vs. go-dark), with a separate harder `terminate` deferred.
+- Confirm the **account rollup as an account-membership-scoped read** (SECURITY DEFINER + REVOKE PUBLIC, account-scoped) is the right shape for the one deliberate cross-tenant exception — payer sees only its own covered tenants.
+- Confirm **both `billing_mode` and `billing_account_id` padmin-immutable + audited**, and the meter stays mode-agnostic.
+- Confirm **account-level suspension blast-radius gating** — senior + reason + HIGH alert + audit; is four-eyes warranted given it darkens multiple ministries?
+- Confirm SB-1..SB-5 scope vs. deferring reseller-markup / margin-dashboards / terminate.
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit; then build SB-1..SB-5 test-first, dedicated adversarial round on the account-rollup BOLA surface + suspension blast-radius at landing.**
