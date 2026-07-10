@@ -2033,8 +2033,32 @@ SLA pause is logged; deferred items resume on close. Standard: FORCE-RLS cross-t
 
 ### Gate checklist
 - [x] Config shape + the four safety classes decided now (this gate), so no admin feature accretes on an ungoverned toggle.
-- [ ] **Reviewer confirms the feature-flag safety classification (protected/immutable + fail-safe default + tighten-only + code-owned class) BEFORE code — the D5-analog, the one to nail.**
-- [ ] Reviewer confirms the other four folds (config-audit immutable, rollback-surfaces-delta, uniform-offboarding-not-cascade + legal-hold-blocks-delete, maintenance-doesn't-drop-incidents).
-- [ ] Build P-1..P-5 test-first after clearance; dedicated adversarial round on landing.
+- [x] **Reviewer confirmed the feature-flag safety classification (D5-analog) + the four folds (task #41).**
+- [x] Build P-1..P-5 test-first (cleared once the 3 must-adds below are folded); dedicated adversarial round on landing.
 
-**→ READY FOR REVIEWER PRE-CODE PASS.** No code until the reviewer confirms the safety classification + the four folds (gated-approach rule).
+### Revision — reviewer must-adds folded (pre-code, CLEARED TO BUILD, task #41)
+Classification + the four folds confirmed. Three must-adds + two reinforcements, all in families prior rounds taught us
+to close before code:
+- **M-1 — fail-safe CLASS resolution.** An unregistered/unclassified flag key resolves to `protected`, NEVER `open`
+  (the absent-catalog→business_critical pattern applied to *classification*). The gate had fail-safe VALUE resolution
+  (unknown→secure default) but not fail-safe CLASS — a key nobody classified must be treated as if it could disable a
+  control, so a flip needs the elevated envelope until someone registers it.
+- **M-2 — critical/P1 breaks through maintenance notification suppression.** Detection-continues is not enough; a
+  SUPPRESSED critical is the silent gap. A maintenance window may hold P2-and-below notifications, but a P1/critical
+  incident notification ALWAYS delivers (the storm-mode "critical always promotes" rule). SLA pause likewise never
+  applies to a P1.
+- **M-3 — clearing `legal_hold` needs the elevated envelope** (senior + four-eyes + reason + HIGH alert). Lifting a
+  hold REMOVES an evidence-preservation control, so it is a `protected`-class transition, not routine lifecycle.
+- **Reinforcement A — `immutable` is resolved from CODE ONLY.** The resolver reads immutable-key state from the code
+  registry, never the DB, so a planted `platform_feature_flags` row for an immutable key is INERT (belt-and-suspenders
+  beyond reject-at-save): even if a row is written by any path, the resolver never honors it.
+- **Reinforcement B — protected time-box auto-reverts to the SECURE state** (PAM pattern). A `protected` flag flipped
+  less-secure is time-boxed; a background sweep reverts it to its secure default at expiry (+audit +alert), so a
+  forgotten temporary loosening cannot persist indefinitely.
+
+**Landing-round headline probes (reviewer):** unregistered→protected (M-1), critical-breaks-maintenance (M-2),
+legal-hold-clear-gated (M-3), immutable rejected-at-save AND inert-at-resolve (Reinf A), protected time-box
+auto-revert (Reinf B) — plus the gate's original probes (rollback-surfaces-delta, config-audit-immutable, uniform
+offboarding, tighten-only, FORCE-RLS).
+
+**→ CLEARED TO BUILD P-1..P-5 test-first (M-1/M-2/M-3 + A/B folded structurally). Dedicated adversarial round on landing.**
