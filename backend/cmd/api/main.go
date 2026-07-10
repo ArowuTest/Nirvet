@@ -590,6 +590,14 @@ func main() {
 	// billing / entitlements
 	mux.Handle("GET /billing/entitlements", provider(billingH.Get))
 	mux.Handle("PUT /billing/entitlements", padmin(billingH.Set))
+	// §6.17 #126 billing. Pricing WRITES are padmin-only (a tenant has no path to price). Usage/invoice READS are
+	// tenant-scoped + manager-gated (finance/admin tier, not every analyst). Metering has NO write endpoint —
+	// usage is server-derived only.
+	mux.Handle("POST /admin/billing/packages", padmin(billingH.CreatePackage))
+	mux.Handle("POST /admin/billing/packages/{id}/rates", padmin(billingH.SetRate))
+	mux.Handle("PUT /admin/tenants/{id}/billing-package", padmin(billingH.AssignPackage))
+	mux.Handle("GET /billing/usage", manager(billingH.Usage))
+	mux.Handle("GET /billing/invoice", manager(billingH.Invoice))
 	// notifications
 	mux.Handle("POST /notify/test", senior(notifyH.Test))
 	// §6.16 per-tenant email/SMS sender config (COMM-001); secrets vault-encrypted, manager-gated.
