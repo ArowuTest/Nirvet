@@ -47,6 +47,8 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/ratelimit"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 	"github.com/ArowuTest/nirvet/internal/platformadmin"
+	"github.com/ArowuTest/nirvet/internal/posture"
+	"github.com/ArowuTest/nirvet/internal/postureproj"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
@@ -153,6 +155,13 @@ func main() {
 	// The destructive (SOAR containment) path is attached below once soarSvc is wired (WithContainment).
 	fleetSvc := fleet.NewService(db).WithAlerts(alertSvc)
 	fleetH := fleet.NewHandler(fleetSvc)
+
+	// Vendor posture oversight (Ghana operator seam #4, MA-4): metadata-only fleet health projection so the
+	// vendor can spot a neglected issue WITHOUT a standing content read. posture is content-free by
+	// construction (CI-guarded no-import-path); postureproj is the content→posture projection choke point.
+	postureSvc := posture.NewService(db)
+	postureH := posture.NewHandler(postureSvc)
+	postureProjector := postureproj.NewProjector(db, postureSvc)
 
 	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
 	correlationSvc := correlation.NewService(correlation.NewRepository(db))
@@ -440,6 +449,9 @@ func main() {
 	mux.Handle("POST /admin/elevations/{id}/review", manager(iamH.ReviewElevation))
 	// platform admin
 	mux.Handle("POST /admin/tenants", padmin(tenantH.Create))
+	// Vendor posture oversight (MA-4): metadata-only fleet health, platform_admin (vendor seat) only. The
+	// scope-resolver also fail-closes any non-vendor principal to an empty scope (defense in depth).
+	mux.Handle("GET /posture/fleet", padmin(postureH.Fleet))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))
 	mux.Handle("GET /admin/tenants/{id}", padmin(tenantH.Get))
 	// Tenant governance (§6.1). Status lifecycle is a provider action (platform_admin only);
@@ -694,6 +706,9 @@ func main() {
 		go poller.Start(workerCtx, time.Minute)
 		// Re-enqueue raw events orphaned between StoreRaw and Enqueue (SEC Critical #4).
 		go ingestSvc.StartReconciler(workerCtx, log, 30*time.Second, 60*time.Second, 100)
+		// Vendor posture projection (MA-4): periodically recompute each tenant's metadata-only posture from
+		// incident metadata (slice-A population driver; on-transition triggering is a documented follow-on).
+		go postureProjector.StartRefreshLoop(workerCtx, log, time.Minute)
 		// SLA breach alerting (§6.8): claim + timeline + durably enqueue once per deadline.
 		go incidentSvc.StartSLASweeper(workerCtx, log, time.Minute, 200)
 		// Notification dispatcher: drains the outbox and delivers with retry (§6.16, R3 §6.5).
