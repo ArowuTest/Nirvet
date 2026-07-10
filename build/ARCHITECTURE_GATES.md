@@ -2328,3 +2328,41 @@ With §6.17 landed, every §6 domain has been through the gate-before-code disci
 **→ ✅ SLICE B CLEARED (reviewer, Jul 10 2026, re-verify of 355e34c clean).** The `ServiceAccount` marker is set in exactly one place (the API-key resolver), unforgeable via JWT (no such claim), and the keep-protecting invariant is genuinely tested (machine telemetry flows on every ingest path while suspended human access is blocked). The suspension control took three rounds to converge (SB → M-1 → High) and converged correctly. Four-eyes on account-suspend: NOT required for a reversible keep-protecting suspension (line is by consequence, not blast radius; reserve four-eyes for a go-dark escalation).
 
 **🏁 §6.17 (both slices) CLEARED → ENTIRE §6 ROADMAP COMPLETE: all 18 domains gated, built, and reviewed. The slice-B arc doubled as the opening of pre-go-live pass 1 (cross-domain authz) and earned its keep — the ingest-suspension regression lived only at billing × auth-chain-factory × ingest, invisible to any per-slice review. Pass 1 continues across the rest of the principal→sensitive-action surface (AI chain, SOAR destructive routes, padmin, umbrella account-invoice cross-tenant read, elevation/break-glass token paths). Reviewer owns passes 1-3,6-7; builder owns pass 4 (`-race` on fresh migrated DB via CI). Expect these cross-cutting passes to surface the MOST findings — that's the pass doing its job, not a build-quality regression.**
+
+---
+
+## Gate — Operator FLEET cross-tenant primitives (READ + WRITE) — PRE-CODE DESIGN REVIEW — Jul 2026
+
+**Context:** Ghana MSSP/operator reframe (`outputs/NIRVET_MSSP_OPERATOR_REFRAME.md` §9–§14). Launch-locked seams **#1 (fleet-scope bounded-read choke point)** + **#3 (cross-tenant write primitive)** — the single place cross-tenant read/write happens for operator/oversight roles. Deployment: single-operator dedicated instance; `operator_id` is V2 (sequential handoff decided). This gate **captures the already-settled design** (§9/§12, owner-decided) and **names its dependencies on pre-go-live pass 1**. It is a **DRAFT to be revised by pass-1 findings, not frozen** — it locks NO new cross-tenant decision ahead of the review that informs it. **No code on the fleet/write primitive until the reviewer's pre-code pass clears this gate.**
+
+### A. Bounded cross-tenant READ primitive (seam #1)
+- **One primitive, many scope-resolvers.** A `scope-resolver` maps an authenticated principal → the SET of `tenant_id`s it may read. Resolvers: `platform_admin` → whole instance; operator staff → the fleet (= whole instance today, `operator_id`-filtered later); org-sub-admin → their `org_id` tenant-set; anchor/payer → their account's covered tenants (reuse `billing_account_tenants`); `customer_admin` → {own tenant} (degenerate).
+- **BOLA-safe by construction:** the tenant-set is resolved SERVER-SIDE from the principal, NEVER from a client-supplied id. A client-supplied org/account/tenant id is ignored in favour of the principal-derived scope.
+- **Mechanism:** the scoped read runs via a **SECURITY DEFINER function** taking the resolved tenant-set and filtering to it (precedent: `billing_account_tenants`), with `REVOKE ALL … FROM PUBLIC` + `GRANT EXECUTE TO nirvet_app` (CI-guarded by `check-security-definer-revoke.sh`). Single-tenant `WithTenant`/RLS is NOT the mechanism here — this is a deliberate, bounded, audited cross-tenant read.
+- **Hard cap + mandatory read-audit:** every fleet/scoped read is capped + paginated (≈250-tenant fleet → soak-gate input) and emits a read-audit (actor, resolver, tenant-set size).
+- **Posture variant (vendor, §10):** same resolver (whole instance) but a **CONTENT-FREE projection** (counts/ages/ack-status/SLA-clock) with **no code path to alert bodies/telemetry** (metadata-by-construction). Content only via §6.2 PAM break-glass, data-owner-visible.
+
+### B. Cross-tenant WRITE primitive (seam #3, operator-only, HIGHEST-RISK)
+- **Target-from-resource:** resolve the target tenant from the RESOURCE being acted on (alert/incident's own `tenant_id`) — never `p.TenantID`, never a client-supplied id.
+- **Scope check:** verify target ∈ the operator's fleet scope (the §A resolver).
+- **Then `WithTenant(target)`** for the mutation, and **run the FULL existing per-tenant authority chain in the TARGET's context** — the per-target SOAR-authority guardrail: `destructive_enabled`, four-eyes, risk class (§9.5), D5 protected-target — all read from the TARGET tenant's `soar_settings`/policies, never operator-home, never a global operator capability. The primitive does NOT re-implement or short-circuit the chain; it composes with it.
+- **Audit:** actor-home scope + target tenant on every cross-tenant write.
+- **Invariants (own adversarial round):** operator cannot write outside fleet scope; a forged/mismatched body id cannot redirect the write (target comes from the resource); destructive SOAR resolves + re-checks target AT FIRE TIME not just queue time (reaper/reconciler concurrency, `-race`-covered); firing destructive on a `destructive_enabled=false` target → refused + audited; a pure oversight/posture principal has NO cross-tenant write path at all.
+
+### C. Dependencies on PASS 1 (existing-guard baseline these compose with — reviewer verifying; gate revisable by findings)
+- `ScopeToTenant` (platform_admin-or-own) — admin-path tenant guard.
+- `WithTenant` / RLS `app.current_tenant` — the single-tenant boundary these primitives deliberately, boundedly cross.
+- `auth.Principal.ServiceAccount` marker — machine principals must have NO oversight/fleet scope unless explicitly an operator service account.
+- SECURITY DEFINER cohort + REVOKE-PUBLIC CI guard — the new read fn joins it.
+- PAM/break-glass (§6.2) + evidence packs (§6.13) — the vendor content-access path.
+- **If pass 1 surfaces an issue in any of these (as M-1 did), the primitive design ABSORBS it before code.**
+
+### D. Open design questions for the reviewer's pre-code pass
+1. **Scope-resolver shape:** one `fleet_tenants(principal)` returning the tenant-set (dedicated instance ⇒ all `tenant_id`s; `operator_id` filter = V2 seam). Confirm the single-choke-point shape — no scattered "all tenants".
+2. **RLS mechanism for a multi-tenant scoped read:** SECURITY DEFINER fn taking a tenant-set (billing precedent) vs a session scope-set GUC. Builder recommends the SD-fn (proven, CI-guarded).
+3. **Read cap + pagination** sizing for a 250-tenant fleet (soak-gate input).
+4. **Audit schema** for cross-tenant read + write (actor-home, resolver, target, scope-size).
+5. **Posture projection** table/columns — guarantee "no code path to content" STRUCTURALLY (separate table/repo, not a filtered view over the content table).
+6. **Ordering:** the org-sub-admin resolver needs the `org_id` seam (seam #2) landed first → sequence the `org_id` migration before the org-sub-admin resolver.
+
+**→ Awaiting reviewer pre-code pass (reviewer front-loading pass 1 on the §C baseline threads). No code on the fleet/write primitive until cleared. Parallel builds authorised meanwhile (least-entangled, non-authz seams): `org_id` grouping migration, connector scaffolding (egress/creds/SSRF surface, own gate — not cross-tenant authz), Ghana compliance-pack content (§6.14).**
