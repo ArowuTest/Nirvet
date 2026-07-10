@@ -30,6 +30,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/iam"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/investigation"
 	"github.com/ArowuTest/nirvet/internal/notify"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -282,6 +283,9 @@ func main() {
 		platformadmin.NewService(padminRepo, alertSvc),
 		platformadmin.NewMaintenanceService(padminRepo),
 	)
+	// §6.9 #124 investigation hunt-query surface. The query engine is allow-list-compiles-to-bound-params (the
+	// codebase's first user-predicate surface); RLS-under-WithTenant is the backstop; every query is read-audited.
+	investigationH := investigation.NewHandler(investigation.NewService(investigation.NewRepository(db)))
 	reportingH := reporting.NewHandler(reporting.NewService(db, events))
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
@@ -475,6 +479,10 @@ func main() {
 	mux.Handle("PUT /admin/tenants/{id}/ai-policy", padmin(aiCfgH.SetTenantPolicy))
 	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
 	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
+	// §6.9 #124 I-1 investigation hunt-query (INV-006 / API-INV-006 + API-INV-001). Provider-gated (analyst_t1+);
+	// allow-listed predicates compile to bound-param SQL under the tenant's RLS context, every run read-audited.
+	mux.Handle("POST /investigation/run-hunt-query", provider(investigationH.RunHunt))
+	mux.Handle("PATCH /investigation/search-events", provider(investigationH.RunHunt))
 	// §6.18 #122 platform-admin surface. Feature-flag set/rollback runs the safety gate (immutable rejected; protected
 	// weakening needs senior+four-eyes+reason+HIGH-alert+time-box). Tenant lifecycle: legal-hold set is routine, CLEAR
 	// needs the elevated envelope (M-3); offboard runs the uniform purge (blocked while on hold) + cert of destruction.
