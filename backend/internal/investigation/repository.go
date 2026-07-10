@@ -25,10 +25,14 @@ const eventProjection = `id, observed_at, collected_at, source, class_name, acti
 
 // RunHunt executes a compiled query against `events` under the tenant's RLS context and returns the projected rows.
 // The SQL text is a fixed SELECT + the compiled WHERE (registry columns + $N placeholders only) + a bound LIMIT.
+// RLS-under-WithTenant is the authoritative tenant isolation; the explicit `tenant_id = $N` is the gate's
+// defense-in-depth belt on top of it (redundant with the RLS predicate, harmless, and self-documenting).
 func (r *Repository) RunHunt(ctx context.Context, tenantID uuid.UUID, c compiled, limit int) ([]EventRow, error) {
-	args := append(append([]any{}, c.args...), limit)
-	sql := `SELECT ` + eventProjection + ` FROM events WHERE ` + c.where +
-		` ORDER BY observed_at DESC LIMIT $` + fmt.Sprint(len(args))
+	tenantPos := len(c.args) + 1
+	limitPos := len(c.args) + 2
+	args := append(append([]any{}, c.args...), tenantID, limit)
+	sql := `SELECT ` + eventProjection + ` FROM events WHERE (` + c.where + `) AND tenant_id = $` + fmt.Sprint(tenantPos) +
+		` ORDER BY observed_at DESC LIMIT $` + fmt.Sprint(limitPos)
 	var out []EventRow
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, sql, args...)
