@@ -2062,3 +2062,14 @@ auto-revert (Reinf B) — plus the gate's original probes (rollback-surfaces-del
 offboarding, tighten-only, FORCE-RLS).
 
 **→ CLEARED TO BUILD P-1..P-5 test-first (M-1/M-2/M-3 + A/B folded structurally). Dedicated adversarial round on landing.**
+
+### ✅ LANDED — slice A complete (HEAD 8c7359a, migrations → 0074), awaiting reviewer landing round
+- **P-1** (safety-class registry + fail-safe resolver + immutable-inert + immutable audit) — **M-1**, **Reinf-A**.
+- **P-2** (flag set/rollback safety gate: immutable rejected-at-save; protected weakening = senior + four-eyes + reason + HIGH alert; guarded/protected-toward-secure = reason; rollback re-runs the same gate).
+- **P-3** (tenant lifecycle: legal-hold set routine, **CLEAR = elevated envelope + HIGH alert (M-3)**; uniform tenant-offboarding purge blocked while on hold + certificate of destruction).
+- **P-4** (maintenance windows: never stop ingest/detect; **critical/P1 always breaks through suppression + SLA pause (M-2)**; **protected weakening time-boxed, worker sweep auto-reverts to secure at expiry (Reinf-B)**).
+- **P-5** (this landing): padmin HTTP surface (`PUT /admin/flags`, `POST /admin/flags/rollback`, `POST|DELETE /admin/tenants/{id}/legal-hold`, `POST /admin/tenants/{id}/offboard`, `POST /admin/maintenance-windows`, all padmin-gated); **M-2 made LIVE** — the SLA sweeper consults the maintenance gate (`incident.MaintenanceGate`, structural, no import cycle), wired in the worker; adversarial round (cross-tenant flag isolation proven NOT an RLS leak; M-2 defer-vs-breakthrough proven end-to-end incl. "deferred ≠ lost").
+
+**Landing-round evidence (all green on a migrated DB):** platformadmin 21/21 (incl. `TestResolve_CrossTenantFlagIsolation`, `TestMaintenance_CriticalBreaksThrough`, `TestReinfB_TimeBoxAutoRevert`); integrationtest `SLABreachPausedByMaintenanceWindow_M2`; incident; cmd/api; schemacheck; SECURITY-DEFINER + outbound-HTTP CI guards; build + vet clean. DORMANT: no windows/flags set by default; the resolver returns secure defaults, so behavior is unchanged until an admin acts.
+
+**Deferred (slice B / later, non-blocking):** flag/audit READ endpoints (list flags, config-audit history) for the settings UI; true SLA clock-pause with deadline recomputation (current M-2 semantics = breach-notification defer, which is what customers want during planned maintenance — a full deadline-extension is a future refinement); notification-suppression at the dispatcher (needs a severity column on `notification_outbox`; M-2's SLA-pause consult is the higher-consequence half and is now live).
