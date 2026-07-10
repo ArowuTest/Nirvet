@@ -271,5 +271,7 @@ func (s *Service) ResolveAPIKey(ctx context.Context, rawKey string) (auth.Princi
 		}
 		return nil
 	})
-	return auth.Principal{UserID: saID, TenantID: tenantID, Role: auth.Role(role), Email: "svc:" + saID.String()}, nil
+	// ServiceAccount:true marks this as a NON-HUMAN principal — the billing-suspension gate exempts
+	// machine principals so a suspended tenant's telemetry/ingest keeps flowing (keep-protecting).
+	return auth.Principal{UserID: saID, TenantID: tenantID, Role: auth.Role(role), Email: "svc:" + saID.String(), ServiceAccount: true}, nil
 }

@@ -22,7 +22,9 @@ func (m *mockAlerter) RaisePlatform(context.Context, uuid.UUID, string, string, 
 	return true, nil
 }
 
-func admin() auth.Principal { return auth.Principal{UserID: uuid.New(), Role: auth.RolePlatformAdmin, Email: "padmin@bill"} }
+func admin() auth.Principal {
+	return auth.Principal{UserID: uuid.New(), Role: auth.RolePlatformAdmin, Email: "padmin@bill"}
+}
 
 // comp = metered but zero-charge; covered = computed but attributed to the account, not payable by the tenant.
 func TestModes_CompZeroAndCoveredAttributed(t *testing.T) {
@@ -188,5 +190,35 @@ func TestAccessGate_ComposedBeforeRoleGate(t *testing.T) {
 	}
 	if got := call(auth.RolePlatformAdmin); got != http.StatusOK {
 		t.Fatalf("platform-management must pass the composed chain, got %d", got)
+	}
+}
+
+// High regression (reviewer pass-1, follow-on): suspension must block INTERACTIVE HUMAN access only — a suspended
+// tenant's SERVICE ACCOUNT (agent/connector/API telemetry, e.g. POST /ingest) must KEEP FLOWING so the tenant keeps
+// being monitored (spine #1 keep-protecting). This is the invariant the M-1 chain-collapse endangered by putting the
+// gate on `authed` (which carries /ingest). The exemption is structural (p.ServiceAccount), so it holds on ANY chain.
+func TestAccessGate_ServiceAccountKeepsFlowing(t *testing.T) {
+	db := billDB(t)
+	svc := NewService(NewRepository(db))
+	tid := billTenant(t, db)
+	_ = svc.SuspendTenant(context.Background(), admin(), tid, "nonpay", true)
+
+	gate := AccessGate(svc)
+	final := gate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	call := func(p auth.Principal) int {
+		req := httptest.NewRequest("POST", "/ingest", nil).WithContext(auth.WithPrincipal(context.Background(), p))
+		rec := httptest.NewRecorder()
+		final.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	// A service account carries an ordinary role (here analyst_t1) — the machine marker, not the role, is what exempts
+	// it. Same suspended tenant, same role: the machine principal flows, the human is blocked.
+	sa := auth.Principal{UserID: uuid.New(), TenantID: tid, Role: auth.RoleAnalystT1, ServiceAccount: true, Email: "svc:x"}
+	human := auth.Principal{UserID: uuid.New(), TenantID: tid, Role: auth.RoleAnalystT1}
+	if got := call(sa); got != http.StatusOK {
+		t.Fatalf("suspended tenant's SERVICE ACCOUNT ingest must keep flowing (keep-protecting), got %d", got)
+	}
+	if got := call(human); got != http.StatusForbidden {
+		t.Fatalf("suspended tenant's HUMAN user must be blocked, got %d", got)
 	}
 }

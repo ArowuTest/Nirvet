@@ -37,6 +37,11 @@ type Principal struct {
 	Role        Role
 	Email       string
 	ElevationID string // "" for ordinary tokens; the elevation id for elevated tokens
+	// ServiceAccount marks a NON-HUMAN principal (authenticated via an API key, not a human login).
+	// It can only be set by the API-key resolver — a JWT (human) login never sets it, and it is not a
+	// JWT claim, so a human cannot forge it. Consumers that gate INTERACTIVE HUMAN access (e.g. the
+	// billing-suspension AccessGate) exempt machine principals so telemetry/ingest keeps flowing.
+	ServiceAccount bool
 }
 
 // Claims is the JWT payload.

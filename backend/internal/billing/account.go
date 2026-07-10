@@ -22,14 +22,23 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AccessGate is the suspension enforcement point (SB-4): it blocks a billing-suspended tenant's NON-platform users at
-// the authenticated API. This chain is NOT on the ingest/detection path, so a suspended tenant KEEPS being protected
-// (restrict-access, not go-dark). Platform staff (platform_admin/soc_manager) are exempt so they can still manage the
-// suspended tenant. Fail-open on a lookup error (a transient DB blip must not lock out a paying customer).
+// AccessGate is the suspension enforcement point (SB-4): it blocks a billing-suspended tenant's INTERACTIVE HUMAN
+// users at the authenticated API. Suspension restricts human access, it does NOT go dark — so a suspended tenant KEEPS
+// being protected. Two exemptions, both structural (not chain-dependent), keep that guarantee true wherever this gate
+// is mounted:
+//   - Platform-management (platform_admin/soc_manager) — provider SOC staff who must still manage the suspended tenant.
+//   - SERVICE ACCOUNTS (p.ServiceAccount) — non-human/telemetry principals (agents, connectors, API pushes). Their
+//     traffic (e.g. POST /ingest) MUST keep flowing regardless of which chain carries it, or the tenant would stop
+//     being monitored — the exact keep-protecting invariant (spine #1). A machine principal is never "interactive
+//     human access", so suspension does not apply to it. (Ingest also normally rides a chain, but exempting here means
+//     the guarantee holds even if a future route puts an ingest handler on any gated chain — H: aiProvider/authed M-1.)
+//
+// Fail-open on a lookup error (a transient DB blip must not lock out a paying customer).
 func AccessGate(svc *Service) httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if p, ok := auth.PrincipalFrom(r.Context()); ok &&
+				!p.ServiceAccount && // machine/telemetry principals always flow (keep-protecting)
 				p.Role != auth.RolePlatformAdmin && p.Role != auth.RoleSOCManager &&
 				svc.IsAccessSuspended(r.Context(), p.TenantID) {
 				httpx.Error(w, httpx.ErrForbidden("account access suspended (billing) — monitoring continues; contact billing to reinstate"))
