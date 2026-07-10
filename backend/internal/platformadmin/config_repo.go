@@ -6,6 +6,7 @@ package platformadmin
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
@@ -27,6 +28,7 @@ type FlagChange struct {
 	SafetyClass string
 	ActorID     uuid.UUID
 	Reason      string
+	ExpiresAt   *time.Time // Reinf-B: set for a protected weakening; nil clears any prior time-box
 }
 
 func boolJSON(b bool) []byte {
@@ -51,10 +53,10 @@ func (r *Repository) ApplyFlagChange(ctx context.Context, ch FlagChange) (old *b
 			old = &prev
 			oldJSON = boolJSON(prev)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO platform_feature_flags (key, scope, scope_ref, enabled, updated_by, updated_at)
-			VALUES ($1,$2,$3,$4,$5,now())
-			ON CONFLICT (key, scope, scope_ref) DO UPDATE SET enabled=EXCLUDED.enabled, updated_by=EXCLUDED.updated_by, updated_at=now()`,
-			ch.Key, ch.Scope, ch.ScopeRef, ch.Enabled, ch.ActorID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO platform_feature_flags (key, scope, scope_ref, enabled, expires_at, updated_by, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,now())
+			ON CONFLICT (key, scope, scope_ref) DO UPDATE SET enabled=EXCLUDED.enabled, expires_at=EXCLUDED.expires_at, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+			ch.Key, ch.Scope, ch.ScopeRef, ch.Enabled, ch.ExpiresAt, ch.ActorID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO platform_config_audit (entity, key, scope, scope_ref, old_value, new_value, safety_class, actor_id, reason)
@@ -83,6 +85,63 @@ type AuditRow struct {
 	ScopeRef string
 	Enabled  bool
 	Reason   string
+}
+
+// CreateWindow inserts a maintenance window (padmin).
+func (r *Repository) CreateWindow(ctx context.Context, scope, scopeRef string, startsAt, endsAt time.Time, suppressNotif, pauseSLA bool, banner string, actorID uuid.UUID) error {
+	return r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `INSERT INTO maintenance_windows (scope, scope_ref, starts_at, ends_at, suppress_notifications, pause_sla, banner, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, scope, scopeRef, startsAt, endsAt, suppressNotif, pauseSLA, banner, actorID)
+		return e
+	})
+}
+
+// ActiveMaintenance reports whether an active window covering the tenant (or global) suppresses notifications and/or
+// pauses SLA. Read system-side by the notify/SLA path.
+func (r *Repository) ActiveMaintenance(ctx context.Context, tenantID uuid.UUID) (suppressNotif, pauseSLA bool, err error) {
+	e := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT COALESCE(bool_or(suppress_notifications),false), COALESCE(bool_or(pause_sla),false)
+			  FROM maintenance_windows
+			 WHERE now() BETWEEN starts_at AND ends_at
+			   AND (scope='global' OR (scope='tenant' AND scope_ref=$1::text))`, tenantID).Scan(&suppressNotif, &pauseSLA)
+	})
+	return suppressNotif, pauseSLA, e
+}
+
+// ExpiredWeakenings returns flags whose time-box has elapsed (Reinf-B), read cross-scope (system sees all).
+func (r *Repository) ExpiredWeakenings(ctx context.Context, limit int) ([]FlagChange, error) {
+	var out []FlagChange
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT key, scope, scope_ref FROM platform_feature_flags
+			WHERE expires_at IS NOT NULL AND expires_at < now() ORDER BY expires_at ASC LIMIT $1`, limit)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c FlagChange
+			if se := rows.Scan(&c.Key, &c.Scope, &c.ScopeRef); se != nil {
+				return se
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// RevertFlag sets a flag back to a value, clears its time-box, and appends an audit row (Reinf-B auto-revert).
+func (r *Repository) RevertFlag(ctx context.Context, key, scope, scopeRef string, secure bool, reason string) error {
+	return r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, e := tx.Exec(ctx, `UPDATE platform_feature_flags SET enabled=$4, expires_at=NULL, updated_at=now()
+			WHERE key=$1 AND scope=$2 AND scope_ref=$3`, key, scope, scopeRef, secure); e != nil {
+			return e
+		}
+		_, e := tx.Exec(ctx, `INSERT INTO platform_config_audit (entity, key, scope, scope_ref, new_value, safety_class, reason)
+			VALUES ('flag',$1,$2,$3,$4,'protected',$5)`, key, scope, scopeRef, boolJSON(secure), reason)
+		return e
+	})
 }
 
 // GetFlagAudit reads a single flag-audit row's new_value (the target of a rollback).

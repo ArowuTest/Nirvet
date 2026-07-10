@@ -24,6 +24,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
+	"github.com/ArowuTest/nirvet/internal/platformadmin"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
 	"github.com/ArowuTest/nirvet/internal/tenant"
@@ -106,6 +107,9 @@ func main() {
 	// silent is a detection GAP — alert once per silence episode. last-seen is recorded on every keyed ingest;
 	// this is the silence half. (interval 5m; silent after 30m of no events; ≤200/tick.)
 	go connector.NewSilenceSweeper(connector.NewRepository(db), alertSvc).Start(ctx, log, 5*time.Minute, 30*time.Minute, 200)
+	// §6.18 #122 Reinf-B: auto-revert protected feature flags whose time-box has expired to their secure default —
+	// a temporary loosening (e.g. destructive-SOAR gate opened for an incident) can never persist indefinitely.
+	go platformadmin.NewService(platformadmin.NewRepository(db), alertSvc).StartRevertSweep(ctx, log, time.Minute)
 	// Ingestion durability: re-enqueue any raw event orphaned by a crash between
 	// StoreRaw and Enqueue (SEC Critical #4). The worker process owns this sweep.
 	go ingestSvc.StartReconciler(ctx, log, 30*time.Second, 60*time.Second, 100)

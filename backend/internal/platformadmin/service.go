@@ -11,10 +11,18 @@ package platformadmin
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
+)
+
+// Reinf-B: a protected flag weakening is always time-boxed so a forgotten loosening cannot persist. Default box if
+// the admin does not specify; hard cap regardless.
+const (
+	defaultTimeBox = time.Hour
+	maxTimeBox     = 24 * time.Hour
 )
 
 // Alerter raises the HIGH alert when a protected flag is weakened. *alert.Service satisfies it structurally.
@@ -41,6 +49,7 @@ type SetFlagInput struct {
 	Enabled    bool
 	Reason     string
 	ApprovedBy *uuid.UUID
+	ExpiresAt  *time.Time // Reinf-B: requested time-box for a protected weakening (capped; defaulted if nil)
 }
 
 // SetResult reports what happened, including the security delta (surfaced for rollback previews + audit legibility).
@@ -92,6 +101,20 @@ func (s *Service) SetFlag(ctx context.Context, actor auth.Principal, in SetFlagI
 		if strings.TrimSpace(in.Reason) == "" {
 			return SetResult{}, httpx.ErrBadRequest("a reason is required for a " + string(class) + " flag change")
 		}
+	}
+
+	// Reinf-B: a protected weakening carries a bounded expiry (default 1h, cap 24h); a tightening/other change clears
+	// any prior box. The auto-revert sweep reverts an expired weakening to its secure default.
+	if lessSecure {
+		until := time.Now().Add(defaultTimeBox)
+		if in.ExpiresAt != nil {
+			if capAt := time.Now().Add(maxTimeBox); in.ExpiresAt.After(capAt) {
+				until = capAt
+			} else if in.ExpiresAt.After(time.Now()) {
+				until = *in.ExpiresAt
+			}
+		}
+		ch.ExpiresAt = &until
 	}
 
 	old, err := s.repo.ApplyFlagChange(ctx, ch)
