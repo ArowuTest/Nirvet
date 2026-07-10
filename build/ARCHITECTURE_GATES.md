@@ -2134,3 +2134,52 @@ The security-load-bearing core. UI (INV-001 unified view) is a designer composit
 - **I-6 adversarial round** — hostile field/op/`in`/exists all fenced; limit clamped; cross-tenant disproven.
 - Evidence: 23 tests (query/entity/timeline/data-gap + 5 adversarial + RLS-isolation integration), schemacheck, SECURITY-DEFINER guard, build+vet clean, 76/76 from zero. Report: `outputs/NIRVET_69_INVESTIGATION_SLICE_A_LANDING.md`.
 - Deferred to their own gates: notebooks (INV-005), saved-views/shareable-links (INV-008), war-room realtime (INV-010).
+
+---
+
+## Gate — §6.13 Reporting, Dashboards & Evidence Packs — slice A — DESIGN REVIEW (pre-code) — Jul 2026
+
+**SRS:** §6.13 REP-001..010 (00_SRS.md lines 1150–1206, all Must). Non-functional: "Report generation shall be asynchronous for large reports" (line 2171); "Report templates and scheduled reports shall validate tenant scope at generation time AND delivery time" (line 2261). API row: line 424.
+
+**Why gated (the security surface, exactly as the reviewer pre-loaded it):** reporting renders **untrusted tenant data into documents that open on someone else's machine**. That inverts the usual trust boundary — the output IS the attack vector. Four concrete classes:
+1. **Formula / CSV injection (XLSX + CSV)** — a cell value beginning `=`, `+`, `-`, `@`, or a control char (TAB/CR/LF) is interpreted by Excel/Sheets as a *formula* on open (e.g. `=cmd|...`, `=HYPERLINK(exfil)`, `=WEBSERVICE(internal)`). The attacker is any actor who can get a string into an event/alert/incident field that lands in an export cell. This is the load-bearing control for tabular formats.
+2. **Template injection (DOCX/PDF templates)** — a template engine that evaluates expressions turns tenant data into code execution / data disclosure. Must be a logic-LESS, data-substitution-only model (no arbitrary eval).
+3. **SSRF via document renderers (PDF/DOCX/HTML→PDF)** — any renderer that fetches remote assets (images, CSS, fonts, `<img src>`) from URLs in the data/template can be pointed at internal endpoints / cloud metadata. Renderer must NOT fetch remote resources (embedded-only), or fetch only through netsafe.
+4. **Resource exhaustion** — an unbounded report (row/cell/page count, file size, generation time) is a DoS and a memory blowup. Ceilings + async for large (SRS 2171).
+Plus the tenant/authorization requirements the SRS states outright: **REP-008** (audit every generation, export, download) and **REP-009** (never export outside permission/tenant scope) with **scope re-validated at delivery time**, not just at creation (SRS 2261).
+
+### Grounding — what exists today (compose / extend; do NOT rebuild)
+- `reporting.Service.Summary(tenantID) -> Summary{...}` (~136-line `reporting.go`): a JSON at-a-glance rollup (incident/alert counts, SLAPosture) composed from existing stores under RLS. Route `GET /reports/summary` (provider). **No export formats, no document library, no async job, no report record — all net-new.**
+- Reusable: `evidence.Service` (Ed25519-signed evidence packs — the REGULATORY/evidence-pack lineage, already tenant-scoped + audit-folding), the durable `queue` (async generation), the `investigation_query_audit` append-only pattern (REP-008 audit), `incident`/`alert`/`detection`/`asset` readers for content (REP-004 service-review pack), the `WithTenant` RLS envelope, `blobstore` (store the generated artifact), `notify.MintLink` (a signed, expiring, authz-at-redemption download link — reuse rather than invent).
+- `go.mod` has NO xlsx/pdf/docx dependency yet — a library choice is part of this gate.
+
+### Scope — slice A (the safe formats + the generation/authorization/audit backbone)
+Deliver the export path whose security surface is well-understood and testable, and the generate/scope/audit spine every format needs. Defer the renderer-based formats (their SSRF + template surface gets its own design).
+
+- **R-1 — report record + async generation job (REP-001/002).** A `report` row (tenant-scoped, RLS) with type, params (period/scope/filters), status (pending→running→ready→failed), artifact pointer. Large reports generate ASYNChronously via the existing queue (SRS 2171); small ones may run inline. Report TYPES enumerated as config/data, not a code constant.
+- **R-2 — content assembly (REP-003/004).** The monthly service-review pack + summary composed from existing readers (incidents, SLA posture, FP rate, top risks/MITRE, integrations health, open remediation) — all under WithTenant. Every report carries the REP-003 metadata header (data-period, tenant, scope, data-source coverage, limitations, evidence references).
+- **R-3 — tabular export: JSON + CSV + XLSX (REP-007 partial) — THE security headline.** A single serializer applies **formula-injection neutralization to EVERY cell** (values starting `= + - @` / TAB / CR / LF are prefixed with `'`), so no code path can emit an un-neutralized cell. CSV via stdlib; XLSX via a pure-Go, no-network library (no renderer, no remote fetch). Watermarking (REP-002) as a data field.
+- **R-4 — audit + authorization (REP-008/009).** Append-only `report_audit` (generate / export / download — who, what, format, row count). Tenant scope enforced at generation (WithTenant/RLS) AND re-checked at every download/delivery (SRS 2261); role-gated (senior for sensitive/regulatory exports). Download via a signed, expiring, single-tenant link (reuse notify link signing), authz re-checked at redemption.
+- **R-5 — resource ceilings + adversarial round.** Row/cell/file-size/generation-time caps = admin-configurable seeded defaults (no-hardcoding). Dedicated adversarial round: try to land a live formula in a cell, exceed a ceiling, download another tenant's report, or export above role.
+
+### Security spine (must be structural, not documented-and-hoped)
+1. **Formula injection neutralized at the serializer** — the ONE place cells are written; every value is sanitized there, so a new report type or field cannot introduce an un-neutralized cell. Unit-proven with `=`, `+`, `-`, `@`, TAB, CR payloads.
+2. **No renderer SSRF, no template eval (deferred formats)** — PDF/DOCX are deferred precisely because they need a renderer; when built, the renderer fetches NO remote assets (embedded-only) and templates are logic-less data-substitution. Stated now so the deferral is principled, not accidental.
+3. **Tenant scope at generate AND deliver (REP-009 / SRS 2261)** — assembled under WithTenant; every download re-validates tenant + role at redemption (a scheduled/aged report cannot leak if scope changed). RLS-under-WithTenant is the backstop.
+4. **Audit every generate/export/download (REP-008)** — append-only, tenant-scoped, one row per action.
+5. **Bounded + async** — ceilings are seeded config; large reports run on the queue; the artifact lands in blobstore, never streamed unbounded into memory.
+
+### Deferred to later §6.13 slices (each its OWN gate before code)
+- **PDF / DOCX rendering (REP-007 remainder)** — the SSRF + template-injection surface; needs a renderer choice + a logic-less template design. Its own gate.
+- **Scheduled delivery + distribution lists (REP-002)** — outbound delivery re-validates scope at send time; reuse the notify outbox; own gate.
+- **White-label / MSSP reporting (REP-010)** — partner branding + downstream-tenant scoping; own gate.
+- **Regulatory jurisdiction templates (REP-006)** — framework-specific packs; builds on the compliance module; own gate.
+- **Approval workflow (REP-002)** — report approval before distribution.
+
+### Reviewer pre-code asks (confirm before R-1)
+- Endorse the **serializer-level formula-injection neutralization** (one choke point, every cell) as the tabular-export control, and the **slice-A scope = JSON/CSV/XLSX** with **PDF/DOCX deferred** to their own renderer-security gate.
+- Confirm **download via a signed expiring link with authz re-checked at redemption** (reuse notify link signing) + **scope re-validated at delivery** (REP-009/2261) is the right authorization model vs. a direct authenticated GET.
+- Confirm **report_audit** (REP-008) belongs in slice A.
+- Any must-adds in the export-security family — e.g. filename/path sanitization for the artifact, a hard cell/row cap even in async mode, stripping of active content beyond formulas (e.g. DDE, hyperlinks), or per-format MIME/extension pinning.
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit; then build R-1..R-5 test-first, dedicated adversarial round on the export surface at landing.**
