@@ -2253,3 +2253,16 @@ All five money-integrity asks confirmed. Five must-adds fold structurally before
 - **M-5 — reconciliation (rollup == SUM(ledger)).** A test AND a runtime assertion that the rollup equals the sum of the underlying append-only events, so the aggregate can never drift from the source of truth.
 
 **→ GREENLIT to build B-1..B-5 test-first with PIN-1/PIN-2/M-3/M-4/M-5 folded. Landing round = the money adversarial pass: replay an event (no double-count), emit a negative quantity (rejected), record into a closed period (adjusted-not-dropped), a tenant reading/writing its own rate or another tenant's invoice (denied), and a float anywhere in a money path (must not exist). AFTER §6.17 lands = all 18 §6 domains gated → the WHOLE-PLATFORM PRE-GO-LIVE PASS (owner-endorsed; its own multi-part effort).**
+
+### ✅ LANDED — §6.17 Billing slice A complete (HEAD 04e20f4, migrations 0078+0079) — LAST §6 DOMAIN — awaiting reviewer landing round
+- **B-1/B-2 metering ledger** — server-derived (RecordUsage internal, NO tenant usage endpoint → can't under-report); append-only usage_events (REVOKE UPDATE/DELETE + immutable trigger); UNIQUE (tenant,metric,key) = PIN-2 idempotency (replay no-op, distinct increment never lost); CHECK qty>=0 = M-3. PIN-1 record-don't-drop: a late event for a CLOSED period is recorded + adjusted forward (is_adjustment), never mutating the closed invoice, never dropped. Rollup = SUM(ledger) → M-5 reconciliation by construction (no mutable counter).
+- **B-3 pricing** — billing_package + billing_rate (integer minor-units) written ONLY from the padmin route (tenant can't price); every change audited (billing_config_audit append-only). AssignPackage pins tenant contract currency to the package (M-4).
+- **B-4 arithmetic** — ComputeInvoice: overage = max(0, usage−included) × rate, ALL integer minor-units (no float in any money path); currency mismatch refused (M-4); over-threshold metrics flagged (BILL-003).
+- **B-5 isolation + role-gating** — all financial tables RLS-FORCE; pricing writes padmin-only, usage/invoice reads manager-gated (finance/admin, not every analyst). Adversarial round: replay→no-double, negative→reject, closed-period→adjust-not-drop, invoice tenant-isolation, code-owned metric registry, currency-mismatch→refuse, float→structurally-absent.
+- Evidence: billing suite 12 green + schemacheck + SECURITY-DEFINER guard + cmd/api + 79/79 from zero. Report: outputs/NIRVET_617_BILLING_SLICE_A_LANDING.md.
+- Deferred (own gates): margin dashboards (BILL-008), partner/reseller downstream/MSSP (BILL-007), add-on/commercial-approval (BILL-004/005/009), contract lifecycle (BILL-006), external finance integration (BILL-010).
+
+---
+
+## 🏁 §6 ROADMAP COMPLETE — all 18 §6 domains gated-and-reviewed
+With §6.17 landed, every §6 domain has been through the gate-before-code discipline (pre-code design gate → reviewer pass → build test-first → landing round). **Next: the whole-platform pre-go-live pass** (owner-endorsed, reviewer strongly recommended) — the cross-cutting review layer the per-slice rounds structurally cannot substitute for: cross-domain auth flows, the full RLS surface at once, secrets/KMS end-to-end, the actual `-race` full suite on a fresh DB, dependency/supply-chain, deploy posture. Scope it as its own multi-part effort.
