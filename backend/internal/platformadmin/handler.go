@@ -111,7 +111,28 @@ func (h *Handler) ClearLegalHold(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "legal_hold_cleared"})
 }
 
-// OffboardTenant handles POST /admin/tenants/{id}/offboard.
+// MarkExported handles POST /admin/tenants/{id}/mark-exported — the required precondition of offboarding.
+func (h *Handler) MarkExported(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	tid, err := tenantIDFrom(r)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	var in reasonReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.MarkExported(r.Context(), p, tid, in.Reason); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "exported"})
+}
+
+// OffboardTenant handles POST /admin/tenants/{id}/offboard — irreversible; requires the elevated envelope
+// (senior + four-eyes via approved_by + reason), and the tenant must be exported with its retention window elapsed.
 func (h *Handler) OffboardTenant(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
 	tid, err := tenantIDFrom(r)
@@ -124,7 +145,7 @@ func (h *Handler) OffboardTenant(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	cert, err := h.svc.OffboardTenant(r.Context(), p, tid, in.Reason)
+	cert, err := h.svc.OffboardTenant(r.Context(), p, tid, in.Reason, in.ApprovedBy)
 	if err != nil {
 		httpx.Error(w, err)
 		return

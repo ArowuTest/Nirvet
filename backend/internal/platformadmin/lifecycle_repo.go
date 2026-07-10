@@ -31,8 +31,23 @@ func (r *Repository) IsLegalHold(ctx context.Context, tenantID uuid.UUID) (bool,
 	return held, err
 }
 
+// MarkExported transitions a tenant to the 'exported' state and starts the retention clock (exported_at=now()),
+// recording the step in the append-only offboarding trail. This is the precondition the purge enforces — a tenant
+// can only be offboarded from 'exported', never straight from active/suspended.
+func (r *Repository) MarkExported(ctx context.Context, tenantID uuid.UUID, actorID uuid.UUID, reason string) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if _, e := tx.Exec(ctx, `UPDATE tenants SET status='exported', exported_at=now() WHERE id=$1`, tenantID); e != nil {
+			return e
+		}
+		_, e := tx.Exec(ctx, `INSERT INTO tenant_offboarding (tenant_id, action, actor_id, reason) VALUES ($1,'export',$2,$3)`,
+			tenantID, actorID, reason)
+		return e
+	})
+}
+
 // OffboardPurge runs the uniform purge routine. Returns the number of tables purged; the function RAISES if the
-// tenant is on legal hold (surfaced as an error the service maps to 403).
+// tenant is on legal hold, is not in the 'exported' state, or its retention window has not elapsed (each surfaced as
+// an error the service maps to 403/409).
 func (r *Repository) OffboardPurge(ctx context.Context, tenantID uuid.UUID) (int, error) {
 	var n int
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {

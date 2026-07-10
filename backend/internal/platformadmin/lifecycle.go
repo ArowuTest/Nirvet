@@ -55,16 +55,35 @@ func (s *Service) ClearLegalHold(ctx context.Context, actor auth.Principal, tena
 	return nil
 }
 
-// OffboardTenant purges all of a tenant's data via the uniform routine (blocked while on legal hold), marks the
-// tenant deleted, and returns a certificate of destruction. Irreversible.
-func (s *Service) OffboardTenant(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, reason string) (string, error) {
+// MarkExported transitions a tenant to the 'exported' state (its data has been exported to the customer) and starts
+// the retention clock. This is a required precondition of OffboardTenant — a tenant can only be purged from
+// 'exported', after its retention window elapses. Routine padmin + reason (it destroys nothing; the destructive step
+// is OffboardTenant, which carries the elevated envelope).
+func (s *Service) MarkExported(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, reason string) error {
 	if strings.TrimSpace(reason) == "" {
-		return "", httpx.ErrBadRequest("a reason is required to delete a tenant")
+		return httpx.ErrBadRequest("a reason is required to mark a tenant exported")
 	}
-	n, err := s.repo.OffboardPurge(ctx, tenantID) // the SECURITY DEFINER routine refuses if on legal hold
+	return s.repo.MarkExported(ctx, tenantID, actor.UserID, reason)
+}
+
+// OffboardTenant purges all of a tenant's data via the uniform routine and returns a certificate of destruction.
+// IRREVERSIBLE and strictly more destructive than clearing a legal hold, so it carries the SAME elevated envelope
+// (senior + four-eyes + reason + HIGH alert) — H-1: it must never be gated weaker than the lesser action that merely
+// enables it. The purge is additionally refused (defense in depth, inside the SECURITY DEFINER function) unless the
+// tenant is on no legal hold, is in the 'exported' state, and its retention window has elapsed.
+func (s *Service) OffboardTenant(ctx context.Context, actor auth.Principal, tenantID uuid.UUID, reason string, approvedBy *uuid.UUID) (string, error) {
+	if err := requireElevated(actor, approvedBy, reason); err != nil {
+		return "", err
+	}
+	n, err := s.repo.OffboardPurge(ctx, tenantID) // the SECURITY DEFINER routine refuses on hold / wrong-state / retention
 	if err != nil {
-		if strings.Contains(err.Error(), "legal hold") {
+		switch {
+		case strings.Contains(err.Error(), "legal hold"):
 			return "", httpx.ErrForbidden("tenant is on legal hold; clear the hold before deletion")
+		case strings.Contains(err.Error(), "exported state"):
+			return "", httpx.ErrConflict("tenant is not in the exported state; export its data before deletion")
+		case strings.Contains(err.Error(), "retention window"):
+			return "", httpx.ErrConflict("tenant retention window has not elapsed; deletion is not yet permitted")
 		}
 		return "", err
 	}

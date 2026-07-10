@@ -45,11 +45,80 @@ func TestLifecycle_LegalHoldBlocksDelete(t *testing.T) {
 	if err := svc.SetLegalHold(ctx, a, tid, "regulatory investigation"); err != nil {
 		t.Fatalf("set hold: %v", err)
 	}
-	if _, err := svc.OffboardTenant(ctx, a, tid, "customer left"); status(err) != 403 {
+	// Even with a full elevated envelope, a hold blocks the purge (legal_hold is checked FIRST in the function).
+	approver := uuid.New()
+	if _, err := svc.OffboardTenant(ctx, a, tid, "customer left", &approver); status(err) != 403 {
 		t.Fatalf("delete under legal hold must be refused (403), got %v", err)
 	}
 	if tenantRowCount(t, db, tid) != 1 {
 		t.Fatal("data must be preserved while on legal hold")
+	}
+}
+
+// markExportedElapsed puts a tenant into the exported state with its retention window already elapsed, so an
+// otherwise-valid offboard can proceed.
+func markExportedElapsed(t *testing.T, db *database.DB, svc *Service, tid uuid.UUID) {
+	t.Helper()
+	if err := svc.MarkExported(context.Background(), padminActor(), tid, "data exported to customer"); err != nil {
+		t.Fatalf("mark exported: %v", err)
+	}
+	if err := db.WithTenant(context.Background(), tid, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `UPDATE tenants SET exported_at = now() - interval '400 days' WHERE id=$1`, tid)
+		return e
+	}); err != nil {
+		t.Fatalf("age export: %v", err)
+	}
+}
+
+// H-1: OffboardTenant carries the SAME elevated envelope as ClearLegalHold — no distinct approver → 403, never a
+// single-padmin irreversible purge.
+func TestLifecycle_OffboardNeedsFourEyes(t *testing.T) {
+	db := paDB(t)
+	tid := paTenant(t, db)
+	seedTenantRow(t, db, tid)
+	svc := NewService(NewRepository(db), &mockPAAlerter{})
+	markExportedElapsed(t, db, svc, tid)
+	// No approver → refused (four-eyes) even though the tenant is exported + retention-elapsed.
+	if _, err := svc.OffboardTenant(context.Background(), padminActor(), tid, "customer left", nil); status(err) != 403 {
+		t.Fatalf("offboard without four-eyes must be 403, got %v", err)
+	}
+	if tenantRowCount(t, db, tid) != 1 {
+		t.Fatal("data must be preserved when the envelope is incomplete")
+	}
+}
+
+// H-1: a purge is refused unless the tenant is in the 'exported' state — never straight from active.
+func TestLifecycle_OffboardRefusedFromActiveState(t *testing.T) {
+	db := paDB(t)
+	tid := paTenant(t, db)
+	seedTenantRow(t, db, tid)
+	svc := NewService(NewRepository(db), &mockPAAlerter{})
+	approver := uuid.New()
+	// Full envelope, but the tenant was never exported → 409 conflict, data preserved.
+	if _, err := svc.OffboardTenant(context.Background(), padminActor(), tid, "customer left", &approver); status(err) != 409 {
+		t.Fatalf("offboard from a non-exported state must be 409, got %v", err)
+	}
+	if tenantRowCount(t, db, tid) != 1 {
+		t.Fatal("data must be preserved when the tenant is not exported")
+	}
+}
+
+// H-1: a purge is refused until the retention window has elapsed.
+func TestLifecycle_OffboardRefusedBeforeRetention(t *testing.T) {
+	db := paDB(t)
+	tid := paTenant(t, db)
+	seedTenantRow(t, db, tid)
+	svc := NewService(NewRepository(db), &mockPAAlerter{})
+	if err := svc.MarkExported(context.Background(), padminActor(), tid, "exported"); err != nil {
+		t.Fatalf("mark exported: %v", err)
+	}
+	approver := uuid.New()
+	// exported_at is now() (default 30-day retention not elapsed) → 409, data preserved.
+	if _, err := svc.OffboardTenant(context.Background(), padminActor(), tid, "customer left", &approver); status(err) != 409 {
+		t.Fatalf("offboard before retention elapses must be 409, got %v", err)
+	}
+	if tenantRowCount(t, db, tid) != 1 {
+		t.Fatal("data must be preserved before the retention window elapses")
 	}
 }
 
@@ -86,7 +155,10 @@ func TestLifecycle_OffboardPurgesAndCerts(t *testing.T) {
 	svc := NewService(NewRepository(db), &mockPAAlerter{})
 	ctx := context.Background()
 
-	cert, err := svc.OffboardTenant(ctx, padminActor(), tid, "contract ended")
+	// H-1: offboard now requires exported state + retention elapsed + the four-eyes envelope.
+	markExportedElapsed(t, db, svc, tid)
+	approver := uuid.New()
+	cert, err := svc.OffboardTenant(ctx, padminActor(), tid, "contract ended", &approver)
 	if err != nil {
 		t.Fatalf("offboard: %v", err)
 	}

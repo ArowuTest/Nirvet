@@ -482,6 +482,7 @@ func main() {
 	mux.Handle("POST /admin/flags/rollback", padmin(padminH.RollbackFlag))
 	mux.Handle("POST /admin/tenants/{id}/legal-hold", padmin(padminH.SetLegalHold))
 	mux.Handle("DELETE /admin/tenants/{id}/legal-hold", padmin(padminH.ClearLegalHold))
+	mux.Handle("POST /admin/tenants/{id}/mark-exported", padmin(padminH.MarkExported))
 	mux.Handle("POST /admin/tenants/{id}/offboard", padmin(padminH.OffboardTenant))
 	mux.Handle("POST /admin/maintenance-windows", padmin(padminH.CreateWindow))
 	// detection engineering
