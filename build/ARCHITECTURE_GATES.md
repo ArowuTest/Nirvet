@@ -2366,3 +2366,13 @@ With §6.17 landed, every §6 domain has been through the gate-before-code disci
 6. **Ordering:** the org-sub-admin resolver needs the `org_id` seam (seam #2) landed first → sequence the `org_id` migration before the org-sub-admin resolver.
 
 **→ Awaiting reviewer pre-code pass (reviewer front-loading pass 1 on the §C baseline threads). No code on the fleet/write primitive until cleared. Parallel builds authorised meanwhile (least-entangled, non-authz seams): `org_id` grouping migration, connector scaffolding (egress/creds/SSRF surface, own gate — not cross-tenant authz), Ghana compliance-pack content (§6.14).**
+
+### ✅ REVIEWER PRE-CODE PASS — GREENLIT (Jul 2026). Full artifact: `outputs/NIRVET_REVIEW_FLEET_WRITE_PRECODE.md`. Fold these 4 MUST-ADDS, then build. (Landing round re-verifies MA-1..4 + per-target-authority against source.)
+
+- **MA-1 (READ — the single highest-risk line):** the cross-tenant read runs through a SECURITY DEFINER fn with RLS **inert inside it**, so that fn's own `tenant_id = ANY($set)` is the ONLY guard. It MUST **fail closed** (empty/NULL scope → ZERO rows, never all — with a dedicated test), the tenant-set MUST be a **bound array param** (`uuid[]`, never string-interpolated), and the fn MUST be **minimal — no business logic inside the definer boundary**. A bug on this line = full cross-tenant breach.
+- **MA-2 (WRITE):** evaluate per-target SOAR authority by passing the target tenant as an **explicit `(actor, targetTenantID)` parameter** — do NOT mint a synthetic principal with `TenantID = target` (that carries the operator's privilege into the target and corrupts the audit identity).
+- **MA-3 (WRITE):** the cross-tenant write MUST land in the **TARGET tenant's audit trail** (not only the operator's) — the agency sees who contained its endpoint (write-side of data-owner-visibility).
+- **MA-4 (POSTURE):** the vendor posture view MUST be a **structurally separate store**, not a filtered view over the content tables — "no code path to content" only holds if content is unreachable from the posture repo.
+- **Resolver:** confirmed single-choke-point. **Use the SD-fn; REJECT the set-aware GUC** (a set-aware GUC would force every existing RLS policy set-aware — a blast radius that weakens the single-tenant customer isolation that is the platform's core).
+
+**→ GREENLIT. Builder folds MA-1..4 and builds the fleet/write primitive; syslog-listener gate proceeds in parallel (independent egress/creds surface). Reviewer continues pass 1 on the composed baseline (`ScopeToTenant`/`WithTenant`, `ServiceAccount` marker, SD cohort, PAM/break-glass); fleet/write landing round re-verifies MA-1..4 + per-target authority.**

@@ -66,6 +66,9 @@ INSERT INTO compliance_controls (tenant_id, framework_key, control_ref, parent_r
   (NULL,'sovereign_data_protection','DPP.4','DPP','Compatibility of further processing',      1,'manual','{}'::jsonb),
   (NULL,'sovereign_data_protection','DPP.5','DPP','Quality of information',                   1,'manual','{}'::jsonb),
   (NULL,'sovereign_data_protection','DPP.6','DPP','Openness and transparency',                1,'manual','{}'::jsonb),
-  (NULL,'sovereign_data_protection','DPP.7','DPP','Data security safeguards',                 3,'platform_capability','{"note":"Credential vault (KMS) + encrypted evidence store + RLS isolation."}'::jsonb),
+  -- MANUAL (reviewer flag): data-security safeguards is an officer-assessed control, NOT auto-asserted "Met".
+  -- platform_capability would auto-assert Met, over-claiming to an auditor while production KMS is deferred to
+  -- go-live (the vault exists but full key management is not yet in place). Officer attests actual state.
+  (NULL,'sovereign_data_protection','DPP.7','DPP','Data security safeguards',                 3,'manual','{}'::jsonb),
   (NULL,'sovereign_data_protection','DPP.8','DPP','Data subject participation and rights',    2,'manual','{}'::jsonb),
   (NULL,'sovereign_data_protection','DPP.9','DPP','Personal data breach response',           2,'incident_response','{}'::jsonb);
