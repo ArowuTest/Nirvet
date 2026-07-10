@@ -23,33 +23,44 @@ type InvoiceLine struct {
 
 // Invoice is a tenant's computed charges for a period.
 type Invoice struct {
-	TenantID    uuid.UUID     `json:"tenant_id"`
-	Period      string        `json:"period"`
-	Currency    string        `json:"currency"`
-	Lines       []InvoiceLine `json:"lines"`
-	TotalMinor  int64         `json:"total_minor"` // sum of line_minor, integer minor-units
-	OverMetrics []Metric      `json:"over_metrics"`
+	TenantID        uuid.UUID     `json:"tenant_id"`
+	Period          string        `json:"period"`
+	Currency        string        `json:"currency"`
+	Mode            string        `json:"mode"`                        // direct | covered | comp
+	BilledToAccount *uuid.UUID    `json:"billed_to_account,omitempty"` // set for covered — the payer account
+	PayableByTenant bool          `json:"payable_by_tenant"`           // false for covered/comp
+	Lines           []InvoiceLine `json:"lines"`
+	TotalMinor      int64         `json:"total_minor"` // sum of line_minor, integer minor-units
+	OverMetrics     []Metric      `json:"over_metrics"`
 }
 
 // ComputeInvoice derives the tenant's charges for a period from the metered usage and the assigned package rates.
-// Pure integer arithmetic; refuses a package/tenant currency mismatch (M-4). No package assigned → an empty invoice.
+// Pure integer arithmetic; refuses a package/tenant currency mismatch (M-4). Mode is applied HERE (not at metering):
+// comp → metered but zero-charge; covered → computed but attributed to the payer account (not payable by the tenant);
+// direct → payable by the tenant. No package → an empty invoice.
 func (s *Service) ComputeInvoice(ctx context.Context, tenantID uuid.UUID, period string) (*Invoice, error) {
-	pkgID, currency, err := s.repo.tenantBilling(ctx, tenantID)
+	tb, err := s.repo.readTenantBilling(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	inv := &Invoice{TenantID: tenantID, Period: period, Currency: currency}
-	if pkgID == nil {
+	inv := &Invoice{
+		TenantID: tenantID, Period: period, Currency: tb.Currency, Mode: tb.Mode,
+		BilledToAccount: tb.AccountID, PayableByTenant: tb.Mode == ModeDirect,
+	}
+	if tb.Mode == ModeComp {
+		return inv, nil // comp: metered, zero-charge
+	}
+	if tb.PackageID == nil {
 		return inv, nil // no package → nothing billable
 	}
-	pkgCur, err := s.repo.packageCurrency(ctx, *pkgID)
+	pkgCur, err := s.repo.packageCurrency(ctx, *tb.PackageID)
 	if err != nil {
 		return nil, err
 	}
-	if pkgCur != currency {
-		return nil, httpx.ErrConflict("billing currency mismatch: package " + pkgCur + " vs tenant " + currency) // M-4
+	if pkgCur != tb.Currency {
+		return nil, httpx.ErrConflict("billing currency mismatch: package " + pkgCur + " vs tenant " + tb.Currency) // M-4
 	}
-	rates, err := s.repo.rates(ctx, *pkgID)
+	rates, err := s.repo.rates(ctx, *tb.PackageID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,4 +89,39 @@ func (s *Service) ComputeInvoice(ctx context.Context, tenantID uuid.UUID, period
 		}
 	}
 	return inv, nil
+}
+
+// AccountInvoice is the umbrella invoice: the summed charges of an account's covered tenants for a period.
+type AccountInvoice struct {
+	AccountID   uuid.UUID `json:"account_id"`
+	Period      string    `json:"period"`
+	Currency    string    `json:"currency"`
+	TenantCount int       `json:"tenant_count"`
+	TotalMinor  int64     `json:"total_minor"`
+}
+
+// ComputeAccountInvoice sums the overage of an account's COVERED tenants for a period. It reads ONLY the account's own
+// tenants (via the account-scoped SECURITY DEFINER function) — never another account's, never all tenants — and
+// refuses a covered tenant whose currency drifts from the account (no mixed-currency rollup, M-4 at the account level).
+func (s *Service) ComputeAccountInvoice(ctx context.Context, accountID uuid.UUID, period string) (*AccountInvoice, error) {
+	acct, err := s.repo.getAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	tenants, _, err := s.repo.accountTenants(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	ai := &AccountInvoice{AccountID: accountID, Period: period, Currency: acct.Currency, TenantCount: len(tenants)}
+	for _, t := range tenants {
+		inv, err := s.ComputeInvoice(ctx, t, period)
+		if err != nil {
+			return nil, err
+		}
+		if inv.Currency != acct.Currency {
+			return nil, httpx.ErrConflict("account rollup currency mismatch for a covered tenant")
+		}
+		ai.TotalMinor += inv.TotalMinor
+	}
+	return ai, nil
 }

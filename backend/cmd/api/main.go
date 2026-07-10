@@ -219,7 +219,7 @@ func main() {
 	// with an Ed25519 signature over the pack digest (R2 H-B).
 	evidenceH := evidence.NewHandler(evidence.NewService(incidentSvc, alertSvc, events, assetSvc, vulnSvc, db, evidenceSigner))
 
-	billingSvc := billing.NewService(billing.NewRepository(db))
+	billingSvc := billing.NewService(billing.NewRepository(db)).WithAlerter(alertSvc) // §6.17 slice B: HIGH alert on account suspend
 	billingH := billing.NewHandler(billingSvc)
 
 	tiRepo := threatintel.NewRepository(db)
@@ -333,8 +333,11 @@ func main() {
 	aiLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 0.5, 5, "ai"), ratelimit.ByPrincipal) // ~1 AI call / 2s / principal, burst 5
 	auditMut := audit.Mutations(db)                                                                    // record successful mutations (NFR-003)
 	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, apiLimit, auditMut) }
+	// §6.17 slice B: a billing-suspended tenant's non-platform users are blocked at the authenticated API (bsuspend);
+	// ingest/detection never uses this chain, so a suspended tenant keeps being protected.
+	bsuspend := billing.AccessGate(billingSvc)
 	provider := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(providerRoles...))
+		return httpx.Chain(h, authn, bsuspend, apiLimit, auditMut, auth.RequireRole(providerRoles...))
 	}
 	// aiProvider is the provider chain with the tight AI bucket swapped in for apiLimit —
 	// same roles (T1 keeps assistive AI), stricter throughput (R3 AI-rate).
@@ -598,6 +601,14 @@ func main() {
 	mux.Handle("PUT /admin/tenants/{id}/billing-package", padmin(billingH.AssignPackage))
 	mux.Handle("GET /billing/usage", manager(billingH.Usage))
 	mux.Handle("GET /billing/invoice", manager(billingH.Invoice))
+	// §6.17 slice B: umbrella accounts + billing modes + suspension. Account/mode/suspension writes are padmin-only
+	// (a tenant can't self-mark covered/comp or re-parent). Account-level suspend requires senior + raises a HIGH
+	// alert (service-enforced). The account rollup reads only the account's own covered tenants.
+	mux.Handle("POST /admin/billing/accounts", padmin(billingH.CreateAccount))
+	mux.Handle("PUT /admin/tenants/{id}/billing-mode", padmin(billingH.SetMode))
+	mux.Handle("POST /admin/tenants/{id}/billing-suspend", padmin(billingH.SuspendTenant))
+	mux.Handle("POST /admin/billing/accounts/{id}/suspend", padmin(billingH.SuspendAccount))
+	mux.Handle("GET /admin/billing/accounts/{id}/invoice", manager(billingH.AccountInvoice))
 	// notifications
 	mux.Handle("POST /notify/test", senior(notifyH.Test))
 	// §6.16 per-tenant email/SMS sender config (COMM-001); secrets vault-encrypted, manager-gated.

@@ -77,9 +77,10 @@ func (r *Repository) RawCountToday(ctx context.Context, tenantID uuid.UUID) (int
 
 // Service is the billing/entitlements service and the ingest QuotaChecker.
 type Service struct {
-	repo  *Repository
-	mu    sync.Mutex
-	quota map[uuid.UUID]*quotaEntry // per-tenant cached ingest meter (R6-P1)
+	repo    *Repository
+	mu      sync.Mutex
+	quota   map[uuid.UUID]*quotaEntry // per-tenant cached ingest meter (R6-P1)
+	alerter Alerter                   // optional; HIGH alert on account suspension (§6.17 slice B)
 }
 
 // quotaEntry caches a tenant's daily raw count + cap so the ingest quota check does not run count(*)
