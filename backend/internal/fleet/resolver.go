@@ -10,6 +10,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -73,4 +74,26 @@ func (s *Service) Alerts(ctx context.Context, p auth.Principal, status string, l
 		return nil, err
 	}
 	return s.repo.FleetAlerts(ctx, tenantIDs, status, limit)
+}
+
+// ResolveTargetTenant is the write path's gate (reviewer MA-2/3 #1+#2): it returns the TARGET tenant for a
+// fleet write on the given alert, taken FROM THE ALERT ROW (never p.TenantID, never a client id) and only if
+// that tenant is inside the caller's principal-resolved fleet scope. Any write handler MUST call this first and
+// then act under WithTenant(target). It refuses (ErrForbidden) when the alert is outside the caller's scope —
+// including a non-provider's EMPTY scope, so a non-oversight principal has NO cross-tenant write path at all.
+func (s *Service) ResolveTargetTenant(ctx context.Context, p auth.Principal, alertID uuid.UUID) (uuid.UUID, error) {
+	scope, err := s.resolver.Resolve(ctx, p)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	target, err := s.repo.AlertTargetTenant(ctx, alertID, scope)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if target == nil {
+		// Out of scope, or the alert does not exist. Deliberately one indistinct refusal — a fleet operator has
+		// no need to distinguish "not yours" from "no such alert", and it avoids a cross-tenant existence oracle.
+		return uuid.Nil, httpx.ErrForbidden("alert is not within your fleet scope")
+	}
+	return *target, nil
 }

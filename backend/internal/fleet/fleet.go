@@ -59,3 +59,16 @@ func (r *Repository) FleetAlerts(ctx context.Context, tenantIDs []uuid.UUID, sta
 	})
 	return out, err
 }
+
+// AlertTargetTenant returns the alert's OWN tenant_id if that tenant is within the given fleet scope, else nil
+// (the alert is out of the caller's scope, or does not exist) — via the fleet_alert_tenant() SECURITY DEFINER
+// function (mig 0084). This is the write path's target resolution: the target comes from the resource (the
+// alert row), never from input, and the scope bound is enforced inside the fn. A nil return MUST be treated as
+// "refuse the write" by the caller. `tenantIDs` MUST be the principal-resolved fleet scope.
+func (r *Repository) AlertTargetTenant(ctx context.Context, alertID uuid.UUID, tenantIDs []uuid.UUID) (*uuid.UUID, error) {
+	var target *uuid.UUID
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT fleet_alert_tenant($1, $2)`, alertID, tenantIDs).Scan(&target)
+	})
+	return target, err
+}
