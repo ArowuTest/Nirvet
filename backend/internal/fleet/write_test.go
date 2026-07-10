@@ -11,6 +11,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
@@ -60,5 +61,50 @@ func TestFleetWrite_TargetResolution_MA2(t *testing.T) {
 	// (3) FORGED / nonexistent alert id → refused (no crash, no leak; indistinct from out-of-scope, no oracle).
 	if _, err := svc.ResolveTargetTenant(ctx, op, uuid.New()); err == nil {
 		t.Fatal("MA-2: a forged/nonexistent alert id MUST be refused, got nil error")
+	}
+}
+
+// MA-2/3 #4: a fleet write lands the MUTATION in the TARGET tenant AND a DEDICATED audit entry in the TARGET
+// tenant with the OPERATOR's real identity — so the agency sees who acted on its resource. A non-provider has
+// no write path.
+func TestFleetWrite_Assign_LandsInTargetWithOperatorIdentity(t *testing.T) {
+	db := fleetDB(t)
+	svc := NewService(db).WithAlerts(alert.NewService(alert.NewRepository(db)))
+	ctx := context.Background()
+
+	tA := mkTenant(t, db)
+	alertID := mkAlertID(t, db, tA)
+	op := auth.Principal{UserID: uuid.New(), TenantID: mkTenant(t, db), Role: auth.RoleSOCManager, Email: "op@venture"}
+
+	if err := svc.AssignAlert(ctx, op, alertID, op.UserID); err != nil {
+		t.Fatalf("fleet assign: %v", err)
+	}
+
+	// The mutation landed in the TARGET tenant (tA): the alert is now assigned to the operator.
+	var assignee *uuid.UUID
+	var auditActor *uuid.UUID
+	var auditAction string
+	if err := db.WithTenant(ctx, tA, func(ctx context.Context, tx pgx.Tx) error {
+		if e := tx.QueryRow(ctx, `SELECT assignee_id FROM alerts WHERE id=$1`, alertID).Scan(&assignee); e != nil {
+			return e
+		}
+		// The dedicated audit entry landed in the TARGET tenant (tA) with the operator's identity.
+		return tx.QueryRow(ctx,
+			`SELECT actor_id, action FROM audit_log WHERE target=$1 AND action='fleet.alert.assign' ORDER BY at DESC LIMIT 1`,
+			"alert:"+alertID.String()).Scan(&auditActor, &auditAction)
+	}); err != nil {
+		t.Fatalf("verify target tenant state: %v", err)
+	}
+	if assignee == nil || *assignee != op.UserID {
+		t.Fatalf("mutation must land in the target tenant (alert assigned to the operator), got %v", assignee)
+	}
+	if auditActor == nil || *auditActor != op.UserID {
+		t.Fatalf("audit must land in the TARGET tenant with the OPERATOR's identity, got actor %v action %q", auditActor, auditAction)
+	}
+
+	// A non-provider has NO write path — the assign is refused, and nothing is written.
+	cust := auth.Principal{UserID: uuid.New(), TenantID: tA, Role: auth.RoleCustomerAdmin, Email: "c@mda"}
+	if err := svc.AssignAlert(ctx, cust, alertID, cust.UserID); err == nil {
+		t.Fatal("a non-provider MUST NOT be able to perform a fleet write")
 	}
 }

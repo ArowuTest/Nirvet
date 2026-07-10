@@ -55,16 +55,23 @@ func (r *ScopeResolver) allInstanceTenants(ctx context.Context) ([]uuid.UUID, er
 	return ids, err
 }
 
-// Service is the fleet console read service: resolve the principal's scope, then read within it.
+// Service is the fleet console service: resolve the principal's scope, then read/act within it.
 type Service struct {
+	db       *database.DB
 	resolver *ScopeResolver
 	repo     *Repository
+	alerts   AlertWriter // injected for the WRITE path; nil on a read-only wiring
 }
 
-// NewService wires the fleet read service.
+// NewService wires the fleet service (read path). Call WithAlerts to enable the write path.
 func NewService(db *database.DB) *Service {
-	return &Service{resolver: &ScopeResolver{db: db}, repo: NewRepository(db)}
+	return &Service{db: db, resolver: &ScopeResolver{db: db}, repo: NewRepository(db)}
 }
+
+// WithAlerts injects the alert mutation service the fleet WRITE path reuses (assign/disposition), so the fleet
+// package does not hard-depend on the whole alert graph. A write attempted with no alerts wired refuses
+// (fail-safe). *alert.Service satisfies AlertWriter structurally.
+func (s *Service) WithAlerts(a AlertWriter) *Service { s.alerts = a; return s }
 
 // Alerts returns the fleet alert queue the principal may see. Scope is principal-derived; a non-oversight
 // principal gets an empty scope → zero alerts (defense-in-depth; the route is ALSO role-gated to providers).

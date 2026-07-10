@@ -11,6 +11,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/google/uuid"
 )
 
 // Handler is the fleet console HTTP surface.
@@ -35,4 +36,54 @@ func (h *Handler) Alerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"alerts": alerts, "count": len(alerts)})
+}
+
+type assignReq struct {
+	Assignee uuid.UUID `json:"assignee"`
+}
+
+// AssignAlert handles POST /fleet/alerts/{id}/assign — assign a cross-tenant alert. The target tenant is
+// resolved from the alert (never from input); the mutation + audit land in that target tenant.
+func (h *Handler) AssignAlert(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	alertID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid alert id"))
+		return
+	}
+	var in assignReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.AssignAlert(r.Context(), p, alertID, in.Assignee); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "assigned"})
+}
+
+type dispositionReq struct {
+	Disposition string `json:"disposition"`
+	Reason      string `json:"reason"`
+}
+
+// DispositionAlert handles POST /fleet/alerts/{id}/disposition — close a cross-tenant alert with a verdict.
+func (h *Handler) DispositionAlert(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	alertID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid alert id"))
+		return
+	}
+	var in dispositionReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.DispositionAlert(r.Context(), p, alertID, in.Disposition, in.Reason); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "dispositioned"})
 }

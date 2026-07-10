@@ -147,9 +147,10 @@ func main() {
 
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	alertH := alert.NewHandler(alertSvc)
-	// Operator fleet console (Ghana operator seam #1): bounded cross-tenant alert read. Scope is resolved from
-	// the principal (provider → whole instance; non-provider → empty). MA-1 SD-fn enforces the bound.
-	fleetH := fleet.NewHandler(fleet.NewService(db))
+	// Operator fleet console (Ghana operator seam #1/#3): bounded cross-tenant alert read + write. Scope is
+	// resolved from the principal (provider → whole instance; non-provider → empty); MA-1 SD-fn enforces the
+	// read bound; writes resolve the target from the resource, check fleet scope, and audit in the target tenant.
+	fleetH := fleet.NewHandler(fleet.NewService(db).WithAlerts(alertSvc))
 
 	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
 	correlationSvc := correlation.NewService(correlation.NewRepository(db))
@@ -485,6 +486,9 @@ func main() {
 	// Fleet console: cross-tenant alert queue for operator/SOC staff (provider-gated; resolver fail-closes for
 	// any non-provider). Distinct from GET /alerts, which is the caller's own single tenant.
 	mux.Handle("GET /fleet/alerts", provider(fleetH.Alerts))
+	// Fleet writes: target tenant resolved from the alert + scope-checked; mutation + audit land in the target.
+	mux.Handle("POST /fleet/alerts/{id}/assign", provider(fleetH.AssignAlert))
+	mux.Handle("POST /fleet/alerts/{id}/disposition", provider(fleetH.DispositionAlert))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
 	mux.Handle("POST /alerts/{id}/disposition", provider(alertH.Disposition)) // DET-007 FP feedback
