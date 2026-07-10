@@ -294,7 +294,11 @@ func main() {
 		// I-5 data-gap panel: unify detection coverage gaps + host-source silence + normalization drift (all tenant-scoped).
 		investigation.NewDataGapService(detectionSvc, normQ, connector.NewRepository(db)),
 	)
-	reportingH := reporting.NewHandler(reporting.NewService(db, events))
+	reportingSvc := reporting.NewService(db, events)
+	reportingH := reporting.NewHandler(reportingSvc)
+	// §6.13 #125 report export (JSON/CSV/XLSX). Generation under WithTenant + hard caps; formula-injection neutralized
+	// at the serializer; download is a session-authorized GET (not a bearer link); every generate/download audited.
+	reportExportH := reporting.NewReportHandler(reporting.NewReportService(reporting.NewReportRepository(db), blobs, reportingSvc))
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
 	// --- bootstrap first-run provider tenant + platform admin ---
@@ -573,6 +577,11 @@ func main() {
 	mux.Handle("PUT /normalization/settings", senior(normH.SetSettings))
 	// reporting
 	mux.Handle("GET /reports/summary", provider(reportingH.SummaryHTTP))
+	// §6.13 #125 report export (REP-007 JSON/CSV/XLSX). Generate under tenant scope + caps; download is a
+	// session-authorized GET (RLS-confined), response hardened; every generate/download audited (REP-008).
+	mux.Handle("POST /reports", provider(reportExportH.Create))
+	mux.Handle("GET /reports/{id}", provider(reportExportH.Get))
+	mux.Handle("GET /reports/{id}/download", provider(reportExportH.Download))
 	// compliance (§6.14): config-driven frameworks + real per-tenant assessment; manual override is senior.
 	mux.Handle("GET /compliance/frameworks", provider(complianceH.Frameworks))
 	mux.Handle("GET /compliance/controls", provider(complianceH.Controls))

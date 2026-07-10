@@ -1,0 +1,86 @@
+package reporting
+
+// §6.13 #125 R-4 — the report HTTP surface. Create/Get/Download. Download is an authenticated, role-gated GET (the
+// route chain enforces the session); the service reads under WithTenant so RLS confines the artifact to the caller's
+// tenant. The response is hardened: Content-Type pinned to the real format + nosniff, and a CRLF-safe RFC 6266
+// Content-Disposition (refinement #4).
+
+import (
+	"net/http"
+
+	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/google/uuid"
+)
+
+// ReportHandler serves the report endpoints.
+type ReportHandler struct{ svc *ReportService }
+
+// NewReportHandler builds the handler.
+func NewReportHandler(svc *ReportService) *ReportHandler { return &ReportHandler{svc: svc} }
+
+type generateReq struct {
+	Type   string `json:"type"`
+	Format string `json:"format"`
+}
+
+// Create handles POST /reports — generate a report for the caller's tenant.
+func (h *ReportHandler) Create(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in generateReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	rep, err := h.svc.Generate(r.Context(), p, in.Type, Format(in.Format))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, rep)
+}
+
+func reportID(r *http.Request) (uuid.UUID, error) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		return uuid.Nil, httpx.ErrBadRequest("invalid report id")
+	}
+	return id, nil
+}
+
+// Get handles GET /reports/{id} — the report record/status.
+func (h *ReportHandler) Get(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := reportID(r)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	rep, err := h.svc.Get(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, rep)
+}
+
+// Download handles GET /reports/{id}/download — session-authorized artifact download with a hardened response.
+func (h *ReportHandler) Download(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := reportID(r)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	data, format, err := h.svc.Download(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	fname := safeFilename("report-" + id.String() + format.Ext())
+	w.Header().Set("Content-Type", format.ContentType())                      // pinned to the real format
+	w.Header().Set("X-Content-Type-Options", "nosniff")                       // no MIME sniffing
+	w.Header().Set("Content-Disposition", `attachment; filename="`+fname+`"`) // CRLF-safe, RFC 6266
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
