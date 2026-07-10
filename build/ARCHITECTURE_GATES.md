@@ -2183,3 +2183,11 @@ Deliver the export path whose security surface is well-understood and testable, 
 - Any must-adds in the export-security family — e.g. filename/path sanitization for the artifact, a hard cell/row cap even in async mode, stripping of active content beyond formulas (e.g. DDE, hyperlinks), or per-format MIME/extension pinning.
 
 **→ Awaiting reviewer pre-code pass. No code until greenlit; then build R-1..R-5 test-first, dedicated adversarial round on the export surface at landing.**
+
+### ✅ LANDED — §6.13 Reporting export slice A complete (HEAD f057d79, migration 0077), awaiting reviewer landing round
+- **R-3 serializers (formula-injection defense)** — typed cells; CSV type-aware neutralization (only string cells with a leading =+-@/TAB/CR/LF prefixed; numeric -5 stays -5, refinement #1); XLSX minimal dependency-free writer emits every data string as an INLINE STRING → formula/DDE impossible BY TYPE (refinement #2). JSON native.
+- **R-1/R-2 record + generation** — reports table (RLS) + report_limits (seeded caps, nirvet_app SELECT-only); Generate under WithTenant, params tenant-fixed (no scope-widening), REP-004 service-review pack from existing Summary readers.
+- **R-4 audit + download** — report_audit append-only (REP-008, generate/download); download is a session-authorized GET (RLS-confined, NOT a bearer link — refinement #3); response hardened: Content-Type pinned + nosniff + CRLF-safe RFC-6266 Content-Disposition + opaque UUID blobstore key (refinement #4).
+- **R-5 caps + adversarial** — hard row/cell/byte ceiling BEFORE store, even inline (refinement #5); probes: download-another-tenant (→ not-found), exceed-ceiling (→ refused), CRLF filename strip, formula-in-cell (serializer tests).
+- Evidence: reporting suite green (serializer security + generate/download/audit + tenant-isolation + cap + safeFilename), schemacheck, SECURITY-DEFINER guard, cmd/api, 77/77 from zero. Report: outputs/NIRVET_613_REPORTING_SLICE_A_LANDING.md.
+- Deferred (own gates): PDF/DOCX rendering (renderer SSRF + template injection), async worker offload for very large reports, scheduled delivery + distribution lists, white-label MSSP, regulatory jurisdiction templates.
