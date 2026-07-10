@@ -33,16 +33,16 @@ func stepDone(status string) bool {
 // runSupervised starts a supervisor-driven run: it inserts the run as 'running' (dedup + advisory lock,
 // same idempotency guarantees as the inline path), then drives it. Auto steps start 'pending'; steps
 // needing approval keep 'awaiting_approval'.
-func (s *Service) runSupervised(ctx context.Context, p auth.Principal, pb *Playbook, plans []stepPlan, incidentID *uuid.UUID) (*PlaybookRun, error) {
-	run := &PlaybookRun{ID: uuid.New(), TenantID: p.TenantID, PlaybookID: pb.ID, IncidentID: incidentID, RequestedBy: &p.UserID, Status: RunRunning}
+func (s *Service) runSupervised(ctx context.Context, p auth.Principal, tenantID uuid.UUID, pb *Playbook, plans []stepPlan, incidentID *uuid.UUID) (*PlaybookRun, error) {
+	run := &PlaybookRun{ID: uuid.New(), TenantID: tenantID, PlaybookID: pb.ID, IncidentID: incidentID, RequestedBy: &p.UserID, Status: RunRunning}
 	var existing *PlaybookRun
-	err := s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+	err := s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if incidentID != nil {
 			if e := s.repo.lockRunKeyTx(ctx, tx, pb.ID, *incidentID); e != nil {
 				return e
 			}
 		}
-		if ex, e := s.repo.activeRunForTx(ctx, tx, p.TenantID, pb.ID, incidentID); e != nil {
+		if ex, e := s.repo.activeRunForTx(ctx, tx, tenantID, pb.ID, incidentID); e != nil {
 			return e
 		} else if ex != nil {
 			existing = ex

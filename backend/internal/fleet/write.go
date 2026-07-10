@@ -28,6 +28,17 @@ type AlertWriter interface {
 	Disposition(ctx context.Context, tenantID, id uuid.UUID, disposition, reason string, by uuid.UUID) error
 }
 
+// ContainmentRunner is the subset of the SOAR service the fleet DESTRUCTIVE path routes through. Both methods
+// take an EXPLICIT targetTenant (the resolved target) distinct from the operator actor — so the whole authority
+// chain (destructive_enabled gate, §9.5 risk class, approver floor, rate-cap, D5 protected-target) and the
+// durable two-phase effect+audit resolve in the TARGET tenant, while the operator supplies identity + approver
+// rank. This is why the destructive action goes through SOAR's supervisor (durable, atomic effect+audit landing
+// in the target) rather than the best-effort assign/disposition audit shape. *soar.Service satisfies it.
+type ContainmentRunner interface {
+	RunForTarget(ctx context.Context, operator auth.Principal, targetTenant, playbookID uuid.UUID, incidentID *uuid.UUID) (uuid.UUID, string, error)
+	ApproveForTarget(ctx context.Context, operator auth.Principal, targetTenant, runID uuid.UUID) (uuid.UUID, string, error)
+}
+
 // AssignAlert assigns a fleet alert to an analyst. Target resolved from the resource + scope-checked (#1/#2);
 // mutation under the target tenant; audited in the target tenant with the operator's identity (#4).
 func (s *Service) AssignAlert(ctx context.Context, p auth.Principal, alertID, assignee uuid.UUID) error {
@@ -58,6 +69,40 @@ func (s *Service) DispositionAlert(ctx context.Context, p auth.Principal, alertI
 		return err
 	}
 	return s.auditTarget(ctx, target, p, "fleet.alert.disposition", alertID, map[string]any{"disposition": disposition})
+}
+
+// FireContainment fires a SOAR containment playbook on another tenant's alert — the highest-consequence fleet
+// action (a wrong target = a containment on the wrong government agency). It resolves the TARGET tenant FROM
+// THE ALERT (#1/#2 gate — refuses out-of-scope / non-provider / forged id, so a pure oversight/customer
+// principal has NO destructive path at all), then hands off to the SOAR supervisor via RunForTarget. The
+// authority to act (destructive_enabled, §9.5 risk class, approver floor, rate-cap, D5 protected-target) is
+// re-evaluated in the TARGET tenant's context at fire time, and the effect + audit land atomically & durably
+// in the target — NOT this package's best-effort audit. The operator is the actor throughout (identity +
+// approver rank), never a synthetic principal. Returns (runID, status).
+func (s *Service) FireContainment(ctx context.Context, p auth.Principal, alertID, playbookID uuid.UUID, incidentID *uuid.UUID) (uuid.UUID, string, error) {
+	target, err := s.ResolveTargetTenant(ctx, p, alertID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if s.containment == nil {
+		return uuid.Nil, "", httpx.ErrInternal("fleet containment path not configured")
+	}
+	return s.containment.RunForTarget(ctx, p, target, playbookID, incidentID)
+}
+
+// ApproveContainment approves a pending cross-tenant containment run an operator earlier fired (four-eyes:
+// the operator who requested it may not approve it; the approver floor is measured in the TARGET tenant).
+// The run's TARGET tenant is re-resolved from the alert at approval time (fire-time re-check), so the run can
+// only be approved by an operator still in fleet scope for that resource.
+func (s *Service) ApproveContainment(ctx context.Context, p auth.Principal, alertID, runID uuid.UUID) (uuid.UUID, string, error) {
+	target, err := s.ResolveTargetTenant(ctx, p, alertID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if s.containment == nil {
+		return uuid.Nil, "", httpx.ErrInternal("fleet containment path not configured")
+	}
+	return s.containment.ApproveForTarget(ctx, p, target, runID)
 }
 
 // auditTarget records a fleet write in the TARGET tenant's audit trail with the OPERATOR's real identity

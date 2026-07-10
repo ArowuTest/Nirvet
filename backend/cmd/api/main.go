@@ -150,7 +150,9 @@ func main() {
 	// Operator fleet console (Ghana operator seam #1/#3): bounded cross-tenant alert read + write. Scope is
 	// resolved from the principal (provider → whole instance; non-provider → empty); MA-1 SD-fn enforces the
 	// read bound; writes resolve the target from the resource, check fleet scope, and audit in the target tenant.
-	fleetH := fleet.NewHandler(fleet.NewService(db).WithAlerts(alertSvc))
+	// The destructive (SOAR containment) path is attached below once soarSvc is wired (WithContainment).
+	fleetSvc := fleet.NewService(db).WithAlerts(alertSvc)
+	fleetH := fleet.NewHandler(fleetSvc)
 
 	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
 	correlationSvc := correlation.NewService(correlation.NewRepository(db))
@@ -268,6 +270,11 @@ func main() {
 		WithAlerter(soarwire.NewContainmentAlerter(alertSvc, outboxRepo)).
 		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)))
 	soarH := soar.NewHandler(soarSvc)
+	// Fleet destructive path (Ghana operator seam #3): a fleet operator fires/approves a SOAR containment on
+	// a target tenant's alert. RunForTarget/ApproveForTarget evaluate per-target authority in the target's
+	// context and land the effect + audit durably in the target via this same supervisor. *soar.Service
+	// satisfies fleet.ContainmentRunner. (Same *fleetSvc pointer the handler above already holds.)
+	fleetSvc.WithContainment(soarSvc)
 	aiSvc := ai.NewService(ai.NewGateway(cfg.AnthropicAPIKey, cfg.AIModel), alertSvc, db)
 	// AI incident triage composes incident + asset context (§6.12, assistive-only).
 	aiSvc.WithIncidentContext(incidentSvc, assetSvc)
@@ -489,6 +496,10 @@ func main() {
 	// Fleet writes: target tenant resolved from the alert + scope-checked; mutation + audit land in the target.
 	mux.Handle("POST /fleet/alerts/{id}/assign", provider(fleetH.AssignAlert))
 	mux.Handle("POST /fleet/alerts/{id}/disposition", provider(fleetH.DispositionAlert))
+	// Fleet DESTRUCTIVE (seam #3): fire/approve a SOAR containment on a target tenant's alert. Per-target
+	// authority is evaluated in the target's context; effect + audit land durably in the target (supervisor).
+	mux.Handle("POST /fleet/alerts/{id}/contain", provider(fleetH.FireContainment))
+	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/approve", provider(fleetH.ApproveContainment))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
 	mux.Handle("POST /alerts/{id}/disposition", provider(alertH.Disposition)) // DET-007 FP feedback

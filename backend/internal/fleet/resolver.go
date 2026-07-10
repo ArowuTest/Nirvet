@@ -57,10 +57,11 @@ func (r *ScopeResolver) allInstanceTenants(ctx context.Context) ([]uuid.UUID, er
 
 // Service is the fleet console service: resolve the principal's scope, then read/act within it.
 type Service struct {
-	db       *database.DB
-	resolver *ScopeResolver
-	repo     *Repository
-	alerts   AlertWriter // injected for the WRITE path; nil on a read-only wiring
+	db          *database.DB
+	resolver    *ScopeResolver
+	repo        *Repository
+	alerts      AlertWriter       // injected for the alert WRITE path; nil on a read-only wiring
+	containment ContainmentRunner // injected for the DESTRUCTIVE (SOAR containment) path; nil = disabled
 }
 
 // NewService wires the fleet service (read path). Call WithAlerts to enable the write path.
@@ -72,6 +73,12 @@ func NewService(db *database.DB) *Service {
 // package does not hard-depend on the whole alert graph. A write attempted with no alerts wired refuses
 // (fail-safe). *alert.Service satisfies AlertWriter structurally.
 func (s *Service) WithAlerts(a AlertWriter) *Service { s.alerts = a; return s }
+
+// WithContainment injects the SOAR containment runner the fleet DESTRUCTIVE path routes through (fire /
+// approve a playbook on a target tenant's resource). Kept behind an interface so fleet doesn't hard-depend
+// on the SOAR graph. A destructive action attempted with none wired refuses (fail-safe).
+// *soar.Service satisfies ContainmentRunner structurally.
+func (s *Service) WithContainment(c ContainmentRunner) *Service { s.containment = c; return s }
 
 // Alerts returns the fleet alert queue the principal may see. Scope is principal-derived; a non-oversight
 // principal gets an empty scope → zero alerts (defense-in-depth; the route is ALSO role-gated to providers).

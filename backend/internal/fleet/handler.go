@@ -87,3 +87,55 @@ func (h *Handler) DispositionAlert(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "dispositioned"})
 }
+
+type containReq struct {
+	PlaybookID uuid.UUID  `json:"playbook_id"`
+	IncidentID *uuid.UUID `json:"incident_id"`
+}
+
+// FireContainment handles POST /fleet/alerts/{id}/contain — fire a SOAR containment playbook on another
+// tenant's alert. The target tenant is resolved from the alert; the per-target destructive authority is
+// re-evaluated in the target's context and the effect + audit land durably in the target (via the SOAR
+// supervisor). The playbook id refers to the TARGET tenant's own playbook.
+func (h *Handler) FireContainment(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	alertID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid alert id"))
+		return
+	}
+	var in containReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	runID, status, err := h.svc.FireContainment(r.Context(), p, alertID, in.PlaybookID, in.IncidentID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"run_id": runID, "status": status})
+}
+
+// ApproveContainment handles POST /fleet/alerts/{id}/contain/{runID}/approve — approve a pending cross-tenant
+// containment. The alert id re-resolves the target at approval time (fire-time re-check); four-eyes + the
+// target's approver floor are enforced in the SOAR service.
+func (h *Handler) ApproveContainment(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	alertID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid alert id"))
+		return
+	}
+	runID, err := uuid.Parse(r.PathValue("runID"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid run id"))
+		return
+	}
+	rID, status, err := h.svc.ApproveContainment(r.Context(), p, alertID, runID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"run_id": rID, "status": status})
+}

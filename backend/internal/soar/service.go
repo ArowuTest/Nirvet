@@ -165,12 +165,36 @@ type stepPlan struct {
 	sr     StepResult
 }
 
-// Run starts a playbook against an incident. It resolves each step's §9.5 risk class + authority in
-// a read phase, then dispatches permitted steps and persists the run + audit in ONE transaction
-// (Round-4 M2: effect + audit atomic), deduped per (playbook, incident) (M3). Steps needing approval
-// leave the run pending_approval.
+// Run starts a playbook against an incident for the caller's OWN tenant (the standard single-tenant path).
+// Thin delegator to runFor with tenantID = p.TenantID — behaviour is unchanged.
 func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUID, incidentID *uuid.UUID) (*PlaybookRun, error) {
-	pb, err := s.repo.GetPlaybook(ctx, p.TenantID, playbookID)
+	return s.runFor(ctx, p, p.TenantID, playbookID, incidentID)
+}
+
+// RunForTarget starts a playbook against ANOTHER tenant — the fleet cross-tenant containment path (a fleet
+// operator firing a playbook on a customer/agency's alert). The actor stays the OPERATOR (identity → audit,
+// Role → approver rank), but EVERY tenant-keyed authority/resource seam — playbook, action catalog + §9.5
+// risk class, authority mode + approver floor, run tenant, tx, idempotency, dispatch, AND the two-phase
+// supervisor's destructive gate (destructive_enabled / rate-cap / D5 protected-target) — resolves in the
+// TARGET tenant. So an operator "acts across the fleet WITHIN each tenant's own rules", never with a
+// global capability. It is a PRIMITIVE: the caller MUST have already resolved + fleet-scope-checked
+// targetTenant FROM THE RESOURCE (fleet.ResolveTargetTenant) — this method is not itself the BOLA gate.
+// Returns (runID, status) so a cross-package caller need not import the run type.
+func (s *Service) RunForTarget(ctx context.Context, operator auth.Principal, targetTenant, playbookID uuid.UUID, incidentID *uuid.UUID) (uuid.UUID, string, error) {
+	run, err := s.runFor(ctx, operator, targetTenant, playbookID, incidentID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return run.ID, string(run.Status), nil
+}
+
+// runFor is the shared core of Run/RunForTarget. It resolves each step's §9.5 risk class + authority in a
+// read phase, then dispatches permitted steps and persists the run + audit in ONE transaction (Round-4 M2:
+// effect + audit atomic), deduped per (playbook, incident) (M3). Steps needing approval leave the run
+// pending_approval. The EXPLICIT tenantID is the resource/authority tenant (own tenant for Run, the resolved
+// target for RunForTarget); `p` supplies the actor identity only (p.UserID/p.Email → audit; p.Role → floor).
+func (s *Service) runFor(ctx context.Context, p auth.Principal, tenantID, playbookID uuid.UUID, incidentID *uuid.UUID) (*PlaybookRun, error) {
+	pb, err := s.repo.GetPlaybook(ctx, tenantID, playbookID)
 	if err != nil {
 		return nil, httpx.ErrNotFound("playbook not found")
 	}
@@ -180,11 +204,11 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 	for _, st := range pb.Steps {
 		// Risk class comes from the admin-configurable action catalog (§9.5), NOT the step JSON — an
 		// action absent from the catalog fails closed to business_critical (max approval).
-		act, _ := s.repo.resolveAction(ctx, p.TenantID, st.Action)
+		act, _ := s.repo.resolveAction(ctx, tenantID, st.Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = st.ConnectorKey
 		}
-		mode, _, businessHours, derr := s.resolveDecision(ctx, p.TenantID, st.Action)
+		mode, _, businessHours, derr := s.resolveDecision(ctx, tenantID, st.Action)
 		if derr != nil {
 			return nil, httpx.ErrInternal("could not read authority-to-act")
 		}
@@ -205,13 +229,13 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 	// §6.11 slice B: if any step is a real connector containment action (registered Actioner), the
 	// supervisor owns the whole run in order (two-phase). Otherwise keep the exact slice-A inline path.
 	if s.supervisedNeeded(plans) {
-		return s.runSupervised(ctx, p, pb, plans, incidentID)
+		return s.runSupervised(ctx, p, tenantID, pb, plans, incidentID)
 	}
 
 	// Phase 2 — one tx: idempotency check, dispatch permitted steps, persist run + audit atomically.
-	run := &PlaybookRun{ID: uuid.New(), TenantID: p.TenantID, PlaybookID: pb.ID, IncidentID: incidentID, RequestedBy: &p.UserID}
+	run := &PlaybookRun{ID: uuid.New(), TenantID: tenantID, PlaybookID: pb.ID, IncidentID: incidentID, RequestedBy: &p.UserID}
 	var existing *PlaybookRun
-	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+	err = s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		// Round-4 R-1 (concurrent fully-auto): serialise concurrent Runs for the same (playbook,
 		// incident) with a tx-scoped advisory lock, so the idempotency check below can't be raced by a
 		// second run whose terminal-status insert the 0038 partial index doesn't cover. Released at tx end.
@@ -220,7 +244,7 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 				return e
 			}
 		}
-		if ex, e := s.repo.activeRunForTx(ctx, tx, p.TenantID, pb.ID, incidentID); e != nil {
+		if ex, e := s.repo.activeRunForTx(ctx, tx, tenantID, pb.ID, incidentID); e != nil {
 			return e
 		} else if ex != nil {
 			existing = ex // M3: a retried run returns the existing active run, no re-dispatch
@@ -230,7 +254,7 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 		for i := range plans {
 			pl := &plans[i]
 			if pl.auto {
-				pl.sr.Status, pl.sr.Note = s.execs.dispatch(ctx, tx, p.TenantID, pl.act, stepParams(incidentID, pb.Name, pl.sr.Name))
+				pl.sr.Status, pl.sr.Note = s.execs.dispatch(ctx, tx, tenantID, pl.act, stepParams(incidentID, pb.Name, pl.sr.Name))
 				if pl.sr.Status == StatusFailed {
 					anyFailed = true
 				}
@@ -294,7 +318,29 @@ type approvedStep struct {
 // steps are never cleared here (they need incident-commander + customer authorization not modelled in
 // this slice) — they are recorded skipped, fail-closed. Dispatch + audit run in one tx (M2).
 func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID) (*PlaybookRun, error) {
-	run, err := s.repo.GetRun(ctx, p.TenantID, runID)
+	return s.approveFor(ctx, p, p.TenantID, runID)
+}
+
+// ApproveForTarget approves a cross-tenant fleet run: an operator approves a pending run that a fleet
+// containment left awaiting approval in the TARGET tenant. Four-eyes still bites (the operator who
+// requested the run may not approve it — canApprove keys on requester≠approver, both operator UserIDs),
+// and the approver floor is the operator-approver's own rank (p.Role) measured against the requirement
+// read from the TARGET tenant's authority policy. The caller MUST have fleet-scope-resolved targetTenant
+// from the run's resource first (this is a primitive, not the BOLA gate). Returns (runID, status).
+func (s *Service) ApproveForTarget(ctx context.Context, operator auth.Principal, targetTenant, runID uuid.UUID) (uuid.UUID, string, error) {
+	run, err := s.approveFor(ctx, operator, targetTenant, runID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return run.ID, string(run.Status), nil
+}
+
+// approveFor is the shared core of Approve/ApproveForTarget. It re-resolves risk + authority per step and
+// enforces the approver-role floor (scaled to §9.5 risk + the tenant-configured approver_role) BEFORE any
+// step executes. The EXPLICIT tenantID is the run's tenant (own for Approve, the resolved target for the
+// fleet path); `p` supplies the approver identity (p.UserID → four-eyes/audit; p.Role → floor rank).
+func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, runID uuid.UUID) (*PlaybookRun, error) {
+	run, err := s.repo.GetRun(ctx, tenantID, runID)
 	if err != nil {
 		return nil, httpx.ErrNotFound("run not found")
 	}
@@ -313,7 +359,7 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 		if run.Steps[i].Status != StatusAwaitingApproval {
 			continue
 		}
-		act, _ := s.repo.resolveAction(ctx, p.TenantID, run.Steps[i].Action)
+		act, _ := s.repo.resolveAction(ctx, tenantID, run.Steps[i].Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = run.Steps[i].ConnectorKey
 		}
@@ -321,7 +367,7 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 			steps = append(steps, approvedStep{idx: i, act: act, block: true})
 			continue
 		}
-		_, approverRole, _, derr := s.resolveDecision(ctx, p.TenantID, run.Steps[i].Action)
+		_, approverRole, _, derr := s.resolveDecision(ctx, tenantID, run.Steps[i].Action)
 		if derr != nil {
 			return nil, httpx.ErrInternal("could not read authority-to-act")
 		}
@@ -334,11 +380,11 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 	// §6.11 slice B: a supervised run (any registered connector Actioner) resumes through the two-phase
 	// supervisor from its cursor after approval, instead of inline dispatch. The approver-floor check
 	// above still gates it; claim-then-act still serialises concurrent approves.
-	if pb, perr := s.repo.GetPlaybook(ctx, p.TenantID, run.PlaybookID); perr == nil {
-		plans := s.replan(ctx, p.TenantID, pb, true)
+	if pb, perr := s.repo.GetPlaybook(ctx, tenantID, run.PlaybookID); perr == nil {
+		plans := s.replan(ctx, tenantID, pb, true)
 		if s.supervisedNeeded(plans) {
 			claimed := false
-			if e := s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+			if e := s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 				ok, ce := s.repo.claimPendingTx(ctx, tx, run.ID)
 				if ce != nil {
 					return ce
@@ -366,7 +412,7 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 	// concurrent approves can't both execute (Round-4 R-2 claim-then-act — the row lock serialises
 	// them and the loser sees status≠pending_approval). Then dispatch, persist, audit.
 	claimed := false
-	err = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+	err = s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		ok, e := s.repo.claimPendingTx(ctx, tx, run.ID)
 		if e != nil {
 			return e
@@ -382,7 +428,7 @@ func (s *Service) Approve(ctx context.Context, p auth.Principal, runID uuid.UUID
 				run.Steps[st.idx].Note = "business_critical requires incident-commander + customer authorization (not available in this flow)"
 				continue
 			}
-			status, note := s.execs.dispatch(ctx, tx, p.TenantID, st.act, stepParams(run.IncidentID, "", run.Steps[st.idx].Name))
+			status, note := s.execs.dispatch(ctx, tx, tenantID, st.act, stepParams(run.IncidentID, "", run.Steps[st.idx].Name))
 			run.Steps[st.idx].Status = status
 			run.Steps[st.idx].Note = note + " (approved by " + p.Email + ")"
 			if status == StatusFailed {
