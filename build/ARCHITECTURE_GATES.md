@@ -2191,3 +2191,54 @@ Deliver the export path whose security surface is well-understood and testable, 
 - **R-5 caps + adversarial** — hard row/cell/byte ceiling BEFORE store, even inline (refinement #5); probes: download-another-tenant (→ not-found), exceed-ceiling (→ refused), CRLF filename strip, formula-in-cell (serializer tests).
 - Evidence: reporting suite green (serializer security + generate/download/audit + tenant-isolation + cap + safeFilename), schemacheck, SECURITY-DEFINER guard, cmd/api, 77/77 from zero. Report: outputs/NIRVET_613_REPORTING_SLICE_A_LANDING.md.
 - Deferred (own gates): PDF/DOCX rendering (renderer SSRF + template injection), async worker offload for very large reports, scheduled delivery + distribution lists, white-label MSSP, regulatory jurisdiction templates.
+
+---
+
+## Gate — §6.17 Packages, Entitlements, Billing & Commercial Controls — slice A — DESIGN REVIEW (pre-code) — Jul 2026
+
+**SRS:** §6.17 BILL-001..010 (00_SRS.md lines 1387–1443, all Must). "Billing Usage Record" entity (lines 1548, 3799). **This is the LAST §6 domain** — after it lands, all 18 §6 domains have been gated-and-reviewed.
+
+**Why gated (the risk flavor is MONEY + METERING, not injection):** the failure modes here are integrity and fraud. A billing system that lets a tenant under-report its usage, that double-counts on a retry, that lets a tenant edit its own pricing, or that does money math in floats, is broken in a way that costs real money and trust. The five pre-loaded concerns:
+1. **Metering integrity** — can a tenant under-report or tamper with its own usage counters? Usage MUST be server-derived from authoritative signals the platform already tracks (ingest bytes, alert/connector/asset/report counts, playbook actions), NEVER client-asserted. There is no tenant endpoint to assert usage. The counter is append-only + auditable.
+2. **Usage-event idempotency** — no double-count AND no silent loss. Each metered event carries an idempotency key (the SOAR claim-key / outbox-dedupe pattern) so a retry or replay neither inflates nor deflates the bill. This is the reliability crux — a system that double-counts on retry is as broken as one that drops.
+3. **Tenant-scoped financial isolation** — invoices, usage, and plan data are RLS-scoped like everything else; one tenant can NEVER read another's billing. Billing READS are role-gated (a finance/admin role, not every analyst).
+4. **Privilege on rate/plan/overage config** — a tenant CANNOT set its own pricing/plan/overage rate; those are platform-admin config, audited (the §6.18 safety-class thinking applied to money — pricing is a `protected`/`immutable`-class surface, admin-only, tenant-immutable).
+5. **Margin/overage arithmetic correctness** — money is INTEGER MINOR-UNITS (kobo/cents), never floats; rounding, currency precision, proration, and overage-threshold edges get explicit test vectors.
+
+### Grounding — what exists (extend; do NOT rebuild)
+- `billing.Entitlements` (`entitlements` table, mig 0005): per-tenant tier + quotas (events_per_day, max_integrations, retention_days, ir_hours), RLS-scoped. `billing.Service` Get/Set (quota cache, cache-invalidated on Set — R6 lesson), `WithinIngestQuota` (enforces events/day at ingest), `RawCountToday`. Routes: `GET /billing/entitlements` (provider read), **`PUT /billing/entitlements` already padmin-gated** (good posture — a tenant can't raise its own quota).
+- **NET-NEW:** a usage LEDGER (metered records), usage rollup/aggregation, packages + rates/pricing, overage detection, invoices/billing lines, margin. No money-typed values exist yet.
+- Reusable patterns: the SOAR claim-key / notify-outbox idempotency-key pattern (B-2), the §6.18 protected-class + padmin-only + audited config posture (pricing), the append-only + immutable-trigger audit pattern (investigation_query_audit / report_audit / platform_config_audit), the WithTenant RLS envelope, existing authoritative signals (ingest bytes via billing.WithinIngestQuota's counters, alert/connector/asset counts, report_audit, SOAR action runs).
+
+### Scope — slice A (the money-integrity core; §6.17 phased)
+The security-load-bearing pieces — metering integrity + idempotency + pricing privilege + correct arithmetic. Dashboards, MSSP downstream billing, contract lifecycle, and finance-system integration are deferred.
+
+- **B-1 — metering ledger (BILL-002).** Append-only `usage_events` (tenant, metric, quantity, period, source, idempotency_key, created_at) — REVOKE UPDATE/DELETE + immutable trigger. `metric` from a CODE-OWNED enum (log_volume, alert_count, storage, connector_count, asset_count, report_count, api_usage, playbook_actions, ps_hours). Every record has an idempotency key UNIQUE per (tenant, metric, key) so a replay/retry is a no-op (crux #2).
+- **B-2 — server-derived recording (metering integrity, crux #1).** A `RecordUsage(ctx, tenant, metric, qty, idemKey)` API called ONLY by internal platform code from authoritative signals (never a tenant-facing endpoint) — so a tenant cannot assert or suppress its own usage. Wire the cheapest authoritative sources first (ingest volume, report count, playbook actions), each with a deterministic idempotency key.
+- **B-3 — packages + rates as platform-admin config (BILL-001, crux #4).** `billing_package` + `billing_rate` (per metric, integer minor-units, currency) — platform-admin-only writes (padmin), tenant-immutable, audited (`billing_config_audit`, append-only). A tenant assignment to a package is padmin, not self-service. NO tenant path can change price.
+- **B-4 — usage rollup + overage arithmetic (BILL-002/003, crux #5).** Aggregate the ledger per tenant/metric/period; compute billable overage = f(usage − included, rate) in INTEGER MINOR-UNITS with documented rounding + proration + threshold-edge behavior and explicit test vectors. Overage alerts (BILL-003) when usage crosses the contract threshold.
+- **B-5 — financial isolation + role-gated reads + adversarial round (crux #3).** All financial tables RLS-FORCEd; billing reads role-gated (finance/admin tier, not every analyst). Dedicated adversarial round: tenant cannot assert/suppress its own usage, cannot set its own rate/plan, cannot read another tenant's usage/invoice, a replayed usage event does not double-count, and money math never uses floats.
+
+### Security spine (structural, not documented-and-hoped)
+1. **Server-derived metering only** — `RecordUsage` is internal; there is NO tenant endpoint to write usage. A tenant cannot under-report.
+2. **Idempotency key on every usage event** — UNIQUE (tenant, metric, key); a retry/replay is a database-enforced no-op (no double-count, no loss).
+3. **Append-only auditable ledger** — usage_events REVOKE UPDATE/DELETE + immutable trigger; the bill is reconstructable + tamper-evident.
+4. **Pricing is padmin-only, tenant-immutable, audited** — the §6.18 protected/immutable-class posture applied to rates/plans; no tenant write path to price.
+5. **Integer minor-units** — all money is int64 minor-units; a float in a money path is a bug. Test vectors for rounding/proration/overage edges.
+6. **RLS + role-gated financial reads** — invoices/usage/plan tenant-scoped; reads gated to a finance/admin role.
+
+### Deferred to later §6.17 slices (each its OWN gate before code)
+- **Margin dashboards (BILL-008)** — aggregation/reporting over cost vs. revenue; own gate.
+- **Partner/reseller pricing + downstream tenant billing (BILL-007)** — MSSP hierarchy; own gate (ties to TEN hierarchical/MSSP V2).
+- **Add-on services + commercial-approval / anti-scope-creep workflow (BILL-004/005/009)** — onboarding/mobilisation fees, minimum commitments, approval gates.
+- **Contract lifecycle (BILL-006)** — renewal/suspension/upgrade-downgrade workflows.
+- **External finance-system integration (BILL-010)** — later phase per SRS.
+
+### Reviewer pre-code asks (confirm before B-1)
+- Endorse **server-derived-only metering** (no tenant usage-write endpoint) + **DB-unique idempotency key** as the integrity + reliability model.
+- Confirm **pricing/plan writes stay padmin-only + audited** (protected-class), matching the existing `PUT /billing/entitlements` posture — tenant-immutable.
+- Confirm **integer minor-units** as the money type and that slice A carries **explicit arithmetic test vectors** (rounding/proration/overage edges).
+- Confirm slice-A scope (B-1..B-5 = the money-integrity core) vs. deferring dashboards / MSSP / contract-lifecycle / finance-integration to their own gates.
+- Any must-adds in the money-integrity family — e.g. a period-close/lock so a closed billing period can't get late-arriving mutations, negative-quantity rejection, currency pinned per tenant, or a reconciliation check (ledger sum == rollup).
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit; then build B-1..B-5 test-first, dedicated adversarial round on the metering/pricing surface at landing.**
