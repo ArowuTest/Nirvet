@@ -63,10 +63,8 @@ import (
 // = platform_admin + soc_manager only (asset criticality writes). Package-level so the
 // membership invariant is regression-tested (main_test.go).
 var (
-	providerRoles = []auth.Role{
-		auth.RolePlatformAdmin, auth.RoleSOCManager,
-		auth.RoleAnalystT1, auth.RoleAnalystT2, auth.RoleAnalystT3, auth.RoleDetectionEng,
-	}
+	providerRoles = auth.ProviderRoles() // single source of truth (auth.IsProviderRole gates the same set —
+	//                                       so the fleet route gate and the resolver scope gate cannot diverge)
 	seniorRoles  = auth.SeniorRoles() // single source of truth (auth.IsSenior gates the same set)
 	managerRoles = []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager}
 )

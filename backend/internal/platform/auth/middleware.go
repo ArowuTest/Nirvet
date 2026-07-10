@@ -145,15 +145,25 @@ func RequireRole(roles ...Role) httpx.Middleware {
 	}
 }
 
+// providerRoleList is the canonical provider/SOC role set — the SINGLE SOURCE OF TRUTH for both the membership
+// predicate (IsProviderRole, used by the fleet scope-resolver) and the route-gate list (ProviderRoles, used by
+// cmd/api's RequireRole on the fleet routes). Deriving both from this one list makes the fleet read's two gates
+// structurally unable to diverge (same pattern as seniorRoleSet / SeniorRoles).
+var providerRoleList = []Role{RolePlatformAdmin, RoleSOCManager, RoleAnalystT1, RoleAnalystT2, RoleAnalystT3, RoleDetectionEng}
+
 // IsProviderRole reports whether the role is a provider-side (SOC) role.
 func IsProviderRole(r Role) bool {
-	switch r {
-	case RolePlatformAdmin, RoleSOCManager, RoleAnalystT1, RoleAnalystT2, RoleAnalystT3, RoleDetectionEng:
-		return true
-	default:
-		return false
+	for _, x := range providerRoleList {
+		if x == r {
+			return true
+		}
 	}
+	return false
 }
+
+// ProviderRoles returns the provider/SOC role list (for RequireRole wiring). Derived from the same source as
+// IsProviderRole so the route gate and the resolver gate cannot drift.
+func ProviderRoles() []Role { return append([]Role(nil), providerRoleList...) }
 
 // roleRank orders roles by privilege tier (higher = more privileged) for floor/cap comparisons —
 // SOAR approver floors (§6.11) and break-glass one-tier caps (§6.2). Single source of truth so those
