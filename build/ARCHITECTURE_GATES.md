@@ -2618,15 +2618,19 @@ accreditation trail. Revocation is a `DELETE`.
   `principal_id`), never a client-supplied org/account id; a principal with no grant → EMPTY → the SD-fn
   fail-closes to zero rows. Same discipline as the fleet resolver.
 
-### New role + exposure (owner/reviewer decision)
+### New role + exposure (OWNER DECISION, Jul 11)
 - `org_sub_admin` is a NET-NEW customer-side scoped-oversight role. The payer scope attaches to the anchor
   central-buyer principal via its grant (role naming for payer = open Q; the grant is the authority, the role
   gates the route).
-- **Exposure:** the payer oversight read is **L — build + expose now**. The **org_sub_admin ROLE exposure is
-  config-gated, default OFF (fast-follow)** — the resolver is built now, but the gov-cyber-authority role is
-  turned on at/after the venture→authority transition. **Owner flips it to day-one L IF the national authority
-  is a confirmed launch stakeholder** (the sovereignty pitch: "the government sees its own posture from day
-  one"); else fast-follow. Zero retrofit either way (`org_id` seam + resolver both already in).
+- **Exposure = DAY-ONE L (owner: "Ghana will be one of the first day-one sovereigns and customers").** Both the
+  payer oversight read AND the org_sub_admin gov-authority oversight are launch-required and exposed at launch —
+  the sovereignty pitch is "the government sees its own tenants' posture from day one." (An enablement flag can
+  still exist per-instance for sovereigns whose authority is NOT day-one, but Ghana's default is ON.)
+- **The oversight capability is PLATFORM-ADMIN-ADMINISTERED (owner: "a feature available to the platform
+  admin").** The `platform_admin` sits atop the hierarchy — it holds whole-instance oversight (already true in
+  `resolveScope`) AND is the sole issuer/revoker of the org/payer grants that scope each delegate. The
+  org_sub_admin/payer are scoped DELEGATES; the platform admin is the ADMINISTRATOR of the grants. (Resolves
+  open-Q #2 below: grant management is padmin-only.)
 
 ### Scope — slice A
 Two grant tables (migration, FK-cascade) + `org_sub_admin` role + the two resolvers folded into
@@ -2649,9 +2653,11 @@ hierarchies.
 ### Open questions for the reviewer's pre-code pass
 1. **Payer role naming** — a new `payer` role, or attach the payer grant to an existing customer-side role and
    gate the route on "has a payer grant"? (Leaning: a thin `payer` role for a clean route gate.)
-2. **Grant management authz** — padmin-only to issue org/payer grants (leaning yes), or can an operator
-   soc_manager issue them? (Leaning padmin-only — cross-tenant scope is a platform-governance act.)
-3. **org_sub_admin exposure flag granularity** — a single instance-wide flag, or per-org enablement?
+2. **Grant management authz — RESOLVED (owner): padmin-only.** The oversight capability is platform-admin-
+   administered; only `platform_admin` issues/revokes org/payer grants (cross-tenant scope = platform-governance
+   act). No operator soc_manager grant issuance.
+3. **org_sub_admin exposure flag granularity** — a single instance-wide flag, or per-org enablement? (Ghana
+   default ON; the flag mainly serves sovereigns whose authority is not day-one.)
 4. **Posture-only for slice A** confirmed as the payer/org read surface (vs any operational read)? (Leaning
    posture-only — anything more is content-adjacent and re-opens the MA-4 line.)
 
