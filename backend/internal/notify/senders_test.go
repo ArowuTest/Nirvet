@@ -72,6 +72,15 @@ func TestConfigureSender_Validation(t *testing.T) {
 	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "sms", ProviderURL: "https://100.100.100.200/x"}); err == nil {
 		t.Fatal("alibaba metadata sms provider_url must be rejected")
 	}
+	// M2: email smtp_host must not be internal/metadata (mirror the sms guard) — a tenant manager must
+	// not be able to point SMTP delivery at an internal address (blind SSRF); boundedSendMail's
+	// netsafe.SafeDialTCP is the DNS-rebinding-proof send-time backstop.
+	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "email", FromAddress: "a@x", SMTPHost: "127.0.0.1"}); err == nil {
+		t.Fatal("loopback email smtp_host must be rejected")
+	}
+	if err := s.ConfigureSender(context.Background(), uuid.New(), SenderInput{Channel: "email", FromAddress: "a@x", SMTPHost: "169.254.169.254"}); err == nil {
+		t.Fatal("metadata email smtp_host must be rejected")
+	}
 }
 
 func TestHasHeaderInjection(t *testing.T) {

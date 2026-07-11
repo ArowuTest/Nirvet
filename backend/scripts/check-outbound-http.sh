@@ -18,8 +18,10 @@
 set -euo pipefail
 
 # Plain client construction + the DefaultClient conveniences (http.Get/Post/... all use DefaultClient,
-# which has no internal-IP guard).
-pattern='http\.Client\{|http\.DefaultClient|http\.Get\(|http\.Post\(|http\.PostForm\(|http\.Head\('
+# which has no internal-IP guard) + raw socket dials (net.Dial/DialTimeout/Dialer) — an outbound TCP
+# connect to a tenant-configured host:port (e.g. the SMTP sender) is the same SSRF class as a plain
+# http.Client and must go through netsafe.SafeDialTCP (post-DNS internal-IP block, DNS-rebinding-proof).
+pattern='http\.Client\{|http\.DefaultClient|http\.Get\(|http\.Post\(|http\.PostForm\(|http\.Head\(|net\.Dial\(|net\.DialTimeout\(|net\.Dialer\{'
 
 matches="$(grep -rEn "$pattern" --include='*.go' . 2>/dev/null \
   | grep -v '_test\.go:' \

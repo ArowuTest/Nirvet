@@ -88,6 +88,29 @@ func isNumericHost(h string) bool {
 	return true
 }
 
+// SafeDialTCP dials a TCP address with the same post-DNS internal-address block SafeClient applies to
+// HTTP: the dialer's Control hook runs AFTER DNS resolution with the concrete ip:port and refuses a
+// blocked IP — DNS-rebinding-proof, so a name that validated as public but resolves to 127.0.0.1 /
+// 169.254.169.254 is still refused. Used by non-HTTP outbound paths that cannot go through SafeClient
+// (e.g. the SMTP sender). timeout bounds the connect. This is the single outbound-dial primitive those
+// paths must use instead of a raw net.Dial (CI-enforced by scripts/check-outbound-http.sh).
+func SafeDialTCP(addr string, timeout time.Duration) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout: timeout,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			if ip := net.ParseIP(host); ip != nil && isInternalIP(ip) {
+				return ErrBlockedAddress
+			}
+			return nil
+		},
+	}
+	return dialer.Dial("tcp", addr)
+}
+
 // SafeClient returns an *http.Client that will not connect to an internal address: the dialer's
 // Control hook runs AFTER DNS resolution with the concrete ip:port, and rejects a blocked IP; and
 // redirects are disallowed (a 30x to an internal URL is another SSRF vector). timeout bounds the

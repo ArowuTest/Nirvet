@@ -11,6 +11,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
@@ -183,7 +184,10 @@ func boundedSendMail(addr string, a smtp.Auth, from string, to []string, msg []b
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	// SSRF-safe dial: netsafe blocks a post-DNS-resolved internal/loopback/metadata IP (DNS-rebinding-proof),
+	// the same control the HTTP channels get from SafeClient. A raw net.Dial here would be an outbound-egress
+	// hole (a tenant-configured smtp_host pointed at an internal address) — see R5-H1 for the sms sibling.
+	conn, err := netsafe.SafeDialTCP(addr, 15*time.Second)
 	if err != nil {
 		return err
 	}
@@ -319,6 +323,12 @@ func (s *Service) ConfigureSender(ctx context.Context, tenantID uuid.UUID, in Se
 	case "email":
 		if in.SMTPHost == "" || in.FromAddress == "" {
 			return httpx.ErrBadRequest("email sender requires smtp_host and from_address")
+		}
+		// Reject an internal/metadata SMTP host at write time (mirror the sms branch below). A tenant
+		// manager must not be able to point email delivery at 127.0.0.1 / 169.254.169.254 / an internal
+		// relay; boundedSendMail's netsafe.SafeDialTCP is the DNS-rebinding-proof send-time backstop.
+		if netsafe.IsInternalHost(strings.ToLower(strings.TrimSpace(in.SMTPHost))) {
+			return httpx.ErrBadRequest("smtp_host must not target an internal or metadata address")
 		}
 	case "sms":
 		if in.ProviderURL == "" {

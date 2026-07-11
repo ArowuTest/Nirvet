@@ -1,6 +1,7 @@
 package netsafe
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -31,5 +32,18 @@ func TestSafeClientBlocksLoopback(t *testing.T) {
 	defer srv.Close()
 	if _, err := SafeClient(2 * time.Second).Get(srv.URL); err == nil {
 		t.Fatal("safe client must refuse a connection to a loopback (httptest) address")
+	}
+}
+
+// TestSafeDialTCPBlocksLoopback proves the non-HTTP outbound dial guard (used by the SMTP sender): a TCP
+// connect to a resolved loopback address is refused post-DNS, the same defence SafeClient gives HTTP.
+func TestSafeDialTCPBlocksLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	if _, err := SafeDialTCP(ln.Addr().String(), 2*time.Second); err == nil {
+		t.Fatal("SafeDialTCP must refuse a loopback address")
 	}
 }
