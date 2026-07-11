@@ -572,8 +572,11 @@ func main() {
 	// POST /playbooks/{id}/run — a higher-consequence route must not have a lower role bar than the lesser
 	// one. Approve/reject floors are additionally enforced in-service (soc_manager).
 	mux.Handle("POST /fleet/alerts/{id}/contain", senior(fleetH.FireContainment))
-	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/approve", provider(fleetH.ApproveContainment))
-	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/reject", provider(fleetH.RejectContainment))
+	// M-1: cross-tenant containment approve/reject must not be reachable by analyst_t1. Approve carries the
+	// execution authority (matches same-tenant /soar/runs/{id}/approve = soarApprover); reject (cancel) is
+	// gated to senior so a T1 can't cancel a senior's containment.
+	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/approve", soarApprover(fleetH.ApproveContainment))
+	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/reject", senior(fleetH.RejectContainment))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))
 	mux.Handle("POST /alerts/{id}/assign", provider(alertH.Assign))
 	mux.Handle("POST /alerts/{id}/disposition", provider(alertH.Disposition)) // DET-007 FP feedback

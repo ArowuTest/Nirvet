@@ -34,22 +34,38 @@ func (s *Service) SetUserActive(ctx context.Context, p auth.Principal, tenantID,
 	if active {
 		status, action = UserActive, "iam.user_reactivated"
 	}
-	ok, err := s.repo.SetStatus(ctx, tenantID, targetID, status)
-	if err != nil || !ok {
-		return httpx.ErrInternal("could not update user status")
-	}
-	if !active {
-		// Kill the user's live sessions now — a disabled account's existing JWTs must stop working
-		// immediately, not at token expiry. Reactivation needs no bump (the old tokens are already dead).
-		if berr := s.BumpUserGeneration(ctx, tenantID, targetID); berr != nil {
-			return berr // fail loud: a disable that didn't revoke live sessions is not a disable
+	// F-L1: status change + session-generation bump + audit in ONE transaction, so a disable is genuinely
+	// atomic — the "no window" guarantee (existing JWTs stop working the instant the status changes) is only
+	// true if the generation bump commits together with the status, not as a separate tx that could fail
+	// after the status write. Mirrors the gold-standard password_reset.go path.
+	err = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, e := tx.Exec(ctx, `UPDATE users SET status=$2 WHERE id=$1`, targetID, string(status))
+		if e != nil {
+			return e
 		}
-	}
-	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if ct.RowsAffected() != 1 {
+			return httpx.ErrNotFound("user not found")
+		}
+		if !active {
+			// Kill the user's live sessions now — a disabled account's existing JWTs must stop working
+			// immediately, not at token expiry. Reactivation needs no bump (the old tokens are already dead).
+			if _, e := tx.Exec(ctx,
+				`INSERT INTO user_session_state (tenant_id, user_id, generation) VALUES ($1,$2,1)
+				 ON CONFLICT (tenant_id, user_id) DO UPDATE SET generation = user_session_state.generation + 1, updated_at=now()`,
+				tenantID, targetID); e != nil {
+				return e
+			}
+		}
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: action, Target: "user:" + targetID.String(),
 		})
 	})
+	if err != nil {
+		return err
+	}
+	if !active {
+		userGenCache.Delete(tenantID.String() + ":" + targetID.String()) // cache-bust AFTER the bump commits
+	}
 	return nil
 }
 
