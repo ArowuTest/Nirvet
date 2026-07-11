@@ -12,25 +12,6 @@ import (
 	"testing"
 )
 
-func TestValidateGraphBaseURL(t *testing.T) {
-	for _, u := range []string{"https://graph.microsoft.com", "https://graph.microsoft.com/v1.0", "https://graph.microsoft.us"} {
-		if err := ValidateGraphBaseURL(u); err != nil {
-			t.Errorf("expected %q allowed, got %v", u, err)
-		}
-	}
-	for _, u := range []string{
-		"https://evil.com",
-		"https://graph.microsoft.com.evil.com", // suffix-spoof must not match
-		"http://graph.microsoft.com",           // must be https
-		"https://127.0.0.1",
-		"",
-	} {
-		if err := ValidateGraphBaseURL(u); err == nil {
-			t.Errorf("expected %q rejected", u)
-		}
-	}
-}
-
 func mockGraphIdentity(t *testing.T, enabled bool, roles []map[string]string, roleMembers []map[string]any) (*httptest.Server, *int) {
 	t.Helper()
 	patchCalls := 0

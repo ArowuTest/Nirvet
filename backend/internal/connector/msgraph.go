@@ -34,6 +34,14 @@ func newGraphClient(tokenURL, graphURL, clientID, secret string, hc *http.Client
 	return &graphClient{tokenURL: tokenURL, graphURL: strings.TrimRight(graphURL, "/"), clientID: clientID, secret: secret, http: hc}
 }
 
+// msLoginTokenURL builds the Entra/AAD client-credentials token endpoint for a given directory (tenant) ID.
+// The tenant ID is path-escaped (C-1): it originates from per-connector config (Credentials.AzureTenant), and a
+// value containing '/', '?', or '#' would otherwise reshape the URL path (path-injection / endpoint pivot). All
+// four callers (defender/entra actioners, entra guard, poller) route through here so the escaping can't drift.
+func msLoginTokenURL(azureTenant string) string {
+	return fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", url.PathEscape(azureTenant))
+}
+
 func (c *graphClient) accessToken(ctx context.Context) (string, error) {
 	if c.token != "" && time.Now().Before(c.expires) {
 		return c.token, nil
@@ -97,6 +105,15 @@ func (c *graphClient) fetchAlerts(ctx context.Context, since string) ([]graphAle
 	if since != "" {
 		next += "&$filter=" + url.QueryEscape("createdDateTime gt "+since)
 	}
+	// C-3: @odata.nextLink is server-supplied. netsafe.SafeClient already blocks internal IPs at dial time, but a
+	// compromised/malicious Graph response could point nextLink at an *external* attacker host — and we attach the
+	// bearer token to every page fetch, so following it off-host would leak the token. Pin every page to the same
+	// host as the configured graph endpoint.
+	gu, err := url.Parse(c.graphURL)
+	if err != nil || gu.Hostname() == "" {
+		return nil, fmt.Errorf("msgraph: invalid graph base URL")
+	}
+	graphHost := gu.Hostname()
 	var out []graphAlert
 	for page := 0; next != "" && page < 20; page++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, next, nil)
@@ -128,6 +145,12 @@ func (c *graphClient) fetchAlerts(ctx context.Context, since string) ([]graphAle
 			return out, err
 		}
 		out = append(out, body.Value...)
+		if body.NextLink != "" {
+			nu, perr := url.Parse(body.NextLink)
+			if perr != nil || !strings.EqualFold(nu.Hostname(), graphHost) {
+				return out, fmt.Errorf("msgraph: refusing @odata.nextLink to unexpected host (want %s)", graphHost)
+			}
+		}
 		next = body.NextLink
 	}
 	return out, nil

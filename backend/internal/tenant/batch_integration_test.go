@@ -124,7 +124,7 @@ func TestCreateBatch_PerRowFailureIsolation(t *testing.T) {
 	res, err := svc.CreateBatch(ctx, []tenant.BatchRow{
 		{Name: "Good1", ExternalRef: "mda-" + uuid.NewString()},
 		{Name: "BadTier", ServiceTier: "banana", ExternalRef: "mda-" + uuid.NewString()}, // invalid enum → failed
-		{Name: "NoRef"},                                     // missing external_ref → failed
+		{Name: "NoRef"}, // missing external_ref → failed
 		{Name: "Good2", ExternalRef: "mda-" + uuid.NewString()},
 	})
 	if err != nil {

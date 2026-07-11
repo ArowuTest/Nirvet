@@ -49,7 +49,7 @@ func NewEntraProtectedGuard(cfg protectedConfigReader, tokenURL, apiBase, scope 
 func (g *EntraProtectedGuard) clientFor(cb Credentials) *entraClient {
 	tokenURL := g.tokenURL
 	if tokenURL == "" {
-		tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", cb.AzureTenant)
+		tokenURL = msLoginTokenURL(cb.AzureTenant)
 	}
 	apiBase := g.apiBase
 	if apiBase == "" {

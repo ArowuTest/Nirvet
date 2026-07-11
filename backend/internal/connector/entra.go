@@ -20,31 +20,10 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 )
 
-// graphAllowedHostSuffixes is the D-1-style allowlist for the config-driven Graph base URL — validated before
-// any real identity call, defense-in-depth over netsafe (a hostile base URL can't be a non-Microsoft endpoint).
-var graphAllowedHostSuffixes = []string{".graph.microsoft.com"}
-var graphAllowedHostsExact = []string{"graph.microsoft.com", "graph.microsoft.us"}
-
-// ValidateGraphBaseURL checks a config-driven Graph base URL is absolute-https on an expected Microsoft Graph
-// host. Prod wiring calls this before constructing an Entra client; a bad override fails closed.
-func ValidateGraphBaseURL(base string) error {
-	u, err := url.Parse(strings.TrimSpace(base))
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("Graph base URL must be an absolute https URL")
-	}
-	host := strings.ToLower(u.Hostname())
-	for _, h := range graphAllowedHostsExact {
-		if host == h {
-			return nil
-		}
-	}
-	for _, s := range graphAllowedHostSuffixes {
-		if strings.HasSuffix(host, s) {
-			return nil
-		}
-	}
-	return fmt.Errorf("Graph base URL host %q is not an allowed Microsoft Graph endpoint", host)
-}
+// NOTE (C-2): see the sibling note in defender.go. The Graph apiBase/tokenURL are never config-driven in
+// production (always "" → hardcoded Microsoft constants) and netsafe.SafeClient blocks internal egress, so the
+// previously-uncalled ValidateGraphBaseURL host-allowlist validator was dead code and was removed. Reintroduce
+// host-allowlist validation at the seam if an admin-configurable Graph endpoint is ever added.
 
 // entraClient calls Microsoft Graph using OAuth2 client credentials.
 type entraClient struct {

@@ -23,7 +23,9 @@ type protectedHostsReader interface {
 type HostProtectedGuard struct{ cfg protectedHostsReader }
 
 // NewHostProtectedGuard builds the host guard.
-func NewHostProtectedGuard(cfg protectedHostsReader) *HostProtectedGuard { return &HostProtectedGuard{cfg: cfg} }
+func NewHostProtectedGuard(cfg protectedHostsReader) *HostProtectedGuard {
+	return &HostProtectedGuard{cfg: cfg}
+}
 
 // CheckProtected withholds an isolate_endpoint whose target matches a protected-host pattern.
 func (g *HostProtectedGuard) CheckProtected(ctx context.Context, tenantID uuid.UUID, connectorKey, actionKey, target string, _ []byte) (bool, string, error) {

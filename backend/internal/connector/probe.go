@@ -7,8 +7,6 @@ package connector
 
 import (
 	"context"
-	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -52,7 +50,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID, id uuid.UUID) (*
 	if tokenURL == "" {
 		// azTenant is only ever a PATH segment of a fixed host (login.microsoftonline.com), so it cannot redirect
 		// the request to another host; SafeClient additionally blocks any internal/loopback target.
-		tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", url.PathEscape(azTenant))
+		tokenURL = msLoginTokenURL(azTenant)
 	}
 	graphURL := s.probeGraphURL
 	if graphURL == "" {

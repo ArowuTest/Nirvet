@@ -134,7 +134,7 @@ func (d *DefenderActioner) confirm(ctx context.Context, creds []byte, actionRef 
 func (d *DefenderActioner) clientFor(cb Credentials) *defenderClient {
 	tokenURL := d.tokenURL
 	if tokenURL == "" {
-		tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", cb.AzureTenant)
+		tokenURL = msLoginTokenURL(cb.AzureTenant)
 	}
 	apiBase := d.apiBase
 	if apiBase == "" {

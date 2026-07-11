@@ -20,30 +20,11 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 )
 
-// mdeAllowedHostSuffixes is the D-1 allowlist: a config-driven MDE base URL is validated against these
-// expected Microsoft hosts before any real containment call — defense-in-depth OVER netsafe, so even a
-// hostile base URL that resolves to a public IP cannot be a non-Microsoft endpoint.
-var mdeAllowedHostSuffixes = []string{
-	".securitycenter.microsoft.com",
-	".security.microsoft.com",
-}
-
-// ValidateMDEBaseURL checks a config-driven MDE API base URL is an absolute https URL on an expected
-// Microsoft host (D-1). Prod wiring calls this before constructing a Defender action client; a bad
-// override fails closed rather than dialing an attacker endpoint.
-func ValidateMDEBaseURL(base string) error {
-	u, err := url.Parse(strings.TrimSpace(base))
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("MDE base URL must be an absolute https URL")
-	}
-	host := strings.ToLower(u.Hostname())
-	for _, suffix := range mdeAllowedHostSuffixes {
-		if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
-			return nil
-		}
-	}
-	return fmt.Errorf("MDE base URL host %q is not an allowed Microsoft endpoint", host)
-}
+// NOTE (C-2): the connector apiBase/tokenURL are never config-driven — production wiring always passes ""
+// and falls back to the hardcoded Microsoft endpoint constants below, and netsafe.SafeClient blocks any
+// internal-IP egress at dial time. The previously-uncalled ValidateMDEBaseURL host-allowlist validator was
+// therefore dead code with a misleading "prod wiring calls this" comment; it was removed. If an
+// admin-configurable connector endpoint is ever introduced, reintroduce host-allowlist validation at that seam.
 
 // defenderClient calls the MDE machine-action API using OAuth2 client credentials.
 type defenderClient struct {

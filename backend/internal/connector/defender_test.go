@@ -14,32 +14,6 @@ import (
 	"testing"
 )
 
-func TestValidateMDEBaseURL(t *testing.T) {
-	ok := []string{
-		"https://api.securitycenter.microsoft.com",
-		"https://api-eu.securitycenter.microsoft.com/",
-		"https://api.security.microsoft.com",
-	}
-	for _, u := range ok {
-		if err := ValidateMDEBaseURL(u); err != nil {
-			t.Errorf("expected %q allowed, got %v", u, err)
-		}
-	}
-	bad := []string{
-		"https://evil.com",
-		"https://securitycenter.microsoft.com.evil.com", // suffix-spoof must not match
-		"http://api.securitycenter.microsoft.com",       // must be https
-		"https://127.0.0.1",
-		"not-a-url",
-		"",
-	}
-	for _, u := range bad {
-		if err := ValidateMDEBaseURL(u); err == nil {
-			t.Errorf("expected %q rejected", u)
-		}
-	}
-}
-
 // mockMDE serves the token endpoint + the machine/isolate/unisolate/machineactions calls the client uses.
 func mockMDE(t *testing.T, actionStatus string) *httptest.Server {
 	t.Helper()

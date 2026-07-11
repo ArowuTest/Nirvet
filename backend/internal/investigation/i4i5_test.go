@@ -51,11 +51,15 @@ func TestTimeline_ChronologicalAndAudit(t *testing.T) {
 // Drift==true; coverage + silence pass through).
 type fakeCov struct{ gaps []detection.CoverageGap }
 
-func (f fakeCov) CoverageGaps(context.Context, uuid.UUID) ([]detection.CoverageGap, error) { return f.gaps, nil }
+func (f fakeCov) CoverageGaps(context.Context, uuid.UUID) ([]detection.CoverageGap, error) {
+	return f.gaps, nil
+}
 
 type fakeDrift struct{ q []ingestion.SourceQuality }
 
-func (f fakeDrift) Quality(context.Context, uuid.UUID) ([]ingestion.SourceQuality, error) { return f.q, nil }
+func (f fakeDrift) Quality(context.Context, uuid.UUID) ([]ingestion.SourceQuality, error) {
+	return f.q, nil
+}
 
 type fakeSilence struct{ s []connector.SilentSource }
 

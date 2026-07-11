@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -83,7 +82,7 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 
 		tokenURL := p.tokenURL
 		if tokenURL == "" {
-			tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", azTenant)
+			tokenURL = msLoginTokenURL(azTenant)
 		}
 		graphURL := p.graphURL
 		if graphURL == "" {

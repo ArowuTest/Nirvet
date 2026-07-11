@@ -19,7 +19,9 @@ type Handler struct {
 }
 
 // NewHandler builds the handler.
-func NewHandler(svc *Service, maint *MaintenanceService) *Handler { return &Handler{svc: svc, maint: maint} }
+func NewHandler(svc *Service, maint *MaintenanceService) *Handler {
+	return &Handler{svc: svc, maint: maint}
+}
 
 // SetFlag handles PUT /admin/flags.
 func (h *Handler) SetFlag(w http.ResponseWriter, r *http.Request) {

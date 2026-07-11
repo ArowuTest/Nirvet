@@ -75,13 +75,19 @@ func (s *Supervisor) ReverseRun(ctx context.Context, tenantID uuid.UUID, actor a
 			out = append(out, res)
 			continue
 		}
-		_ = s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// F-L3: the vendor reversal already SUCCEEDED (safeCall above). If the DB mark-reversed + audit write
+		// now fails, the reversal happened but the trail is incomplete — that must not be silent. We keep the
+		// result "reversed" (the containment IS undone in the vendor) but log it loudly for reconciliation.
+		if e := s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 			if e := s.repo.markReversedTx(ctx, tx, ex.ID); e != nil {
 				return e
 			}
 			return audit.Record(ctx, tx, audit.Entry{ActorID: actor.UserID, ActorEmail: actor.Email, Action: "soar.action_reverse",
 				Target: "action:" + orig.Inverse, Metadata: map[string]any{"connector": ex.ConnectorKey, "target": ex.Target, "reversed_of": ex.ActionKey, "ref": ref}})
-		})
+		}); e != nil && s.log != nil {
+			s.log.Error("soar reverse: vendor action reversed but mark-reversed/audit write failed (trail incomplete)",
+				"execution", ex.ID, "connector", ex.ConnectorKey, "inverse", orig.Inverse, "target", ex.Target, "err", e)
+		}
 		res.Status, res.Detail = "reversed", "invoked "+orig.Inverse+": "+ref
 		out = append(out, res)
 	}
@@ -89,8 +95,11 @@ func (s *Supervisor) ReverseRun(ctx context.Context, tenantID uuid.UUID, actor a
 }
 
 func (s *Supervisor) auditReverse(ctx context.Context, tenantID uuid.UUID, actor auth.Principal, ex ActionExecution, status, detail string) {
-	_ = s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+	if e := s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{ActorID: actor.UserID, ActorEmail: actor.Email, Action: "soar.action_reverse",
 			Target: "action:" + ex.ActionKey, Metadata: map[string]any{"connector": ex.ConnectorKey, "target": ex.Target, "status": status, "detail": detail}})
-	})
+	}); e != nil && s.log != nil {
+		// F-L3: a skipped/no-op reverse decision that isn't audited leaves a gap in the containment trail.
+		s.log.Error("soar reverse: audit write failed", "execution", ex.ID, "connector", ex.ConnectorKey, "status", status, "err", e)
+	}
 }
