@@ -2453,3 +2453,63 @@ the break-glass content path (reviewer pass-1'ing now); posture-driven auto-esca
 
 **→ Awaiting reviewer pre-code pass. No code until greenlit. Builder will then build slice A test-first with the
 no-import CI guard as the crux. Nothing pushed; HEAD b992ec5 local.**
+
+## Gate — Bulk Onboarding Factory (Ghana operator launch long-pole) — PRE-CODE DESIGN REVIEW — Jul 2026
+
+The operator can't hand-onboard ~200 MDAs one at a time, so it needs a batch tenant-onboarding path. This is a
+LAUNCH-REQUIRED (L) build, not a security-critical seam like the four — but a batch create is exactly where a
+single tenant-id mixup becomes N mixups, so the security spine is **secure-defaults-at-creation + no
+cross-tenant bleed**, baked in up front (reviewer must).
+
+### Model
+A padmin-only endpoint batch-creates N tenants from a list, each **fully isolated and securely defaulted from
+the moment of creation**, by REUSING the single-tenant `tenant.Service.Create` secure path per row (NOT a
+reimplemented shortcut). Initial human access is the §6.2 invitation flow (task #76) — **never a seeded/default
+password** (a shared/derived credential across tenants is the smell this design exists to avoid).
+
+### Security spine (the reviewer must — structural, verified per row)
+- **Secure defaults at creation (already true in single-create — the factory must NOT weaken them):**
+  `destructive_enabled` OFF (absence of a soar_settings row = off; the factory writes NO soar_settings row),
+  authority catch-all `('*','observe')` (fail-closed — nothing auto-runs) via `SeedGovernance`, isolation
+  defaults, `status=onboarding`. The factory calls the SAME `Create` (+`SeedGovernance`) per row so defaults
+  can't drift between single and bulk paths.
+- **No shared/derived secrets across tenants:** each tenant gets its own `uuid.New()` id and its own seeded
+  governance rows under its own `tenant_id`; NO cross-tenant key/secret/seed reuse; NO default-password admin
+  (initial access = per-tenant invitation link).
+- **No cross-tenant bleed in the batch path:** each row's writes are scoped to that row's `tenant_id` — every
+  per-tenant seed runs under its OWN `WithTenant(t.ID)`; the batch loop NEVER reuses a tx or GUC across
+  tenants. A tenant-id is derived once per row and never mutated mid-row.
+- **padmin-only:** the endpoint is platform_admin-gated (the operator onboards its customers).
+- **Per-row failure isolation + idempotency:** one bad/duplicate row must NOT abort or corrupt the others;
+  each tenant is fully-created-and-seeded OR not-created (no half-provisioned tenant); a re-run of the same
+  batch must NOT double-create (idempotency key), so a retried onboarding of 200 MDAs converges.
+- **Input validation at scale:** each row's name + tier/isolation enums validated per-row (reuse Create's
+  fail-closed enum validation) — a typo in row 30 misconfigures nothing and doesn't ambiguously abort the batch.
+
+### Scope — slice A
+padmin `POST /admin/tenants/batch` taking `[{name, sector, country, service_tier, isolation_tier, external_ref}]`;
+per-row reuse of `tenant.Service.Create` (identical secure defaults + SeedGovernance); an idempotency key
+(external_ref or name) so retries don't duplicate; a per-row result report (created / skipped-duplicate /
+failed+reason). **Deferred (own follow-ons):** CSV/file bulk-import + UI; async job for very large batches;
+per-sector template packs (framework/policy presets); auto-invitation-at-create (or include as a flag if cheap).
+
+### Centerpiece tests
+1. Batch-create N tenants → EACH has the secure defaults: `destructive_enabled` off, authority `('*','observe')`,
+   RLS-isolated (a seeded governance row for tenant A is invisible under tenant B).
+2. NO cross-tenant bleed: tenant A's seed lands only in A; interleaved/failed rows don't write into a sibling.
+3. Idempotent: re-running the same batch (same external_refs) creates no duplicates.
+4. Per-row failure isolation: one invalid row (bad enum / duplicate) is reported failed/skipped while the
+   valid rows still create-and-seed.
+5. padmin-only: a non-padmin principal is refused.
+
+### Open questions for the reviewer's pre-code pass
+1. **Idempotency key:** dedup by a required `external_ref` (operator's MDA id), or by `name`? (external_ref is
+   more robust to renames; needs a column/unique index.)
+2. **Partial-failure semantics:** per-row result report (best-effort continue, my lean) vs all-or-nothing batch
+   tx? A single tx for 200 tenants is a long lock + one bad row aborts all — leaning best-effort-per-row.
+3. **Batch size cap + sync vs async:** a synchronous cap (e.g. ≤100/req) for slice A, async job deferred?
+4. **Invitation at create:** trigger the initial-admin invitation per new tenant now, or leave it a separate
+   padmin step (invite flow already exists)?
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit. Reviewer keeps pass 1 on padmin + break-glass in
+parallel. Nothing pushed; HEAD ce24ebd local.**
