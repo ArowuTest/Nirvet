@@ -26,12 +26,30 @@ type Service struct {
 	tokens  *auth.Manager
 	cipher  crypto.SecretCipher
 	alerter Alerter // optional: break-glass auto-alerting (§6.2 IAM-006)
+
+	// Password-reset (G1) seams. resetBaseURL is the server-configured app base URL the reset link points at
+	// (never a request-supplied host). resetMailer delivers the link via the notification outbox (nil = no email;
+	// the admin must then use the one-time returned link). Both optional.
+	resetBaseURL string
+	resetMailer  ResetMailer
 }
 
 // NewService builds the service. cipher encrypts TOTP secrets (per-tenant).
 func NewService(repo *Repository, db *database.DB, tokens *auth.Manager, cipher crypto.SecretCipher) *Service {
 	return &Service{repo: repo, db: db, tokens: tokens, cipher: cipher}
 }
+
+// ResetMailer delivers a password-reset link by email via the notification outbox. Implemented by notify.Service;
+// kept narrow so iam does not depend on the notify package.
+type ResetMailer interface {
+	NotifyPasswordReset(ctx context.Context, tenantID uuid.UUID, email, link string) error
+}
+
+// WithResetBaseURL sets the app base URL the reset link is built from (server-configured, never request-supplied).
+func (s *Service) WithResetBaseURL(u string) *Service { s.resetBaseURL = u; return s }
+
+// WithResetMailer wires email delivery for reset links.
+func (s *Service) WithResetMailer(m ResetMailer) *Service { s.resetMailer = m; return s }
 
 // Alerter fires an automatic alert (implemented by notify.Service). Kept narrow so iam does
 // not depend on the notify package.

@@ -198,6 +198,8 @@ func main() {
 	inboxH := notify.NewInboxHandler(notify.NewInbox(db)) // §6.16 per-user in-app feed
 	// Break-glass access fires an automatic alert (§6.2 IAM-006).
 	iamSvc.WithAlerter(notifySvc)
+	// G1 admin-issued password reset: link base URL = the frontend origin; email delivery via the outbox.
+	iamSvc.WithResetBaseURL(cfg.CORSOrigin).WithResetMailer(notifySvc)
 
 	// Outbound ticketing (ServiceNow/Jira) — mirrors incidents to the tenant's ITSM.
 	ticketingSvc := ticketing.NewService(ticketing.NewRepository(db), cipher)
@@ -432,6 +434,8 @@ func main() {
 	// Invitation acceptance (public, §6.2 IAM-001/008): the invitee sets a password. Rate-
 	// limited like login since it provisions a user.
 	mux.Handle("POST /auth/invitations/accept", httpx.Chain(http.HandlerFunc(iamH.AcceptInvitation), loginLimit))
+	// G1 password reset: confirm is PUBLIC (token is the capability) + rate-limited per IP (RP-4).
+	mux.Handle("POST /auth/password-reset/confirm", httpx.Chain(http.HandlerFunc(iamH.ConfirmPasswordReset), loginLimit))
 	// SSO (OIDC) — public login start/callback (rate-limited like login).
 	mux.Handle("GET /auth/sso/start", httpx.Chain(http.HandlerFunc(ssoH.Start), loginLimit))
 	mux.Handle("GET /auth/sso/callback", httpx.Chain(http.HandlerFunc(ssoH.Callback), loginLimit))
@@ -506,6 +510,8 @@ func main() {
 	// Service accounts + API keys (§6.2 IAM-001/005/008). Programmatic principals for
 	// connectors/customer scripts; the raw key is shown once at creation.
 	mux.Handle("POST /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.CreateServiceAccount))
+	// G1 admin-issued password reset (platform_admin any tenant / customer_admin own; RP-1 role-domain guard in svc).
+	mux.Handle("POST /admin/tenants/{id}/users/{uid}/reset-password", ssoAdmin(iamH.IssuePasswordReset))
 	mux.Handle("GET /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.ListServiceAccounts))
 	mux.Handle("POST /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.CreateAPIKey))
 	mux.Handle("GET /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.ListAPIKeys))

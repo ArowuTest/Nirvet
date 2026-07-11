@@ -47,8 +47,9 @@ func TestTenantCompositeConstraints(t *testing.T) {
 	// Waivers: constraints that INTENTIONALLY omit tenant_id because the value is looked up BEFORE a
 	// tenant context exists (the lookup resolves the tenant), so it must be globally unique.
 	waived := map[string]string{
-		"api_keys_prefix_key":             "api-key prefix is a global pre-tenant lookup (auth resolves the tenant from the key)",
-		"user_invitations_token_hash_key": "invite token hash is a global pre-tenant lookup (validated before any tenant context)",
+		"api_keys_prefix_key":                  "api-key prefix is a global pre-tenant lookup (auth resolves the tenant from the key)",
+		"user_invitations_token_hash_key":      "invite token hash is a global pre-tenant lookup (validated before any tenant context)",
+		"password_reset_tokens_token_hash_key": "reset token hash is a global pre-tenant lookup (the token resolves the tenant; validated before any tenant context)",
 	}
 
 	// A constraint is "already globally unique by construction" (so it needn't include tenant_id) when it

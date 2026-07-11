@@ -79,6 +79,19 @@ func (s *Service) EnqueueThrottled(ctx context.Context, tenantID uuid.UUID, chan
 	return true, nil
 }
 
+// NotifyPasswordReset enqueues a password-reset email (G1) via the durable outbox. Best-effort: the link is
+// built by iam from the server base URL; if the tenant has no email sender configured the row dead-letters and
+// the issuing admin can fall back to the one-time returned link.
+func (s *Service) NotifyPasswordReset(ctx context.Context, tenantID uuid.UUID, email, link string) error {
+	if s.outbox == nil {
+		return httpx.ErrInternal("outbox not available")
+	}
+	body := "A password reset was requested for your Nirvet account. Use this link to set a new password:\n\n" +
+		link + "\n\nThis link expires shortly. If you did not expect this, contact your administrator."
+	_, err := s.EnqueueThrottled(ctx, tenantID, "email", email, "Reset your Nirvet password", body)
+	return err
+}
+
 // NewService builds the dispatcher with the log channel plus the real webhook/Teams/Slack channels
 // (§6.16 COMM-001) — HTTP POST over an SSRF-safe client, so an escalation contact or SOAR notify with
 // channel=webhook/teams/slack is delivered, not dead-lettered. Email(SMTP)/SMS are deferred to slice B
