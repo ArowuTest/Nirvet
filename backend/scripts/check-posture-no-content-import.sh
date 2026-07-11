@@ -18,8 +18,13 @@ set -euo pipefail
 
 MOD='github.com/ArowuTest/nirvet'
 
-# Content / telemetry-body packages the posture store must never be able to reach.
-CONTENT='alert|incident|detection|investigation|correlation|normalization'
+# Content / telemetry-body packages the posture store must never be able to reach. This list IS the artifact
+# an auditor inspects to accept the "no content path" claim, so it must be COMPLETE and match real packages:
+#   - ingestion: the raw-event / telemetry ingest pipeline (raw bodies).
+#   - connector: the vendor-pull + host-telemetry (osquery/Wazuh) ingest layer — content in transit.
+#   - alert/incident/detection/investigation/correlation: the analysed-content domains.
+# Add any FUTURE content/telemetry package here (e.g. a dedicated host-telemetry package if connector splits).
+CONTENT='alert|incident|detection|investigation|correlation|ingestion|connector'
 forbidden="^${MOD}/internal/(${CONTENT})(/|$)"
 
 deps="$(go list -deps ./internal/posture/... 2>/dev/null || true)"
