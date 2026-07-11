@@ -113,8 +113,12 @@ func Load() (*Config, error) {
 		SyslogTLSCert:      env("NIRVET_SYSLOG_TLS_CERT", ""),
 		SyslogTLSKey:       env("NIRVET_SYSLOG_TLS_KEY", ""),
 	}
-	if c.IsProduction() && c.JWTSecret == "dev-insecure-change-me" {
-		return nil, fmt.Errorf("config: NIRVET_JWT_SECRET must be set in production")
+	// The JWT secret is the SOLE trust anchor for human auth (HS256): a weak one is crackable offline
+	// from a single captured token, after which an attacker forges a platform_admin token for any tenant.
+	// Reject both the literal default AND any secret below a 32-char entropy floor — mirroring the byte-
+	// length guard already applied to the master (32B) and evidence (SeedSize) keys (builder-pass M1).
+	if c.IsProduction() && (c.JWTSecret == "dev-insecure-change-me" || len(c.JWTSecret) < 32) {
+		return nil, fmt.Errorf("config: NIRVET_JWT_SECRET must be set to a strong value (>= 32 chars) in production")
 	}
 	// Refuse to boot production on the default bootstrap credential — otherwise a
 	// deployment ships with a publicly-known platform_admin password.

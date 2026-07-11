@@ -5,13 +5,27 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/hkdf"
 )
+
+// DeriveKey derives a purpose-specific 32-byte key from the master signing secret via HKDF-SHA256, so a
+// lower-assurance HMAC surface (secure links, SSO/SAML state) uses a key cryptographically SEPARATE from
+// the auth-token signing key — a weakness or oracle in one surface cannot bear on the other. No extra
+// secret to provision: the separation is by the HKDF `info` label, not a new env var (builder-pass L1).
+func DeriveKey(secret, purpose string) []byte {
+	r := hkdf.New(sha256.New, []byte(secret), nil, []byte("nirvet/"+purpose))
+	out := make([]byte, 32)
+	_, _ = io.ReadFull(r, out)
+	return out
+}
 
 // Role is a platform role. Nirvet distinguishes provider-side SOC roles from
 // customer-side roles; RBAC is enforced per handler.
@@ -113,7 +127,7 @@ func (m *Manager) Verify(token string) (Principal, error) {
 			return nil, errors.New("unexpected signing method")
 		}
 		return m.secret, nil
-	}, jwt.WithIssuer(m.issuer))
+	}, jwt.WithIssuer(m.issuer), jwt.WithExpirationRequired())
 	if err != nil {
 		return Principal{}, err
 	}

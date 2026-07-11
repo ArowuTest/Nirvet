@@ -28,7 +28,7 @@ func TestProductionGuards(t *testing.T) {
 	// A fully-valid production environment (mutated per case below).
 	base := map[string]string{
 		"NIRVET_ENV":                  "production",
-		"NIRVET_JWT_SECRET":           "a-real-secret",
+		"NIRVET_JWT_SECRET":           "a-real-secret-at-least-32-chars-long!!", // >= 32-char entropy floor (M1)
 		"NIRVET_BOOTSTRAP_PASSWORD":   "a-real-bootstrap-pw",
 		"NIRVET_SECRET_MASTER_KEY":    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32 bytes b64
 		"NIRVET_KMS_KEY_NAME":         "",
@@ -42,6 +42,7 @@ func TestProductionGuards(t *testing.T) {
 	}{
 		{"all set", nil, ""},
 		{"default jwt", map[string]string{"NIRVET_JWT_SECRET": "dev-insecure-change-me"}, "NIRVET_JWT_SECRET"},
+		{"short jwt", map[string]string{"NIRVET_JWT_SECRET": "too-short"}, "NIRVET_JWT_SECRET"}, // M1 entropy floor
 		{"default bootstrap pw", map[string]string{"NIRVET_BOOTSTRAP_PASSWORD": "ChangeMe123!"}, "NIRVET_BOOTSTRAP_PASSWORD"},
 		{"no vault key", map[string]string{"NIRVET_SECRET_MASTER_KEY": ""}, "NIRVET_SECRET_MASTER_KEY"},
 		{"no evidence signing key", map[string]string{"NIRVET_EVIDENCE_SIGNING_KEY": ""}, "NIRVET_EVIDENCE_SIGNING_KEY"},

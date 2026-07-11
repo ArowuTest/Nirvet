@@ -143,11 +143,11 @@ func main() {
 	iamH := iam.NewHandler(iamSvc)
 
 	// SSO (OIDC): per-tenant IdP connections + JIT provisioning (§6.2 IAM-001).
-	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, cfg.JWTSecret)
+	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, string(auth.DeriveKey(cfg.JWTSecret, "sso-state")))
 	ssoH := sso.NewHandler(ssoSvc)
 
 	// SAML 2.0 SSO (§6.2 IAM-001). Signed-assertion validation via gosaml2.
-	samlSvc := sso.NewSAMLService(sso.NewSAMLRepository(db), iamSvc, tokens, db, cfg.JWTSecret)
+	samlSvc := sso.NewSAMLService(sso.NewSAMLRepository(db), iamSvc, tokens, db, string(auth.DeriveKey(cfg.JWTSecret, "saml-state")))
 	samlH := sso.NewSAMLHandler(samlSvc)
 
 	alertSvc := alert.NewService(alert.NewRepository(db))
@@ -193,7 +193,7 @@ func main() {
 	notifySvc := notify.NewService(log).WithOutbox(outboxRepo).
 		WithSenders(notify.NewSenderRepo(db), cipher, notify.DefaultSMSClient()). // §6.16 email/SMS via per-tenant sender config
 		WithTemplates(notify.NewTemplateRepo(db)).                                // §6.16 templates + throttle/localization
-		WithLinkKey([]byte(cfg.JWTSecret))                                        // §6.16 secure expiring links (HMAC)
+		WithLinkKey(auth.DeriveKey(cfg.JWTSecret, "notify-link"))                 // §6.16 secure expiring links (HMAC, key-separated)
 	notifyH := notify.NewHandler(notifySvc)
 	inboxH := notify.NewInboxHandler(notify.NewInbox(db)) // §6.16 per-user in-app feed
 	// Break-glass access fires an automatic alert (§6.2 IAM-006).
