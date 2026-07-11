@@ -608,6 +608,7 @@ func main() {
 	mux.Handle("GET /connectors/catalogue", provider(connectorH.Catalogue))
 	mux.Handle("GET /connectors", provider(connectorH.List))
 	mux.Handle("POST /connectors", senior(connectorH.Create))
+	mux.Handle("POST /connectors/{id}/test", senior(connectorH.TestConnection))
 	mux.Handle("DELETE /connectors/{id}", senior(connectorH.Delete))
 	// public webhook ingestion (source-key authenticated, per-IP rate limited)
 	webhookLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "webhook"), ratelimit.ByIP)

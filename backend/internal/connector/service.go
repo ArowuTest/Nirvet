@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"net/http"
 
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -17,6 +18,13 @@ type Service struct {
 	repo   *Repository
 	vault  *Vault
 	ingest *ingestion.Service
+
+	// Test-connection probe seams. Prod leaves these zero: a nil client becomes netsafe.SafeClient (SSRF-safe)
+	// and empty URLs become the real Microsoft endpoints. Tests assign them (in-package) to reach a mock server —
+	// exactly the poller's pattern; the prod path is unchanged.
+	probeHTTP     *http.Client
+	probeTokenURL string
+	probeGraphURL string
 }
 
 // NewService builds the service.

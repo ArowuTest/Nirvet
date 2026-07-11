@@ -62,6 +62,24 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// TestConnection handles POST /connectors/{id}/test — a live credential + connectivity probe (tenant-scoped).
+// Always 200 with a {status, detail} body: status=ok|failed|not_applicable. A "failed" connection is a valid
+// probe outcome, not an HTTP error.
+func (h *Handler) TestConnection(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid connector id"))
+		return
+	}
+	res, err := h.svc.TestConnection(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
 // Webhook handles POST /ingest/webhook/{id} — PUBLIC, authenticated by the
 // X-Nirvet-Key header against the connector's stored key hash.
 func (h *Handler) Webhook(w http.ResponseWriter, r *http.Request) {

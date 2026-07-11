@@ -54,6 +54,39 @@ func (r *Repository) List(ctx context.Context, tenantID uuid.UUID) ([]ConnectorC
 	return out, err
 }
 
+// ConnectorWithSecret is one connector plus its sealed secret (tenant-scoped) — used by the test-connection
+// probe to build an authenticated client. The secret never leaves the service; it is unsealed and used in-process.
+type ConnectorWithSecret struct {
+	ConnectorConfig
+	Secret []byte // sealed client secret (nil if none); decrypt via the vault
+}
+
+// GetWithSecret returns one connector including its sealed secret, under the tenant's RLS.
+func (r *Repository) GetWithSecret(ctx context.Context, tenantID, id uuid.UUID) (*ConnectorWithSecret, error) {
+	var c ConnectorWithSecret
+	var cfg []byte
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT id, tenant_id, kind, name, direction, enabled, config, health, last_success, created_at, secret_ciphertext
+			   FROM connector_configs WHERE id=$1`, id).
+			Scan(&c.ID, &c.TenantID, &c.Kind, &c.Name, &c.Direction, &c.Enabled, &cfg, &c.Health, &c.LastSuccess, &c.CreatedAt, &c.Secret)
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(cfg, &c.Config)
+	return &c, nil
+}
+
+// SetHealth updates ONLY a connector's health (tenant-scoped) — used by the test-connection probe, which must
+// reflect the probe outcome without touching last_success (that stays "last real data receipt").
+func (r *Repository) SetHealth(ctx context.Context, tenantID, id uuid.UUID, health string) error {
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE connector_configs SET health=$2 WHERE id=$1`, id, health)
+		return err
+	})
+}
+
 // Delete removes a connector.
 func (r *Repository) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
