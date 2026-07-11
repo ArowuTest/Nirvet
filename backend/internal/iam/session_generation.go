@@ -5,8 +5,13 @@ package iam
 // generation is behind current. Bumping a generation immediately invalidates every older token — the mechanism
 // that kills a live stateless-JWT session on password change/reset, tenant offboard, or (future) admin-disable.
 //
-// Latency SLA (seeded config, tunable): a bump propagates within the cache TTL on other nodes; the bumping node
-// CACHE-BUSTS its entry so high-consequence revocations are immediate. Fail direction (SR-4): if the current
+// Latency SLA (seeded config, tunable) — state it PRECISELY for an auditor: a bump is IMMEDIATE on the node that
+// handles it (it cache-busts its own entry); in a MULTI-NODE deployment other nodes keep serving the cached
+// generation until their TTL expires, so cross-node revocation is within cache_ttl_seconds (default 30s). The
+// Ghana sovereign deployment is SINGLE-NODE, so revocation is effectively immediate. The cache is process-local
+// (sync.Map); TRUE cross-node immediacy is a scale-out item (cross-node cache invalidation via LISTEN/NOTIFY or
+// pub/sub) — but the TTL bound already guarantees revocation everywhere within the SLA, so this is a latency
+// caveat, not a correctness hole. Fail direction (SR-4): if the current
 // generation can't be resolved (cache miss + DB error), the check DENIES — but as a TRANSIENT 503 (retryable),
 // not a session-killing 401, so a genuinely-revoked token stays blocked during the blip while a legitimate one
 // retries and succeeds on recovery. A warm cache never triggers this.
