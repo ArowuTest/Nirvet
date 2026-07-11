@@ -29,6 +29,9 @@ type ClickHouseStore struct {
 	table string
 }
 
+// Ping verifies backend connectivity for the readiness probe.
+func (s *ClickHouseStore) Ping(ctx context.Context) error { return s.conn.Ping(ctx) }
+
 // NewClickHouse connects, verifies, and ensures the events table exists.
 func NewClickHouse(ctx context.Context, dsn string) (*ClickHouseStore, error) {
 	opts, err := clickhouse.ParseDSN(dsn)

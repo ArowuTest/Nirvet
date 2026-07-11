@@ -95,13 +95,17 @@ func (q *PostgresQueue) Complete(ctx context.Context, id uuid.UUID) error {
 // Fail requeues with backoff, or dead-letters after MaxAttempts. Guarded on state='running' (carry-
 // forward Low) so a stale worker's late Fail can't false-dead-letter a job the reaper already requeued.
 func (q *PostgresQueue) Fail(ctx context.Context, id uuid.UUID, reason string) error {
+	// Bounded EXPONENTIAL backoff with jitter (external-review): delay = min(cap, base * 2^attempts) plus a
+	// random 0..base jitter, computed from the row's own attempts count. A fixed delay retries in lockstep and
+	// hammers a throttling vendor / a recovering DB; the exponential+jitter spread is the standard mitigation.
 	_, err := q.pool.Exec(ctx,
 		`UPDATE ingest_jobs
 		    SET state = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'queued' END,
-		        run_at = now() + ($3 || ' seconds')::interval,
-		        last_error = $4
+		        run_at = now() + make_interval(secs =>
+		            LEAST($4::float8, $3::float8 * power(2, attempts)) + random() * $3::float8),
+		        last_error = $5
 		  WHERE id = $1 AND state = 'running'`,
-		id, MaxAttempts, backoffSeconds, reason)
+		id, MaxAttempts, backoffBaseSeconds, backoffCapSeconds, reason)
 	return err
 }
 
@@ -148,5 +152,9 @@ func StartReaper(ctx context.Context, q Queue, log *slog.Logger, interval, visib
 	}
 }
 
-// backoffSeconds is a simple fixed retry delay (scaffold). Production: exponential.
-const backoffSeconds = 30
+// Retry backoff bounds: delay = min(cap, base * 2^attempts) + jitter(0..base). base=30s doubles per attempt
+// (30 → 60 → 120 → …) and is capped so a persistently-failing job still retries on a bounded cadence.
+const (
+	backoffBaseSeconds = 30
+	backoffCapSeconds  = 900 // 15 min ceiling
+)

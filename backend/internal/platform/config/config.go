@@ -139,6 +139,13 @@ func Load() (*Config, error) {
 	if c.IsProduction() && c.EvidenceSigningKey == "" {
 		return nil, fmt.Errorf("config: NIRVET_EVIDENCE_SIGNING_KEY (base64 32-byte Ed25519 seed) must be set in production so exported evidence packs are verifiable across restarts")
 	}
+	// Raw evidence, attachments and report artefacts must live on DURABLE storage in production (ADR-0002/0005).
+	// The local filesystem store defaults to an ephemeral temp dir, so those would be lost on restart/redeploy.
+	// Require a configured object store (NIRVET_GCS_BUCKET) OR an explicit acknowledgement that the local blob
+	// path is a persistent disk — fail closed otherwise (external-review P0).
+	if c.IsProduction() && c.GCSBucket == "" && env("NIRVET_ALLOW_EPHEMERAL_BLOBS", "") != "true" {
+		return nil, fmt.Errorf("config: production requires durable object storage — set NIRVET_GCS_BUCKET, or set NIRVET_ALLOW_EPHEMERAL_BLOBS=true ONLY if the local blob path is a persistent disk (evidence/attachments/reports are lost on restart otherwise)")
+	}
 	return c, nil
 }
 

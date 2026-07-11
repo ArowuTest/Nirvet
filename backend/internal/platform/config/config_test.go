@@ -33,6 +33,7 @@ func TestProductionGuards(t *testing.T) {
 		"NIRVET_SECRET_MASTER_KEY":    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32 bytes b64
 		"NIRVET_KMS_KEY_NAME":         "",
 		"NIRVET_EVIDENCE_SIGNING_KEY": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+		"NIRVET_ALLOW_EPHEMERAL_BLOBS": "true", // durable-storage guard ack (or set NIRVET_GCS_BUCKET)
 	}
 
 	cases := []struct {
@@ -43,6 +44,8 @@ func TestProductionGuards(t *testing.T) {
 		{"all set", nil, ""},
 		{"default jwt", map[string]string{"NIRVET_JWT_SECRET": "dev-insecure-change-me"}, "NIRVET_JWT_SECRET"},
 		{"short jwt", map[string]string{"NIRVET_JWT_SECRET": "too-short"}, "NIRVET_JWT_SECRET"}, // M1 entropy floor
+		{"ephemeral blobs in prod", map[string]string{"NIRVET_ALLOW_EPHEMERAL_BLOBS": "", "NIRVET_GCS_BUCKET": ""}, "durable object storage"},
+		{"gcs bucket satisfies durable", map[string]string{"NIRVET_ALLOW_EPHEMERAL_BLOBS": "", "NIRVET_GCS_BUCKET": "my-bucket"}, ""},
 		{"default bootstrap pw", map[string]string{"NIRVET_BOOTSTRAP_PASSWORD": "ChangeMe123!"}, "NIRVET_BOOTSTRAP_PASSWORD"},
 		{"no vault key", map[string]string{"NIRVET_SECRET_MASTER_KEY": ""}, "NIRVET_SECRET_MASTER_KEY"},
 		{"no evidence signing key", map[string]string{"NIRVET_EVIDENCE_SIGNING_KEY": ""}, "NIRVET_EVIDENCE_SIGNING_KEY"},

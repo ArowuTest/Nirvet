@@ -77,4 +77,7 @@ type EventStore interface {
 	// TopMITRE returns the most frequent ATT&CK techniques for a tenant since
 	// `since` (analytics over the first-class mitre column, ADR-0006 v1.1).
 	TopMITRE(ctx context.Context, tenantID uuid.UUID, since time.Time, limit int) ([]MITRECount, error)
+	// Ping verifies backend connectivity — used by the readiness probe so a degraded telemetry store is
+	// surfaced rather than discovered on the first query (external-review dependency-aware /readyz).
+	Ping(ctx context.Context) error
 }

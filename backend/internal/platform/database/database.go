@@ -9,12 +9,25 @@ package database
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// envInt reads an integer env var, falling back to def when unset or unparseable.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
 
 // DB wraps a pgx pool with tenant-aware helpers.
 type DB struct {
@@ -27,7 +40,14 @@ func Connect(ctx context.Context, dsn string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("database: parse dsn: %w", err)
 	}
-	cfg.MaxConns = 10
+	// Pool size is configurable (external-review): a fixed 10 becomes a bottleneck once API replicas,
+	// worker pools, pollers, SLA sweepers and notification dispatchers all draw from it. A DSN that carries
+	// `pool_max_conns` wins (ParseConfig already applied it); otherwise take NIRVET_DB_MAX_CONNS (default 10).
+	if !strings.Contains(dsn, "pool_max_conns") {
+		if n := envInt("NIRVET_DB_MAX_CONNS", 10); n > 0 {
+			cfg.MaxConns = int32(n)
+		}
+	}
 	cfg.MaxConnLifetime = time.Hour
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

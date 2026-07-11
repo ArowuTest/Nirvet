@@ -419,11 +419,27 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "nirvet-api"})
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		// Dependency-aware readiness (external-review): the DB and the telemetry event store are BOTH hard
+		// dependencies — a query path that can't reach the event store is not ready even if the DB is up.
+		deps := map[string]string{}
+		ready := true
 		if err := db.Health(r.Context()); err != nil {
-			httpx.JSON(w, http.StatusServiceUnavailable, map[string]string{"status": "db_unavailable"})
-			return
+			deps["database"] = "unavailable"
+			ready = false
+		} else {
+			deps["database"] = "ok"
 		}
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		if err := events.Ping(r.Context()); err != nil {
+			deps["event_store"] = "unavailable"
+			ready = false
+		} else {
+			deps["event_store"] = "ok (" + esBackend + ")"
+		}
+		status, code := "ready", http.StatusOK
+		if !ready {
+			status, code = "not_ready", http.StatusServiceUnavailable
+		}
+		httpx.JSON(w, code, map[string]any{"status": status, "dependencies": deps})
 	})
 	// Prometheus scrape endpoint (unauthenticated, for the metrics collector).
 	mux.Handle("GET /metrics", metrics.Handler())

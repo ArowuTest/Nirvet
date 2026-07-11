@@ -82,7 +82,7 @@ func NewNATS(ctx context.Context, url string) (*NATSQueue, error) {
 	}
 	return &NATSQueue{
 		nc: nc, js: js, cons: cons,
-		backoff:  backoffSeconds * time.Second,
+		backoff:  backoffBaseSeconds * time.Second,
 		inflight: map[uuid.UUID]jetstream.Msg{},
 	}, nil
 }

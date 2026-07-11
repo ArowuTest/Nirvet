@@ -25,11 +25,17 @@ const (
 
 // Descriptor describes a connector type in the catalogue (backlog: Integration Roadmap).
 type Descriptor struct {
-	Key       string    `json:"key"`       // "microsoft-365", "entra-id", "defender", ...
-	Name      string    `json:"name"`      // R6: explicit snake_case tags — this is serialised by the
-	Category  string    `json:"category"`  // /connectors/catalogue endpoint; tag-less fields would render
-	Direction Direction `json:"direction"` // as PascalCase, inconsistent with every other API payload.
-	Phase     string    `json:"phase"`     // Identity|EDR|Cloud|Firewall|Ticketing|Generic ; MVP|V1|V2
+	Key      string   `json:"key"`      // "microsoft-365", "entra-id", "defender", ...
+	Name     string   `json:"name"`     // R6: explicit snake_case tags — this is serialised by the
+	Category string   `json:"category"` // /connectors/catalogue endpoint; tag-less fields would render
+	// Direction is the coarse legacy classification (read|action) kept for back-compat.
+	Direction Direction `json:"direction"`
+	// Capabilities is the EXPLICIT capability set (external-review): a single read/action direction can't
+	// express that Defender both pulls telemetry AND takes response actions. Drives licensing, UI display,
+	// entitlement + authority-to-act checks, and connector-health surfacing. e.g. pull_alerts, receive_webhook,
+	// isolate_endpoint, release_endpoint, disable_user, enable_user.
+	Capabilities []string `json:"capabilities"`
+	Phase        string   `json:"phase"` // Identity|EDR|Cloud|Firewall|Ticketing|Generic ; MVP|V1|V2
 }
 
 // Puller pulls events from a source into the platform (feeds ingestion → EventStore).
@@ -47,8 +53,38 @@ type Actioner interface {
 	Execute(ctx context.Context, tenantID uuid.UUID, action string, params map[string]any) error
 }
 
-// Registry holds available connector descriptors (MVP catalogue).
+// capabilitiesByKey is the explicit per-connector capability set. Read connectors pull telemetry;
+// Defender/Entra are dual (telemetry + response); generic ingress connectors receive pushes.
+var capabilitiesByKey = map[string][]string{
+	"microsoft-365":      {"pull_alerts"},
+	"entra-id":           {"disable_user", "enable_user"},
+	"defender":           {"pull_alerts", "isolate_endpoint", "release_endpoint"},
+	"syslog":             {"receive_syslog"},
+	"webhook":            {"receive_webhook"},
+	"crowdstrike-falcon": {"receive_webhook", "pull_alerts"},
+	"okta":               {"receive_webhook"},
+	"palo-alto":          {"receive_webhook"},
+	"aws-guardduty":      {"receive_webhook"},
+	"azure-sentinel":     {"receive_webhook"},
+	"gcp-scc":            {"receive_webhook"},
+}
+
+// Registry holds available connector descriptors (MVP catalogue). Capabilities are attached per key.
 func Registry() []Descriptor {
+	ds := registryBase()
+	for i := range ds {
+		if caps, ok := capabilitiesByKey[ds[i].Key]; ok {
+			ds[i].Capabilities = caps
+		} else if ds[i].Direction == DirectionAction {
+			ds[i].Capabilities = []string{"action"}
+		} else {
+			ds[i].Capabilities = []string{"pull_alerts"}
+		}
+	}
+	return ds
+}
+
+func registryBase() []Descriptor {
 	return []Descriptor{
 		{Key: "microsoft-365", Name: "Microsoft 365", Category: "Productivity", Direction: DirectionRead, Phase: "MVP"},
 		{Key: "entra-id", Name: "Entra ID", Category: "Identity", Direction: DirectionAction, Phase: "MVP"},

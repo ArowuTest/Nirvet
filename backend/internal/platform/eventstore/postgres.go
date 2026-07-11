@@ -21,6 +21,9 @@ type PostgresStore struct {
 // NewPostgres builds a Postgres-backed event store.
 func NewPostgres(db *database.DB) *PostgresStore { return &PostgresStore{db: db} }
 
+// Ping verifies backend connectivity for the readiness probe.
+func (s *PostgresStore) Ping(ctx context.Context) error { return s.db.Pool.Ping(ctx) }
+
 // Append inserts events idempotently (ON CONFLICT (tenant_id, dedupe_key) DO
 // NOTHING) and returns the count newly inserted.
 func (s *PostgresStore) Append(ctx context.Context, tenantID uuid.UUID, events []NormalizedEvent) (int, error) {
