@@ -105,7 +105,7 @@ func main() {
 		os.Exit(1)
 	}
 	ingestSvc := ingestion.NewService(ingestion.NewRepository(db), jobs, nil, blobs)
-	poller := connector.NewPoller(connector.NewRepository(db), connector.NewVault(cipher), ingestSvc, log)
+	poller := connector.NewPoller(connector.NewRepository(db), connector.NewVault(cipher).WithDB(db), ingestSvc, log)
 	go poller.Start(ctx, time.Minute)
 	// §6.4 #118 host-telemetry health (US-032): a host source (osquery/Wazuh) that reported before but has gone
 	// silent is a detection GAP — alert once per silence episode. last-seen is recorded on every keyed ingest;
@@ -137,7 +137,7 @@ func main() {
 	// CredDecryptor (slice C): vault-decrypts a tenant's connector creds for Phase B of a resumed
 	// containment run. §6.11 slice C registers the real Defender isolate/release Actioners so the resume
 	// loop can re-drive a stranded containment step (dormant until a tenant enables destructive actions).
-	soarCreds := connector.NewCredentialResolver(connector.NewRepository(db), connector.NewVault(cipher))
+	soarCreds := connector.NewCredentialResolver(connector.NewRepository(db), connector.NewVault(cipher).WithDB(db))
 	soarReg := soar.NewActionerRegistry()
 	for _, a := range connector.NewDefenderActioner("", "", "", nil).Actioners() {
 		soarReg.Register(a)

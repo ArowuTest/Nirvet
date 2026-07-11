@@ -25,6 +25,7 @@ type Credentials struct {
 
 // connectorSecret is a tenant connector's sealed credential + config for an authorized action call.
 type connectorSecret struct {
+	ID     uuid.UUID
 	Secret []byte
 	Config map[string]any
 }
@@ -37,9 +38,9 @@ func (r *Repository) getCredentialsByKind(ctx context.Context, tenantID uuid.UUI
 	var cfg []byte
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT secret_ciphertext, config FROM connector_configs
+			`SELECT id, secret_ciphertext, config FROM connector_configs
 			  WHERE tenant_id=$1 AND kind=$2 AND enabled=true AND secret_ciphertext IS NOT NULL
-			  ORDER BY created_at DESC LIMIT 1`, tenantID, kind).Scan(&cs.Secret, &cfg)
+			  ORDER BY created_at DESC LIMIT 1`, tenantID, kind).Scan(&cs.ID, &cs.Secret, &cfg)
 	})
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("no enabled %q connector with credentials for tenant", kind)
@@ -71,7 +72,7 @@ func (c *CredentialResolver) ConnectorCreds(ctx context.Context, tenantID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	secret, err := c.vault.Open(tenantID, cs.Secret)
+	secret, err := c.vault.Open(ctx, tenantID, cs.ID, "soar_action", cs.Secret)
 	if err != nil {
 		return nil, err
 	}

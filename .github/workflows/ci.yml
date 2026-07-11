@@ -55,6 +55,9 @@ jobs:
       - name: Guard — session tokens minted only via the MintSession chokepoint (MA-SR-9 stamp completeness)
         working-directory: backend
         run: bash scripts/check-session-mint-single-path.sh
+      - name: Guard — connector credential decrypts audited via Vault.Open (ADR-0004 §6 / GC-1)
+        working-directory: backend
+        run: bash scripts/check-connector-decrypt-audit.sh
       - name: Apply migrations
         working-directory: backend
         env:

@@ -10,9 +10,12 @@ package connector
 import (
 	"context"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
+	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Direction of a connector's capability.
@@ -25,9 +28,9 @@ const (
 
 // Descriptor describes a connector type in the catalogue (backlog: Integration Roadmap).
 type Descriptor struct {
-	Key      string   `json:"key"`      // "microsoft-365", "entra-id", "defender", ...
-	Name     string   `json:"name"`     // R6: explicit snake_case tags — this is serialised by the
-	Category string   `json:"category"` // /connectors/catalogue endpoint; tag-less fields would render
+	Key      string `json:"key"`      // "microsoft-365", "entra-id", "defender", ...
+	Name     string `json:"name"`     // R6: explicit snake_case tags — this is serialised by the
+	Category string `json:"category"` // /connectors/catalogue endpoint; tag-less fields would render
 	// Direction is the coarse legacy classification (read|action) kept for back-compat.
 	Direction Direction `json:"direction"`
 	// Capabilities is the EXPLICIT capability set (external-review): a single read/action direction can't
@@ -102,19 +105,44 @@ func registryBase() []Descriptor {
 	}
 }
 
-// Vault stores and retrieves connector credentials, encrypted per tenant (ADR-0004).
-// TODO: persist ciphertext in a connector_credentials table; here it only wraps the cipher.
-type Vault struct{ cipher crypto.SecretCipher }
+// Vault stores and retrieves connector credentials, encrypted per tenant (ADR-0004). Open is the single
+// AUDITED chokepoint for connector-credential decrypts (GC-1): ADR-0004 §6 mandates that every decrypt/use
+// of a connector credential writes an immutable audit event — so the decrypt path itself audits, rather than
+// relying on each caller to remember. A CI fence (scripts/check-connector-decrypt-audit.sh) forbids any
+// other decrypt of connector secrets, mirroring the session-mint single-path fence.
+type Vault struct {
+	cipher crypto.SecretCipher
+	db     *database.DB // nil in unit tests => audit skipped; wired in prod via WithDB
+}
 
 // NewVault builds the credential vault.
 func NewVault(cipher crypto.SecretCipher) *Vault { return &Vault{cipher: cipher} }
+
+// WithDB wires the DB so Open can write the ADR-0004 credential-decrypt audit event. Returns the vault.
+func (v *Vault) WithDB(db *database.DB) *Vault { v.db = db; return v }
 
 // Seal encrypts a secret for storage.
 func (v *Vault) Seal(tenantID uuid.UUID, secret []byte) ([]byte, error) {
 	return v.cipher.Encrypt(tenantID, secret)
 }
 
-// Open decrypts a stored secret (in memory only; never log the result).
-func (v *Vault) Open(tenantID uuid.UUID, ciphertext []byte) ([]byte, error) {
-	return v.cipher.Decrypt(tenantID, ciphertext)
+// Open decrypts a stored connector secret (in memory only; never log the result) and audits the access
+// (ADR-0004 §6). purpose describes why (poll/probe/soar_action). The audit is a system-actor event in the
+// tenant's context; a failed audit write must not silently drop a decrypt from the trail, so it fails the op.
+func (v *Vault) Open(ctx context.Context, tenantID, connectorID uuid.UUID, purpose string, ciphertext []byte) ([]byte, error) {
+	plain, err := v.cipher.Decrypt(tenantID, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	if v.db != nil {
+		if aerr := v.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return audit.Record(ctx, tx, audit.Entry{
+				Action: "connector.credential_decrypt", Target: "connector:" + connectorID.String(),
+				Metadata: map[string]any{"purpose": purpose},
+			})
+		}); aerr != nil {
+			return nil, aerr
+		}
+	}
+	return plain, nil
 }

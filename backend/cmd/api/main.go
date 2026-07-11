@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/net/netutil"
 
 	"github.com/ArowuTest/nirvet/api"
@@ -80,6 +81,17 @@ var (
 // httpMaxConns caps concurrent API connections (M-4 DoS backstop). Tunable at the deployment layer.
 const httpMaxConns = 2048
 
+// cipherSecretBox adapts crypto.SecretCipher to the ai.SecretBox interface (Seal/Open) — AI provider API
+// keys are a distinct secret class from connector credentials, so they don't go through the connector vault.
+type cipherSecretBox struct{ c crypto.SecretCipher }
+
+func (b cipherSecretBox) Seal(scope uuid.UUID, pt []byte) ([]byte, error) {
+	return b.c.Encrypt(scope, pt)
+}
+func (b cipherSecretBox) Open(scope uuid.UUID, ct []byte) ([]byte, error) {
+	return b.c.Decrypt(scope, ct)
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -116,7 +128,7 @@ func main() {
 		log.Error("crypto init failed", "err", err)
 		os.Exit(1)
 	}
-	vault := connector.NewVault(cipher) // ADR-0004 credential vault
+	vault := connector.NewVault(cipher).WithDB(db) // ADR-0004 credential vault (GC-1: Open audits decrypts)
 
 	blobs, err := blobstore.New(cfg.GCSBucket, cfg.BlobDir) // ADR-0002/0005 evidence store
 	if err != nil {
@@ -312,12 +324,15 @@ func main() {
 	aiSvc.WithIncidentContext(incidentSvc, assetSvc)
 	// §6.12 #117 A-5: resolve the tenant's configured provider per call (anthropic / openai_compatible / disabled),
 	// fail-closed. The global anthropic seed keeps current behavior; api keys unseal through the same vault.
-	aiSvc.WithResolver(ai.NewResolver(ai.NewRepository(db), cfg.AnthropicAPIKey, cfg.AIModel, ai.NewVaultKeyResolver(vault)))
+	// AI provider API keys are a SEPARATE secret class from connector credentials, so they seal/unseal through
+	// a cipher-backed box (not the audited connector vault, whose Open is connector-credential-specific, GC-1).
+	aiBox := cipherSecretBox{cipher}
+	aiSvc.WithResolver(ai.NewResolver(ai.NewRepository(db), cfg.AnthropicAPIKey, cfg.AIModel, ai.NewVaultKeyResolver(aiBox)))
 	aiH := ai.NewHandler(aiSvc)
 	// §6.12 #117 admin-configurable AI providers: config surface (global default + per-tenant override + platform
 	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
 	// boundary. DORMANT — the seeded global anthropic row keeps current behavior until an admin changes it.
-	aiCfgH := ai.NewConfigHandler(ai.NewConfigService(ai.NewRepository(db), vault))
+	aiCfgH := ai.NewConfigHandler(ai.NewConfigService(ai.NewRepository(db), aiBox))
 	// §6.18 #122 platform-admin: safety-classed feature flags, tenant lifecycle (legal hold / uniform offboarding),
 	// maintenance windows. The safety gates (immutable/protected/four-eyes, legal-hold-blocks-delete, critical-breaks-
 	// through) live in the services; the handler is thin plumbing. All routes are padmin-gated below.

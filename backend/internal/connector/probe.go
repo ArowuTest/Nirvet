@@ -41,7 +41,7 @@ func (s *Service) TestConnection(ctx context.Context, tenantID, id uuid.UUID) (*
 	if len(c.Secret) == 0 {
 		return &ProbeResult{Status: "failed", Detail: "no credentials configured"}, nil
 	}
-	secret, err := s.vault.Open(tenantID, c.Secret)
+	secret, err := s.vault.Open(ctx, tenantID, c.ID, "probe", c.Secret)
 	if err != nil {
 		return &ProbeResult{Status: "failed", Detail: "could not decrypt the stored secret"}, nil
 	}

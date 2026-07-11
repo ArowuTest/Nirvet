@@ -72,7 +72,7 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 		if len(pc.Secret) == 0 {
 			continue // not configured with credentials yet
 		}
-		secret, err := p.vault.Open(pc.TenantID, pc.Secret)
+		secret, err := p.vault.Open(ctx, pc.TenantID, pc.ID, "poll", pc.Secret)
 		if err != nil {
 			p.log.Warn("poller: cannot decrypt connector secret", "connector", pc.ID)
 			continue
