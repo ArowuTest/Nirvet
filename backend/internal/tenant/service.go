@@ -29,8 +29,23 @@ type CreateInput struct {
 	IsolationTier IsolationTier `json:"isolation_tier"`
 }
 
-// Create validates and persists a new tenant (defaults: standard/pooled/onboarding).
+// Create validates and persists a new tenant (defaults: standard/pooled/onboarding) together with its
+// fail-closed default governance, atomically (CreateSeeded) — never half-provisioned.
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, error) {
+	t, err := s.build(in, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.CreateSeeded(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// build validates a CreateInput (defaults + fail-closed enum validation) and constructs the Tenant with an
+// optional external_ref (the batch idempotency key). Shared by Create and CreateBatch so single-create and the
+// batch path validate, default, and shape a tenant identically — the secure defaults cannot drift.
+func (s *Service) build(in CreateInput, externalRef string) (*Tenant, error) {
 	if strings.TrimSpace(in.Name) == "" {
 		return nil, httpx.ErrBadRequest("name is required")
 	}
@@ -48,23 +63,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Tenant, error) {
 	if !validIsolationTier[in.IsolationTier] {
 		return nil, httpx.ErrBadRequest("invalid isolation_tier")
 	}
-	t := &Tenant{
+	return &Tenant{
 		ID:            uuid.New(),
-		Name:          in.Name,
+		Name:          strings.TrimSpace(in.Name),
 		Sector:        in.Sector,
 		Country:       in.Country,
 		ServiceTier:   in.ServiceTier,
 		IsolationTier: in.IsolationTier,
 		Status:        StatusOnboarding,
-	}
-	if err := s.repo.Create(ctx, t); err != nil {
-		return nil, err
-	}
-	// Seed the tenant's default governance config (profile + fail-closed catch-all authority
-	// policy) so no tenant is ever unconfigured (TEN-006). Best-effort: GetProfile and
-	// ResolveAuthority both lazily self-heal / fall back fail-closed if this did not land.
-	_ = s.repo.SeedGovernance(ctx, t.ID)
-	return t, nil
+		ExternalRef:   strings.TrimSpace(externalRef),
+	}, nil
 }
 
 // List returns all tenants.

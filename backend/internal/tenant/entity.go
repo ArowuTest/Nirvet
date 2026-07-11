@@ -55,5 +55,6 @@ type Tenant struct {
 	ServiceTier   ServiceTier   `json:"service_tier"`
 	IsolationTier IsolationTier `json:"isolation_tier"`
 	Status        Status        `json:"status"`
+	ExternalRef   string        `json:"external_ref,omitempty"` // operator's MDA id; batch idempotency key (empty = NULL)
 	CreatedAt     time.Time     `json:"created_at"`
 }

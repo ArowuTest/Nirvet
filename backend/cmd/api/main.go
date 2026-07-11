@@ -449,6 +449,9 @@ func main() {
 	mux.Handle("POST /admin/elevations/{id}/review", manager(iamH.ReviewElevation))
 	// platform admin
 	mux.Handle("POST /admin/tenants", padmin(tenantH.Create))
+	// Bulk onboarding factory (Ghana launch long-pole): batch-create tenants, each via the same secure atomic
+	// path; per-row result report; idempotent on external_ref. padmin-only.
+	mux.Handle("POST /admin/tenants/batch", padmin(tenantH.CreateBatch))
 	// Vendor posture oversight (MA-4): metadata-only fleet health, platform_admin (vendor seat) only. The
 	// scope-resolver also fail-closes any non-vendor principal to an empty scope (defense in depth).
 	mux.Handle("GET /posture/fleet", padmin(postureH.Fleet))
