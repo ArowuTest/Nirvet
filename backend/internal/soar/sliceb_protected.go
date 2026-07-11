@@ -20,8 +20,10 @@ type ProtectedTargetGuard interface {
 	CheckProtected(ctx context.Context, tenantID uuid.UUID, connectorKey, actionKey, target string, creds []byte) (protected bool, reason string, err error)
 }
 
-// WithGuard wires the protected-target guard. Returns the supervisor for chaining.
-func (s *Supervisor) WithGuard(g ProtectedTargetGuard) *Supervisor { s.guard = g; return s }
+// WithGuard APPENDS a protected-target guard to the chain (identity, host, …) — call it once per guard.
+// Every guard in the chain is consulted before a destructive action; any one may withhold. Returns the
+// supervisor for chaining.
+func (s *Supervisor) WithGuard(g ProtectedTargetGuard) *Supervisor { s.guards = append(s.guards, g); return s }
 
 // ProtectedIdentities returns the tenant's own + global protected identity refs (lower-cased) — the L1 deny-list.
 func (r *Repository) ProtectedIdentities(ctx context.Context, tenantID uuid.UUID) ([]string, error) {
@@ -31,6 +33,12 @@ func (r *Repository) ProtectedIdentities(ctx context.Context, tenantID uuid.UUID
 // ProtectedRoles returns the tenant's own + global protected directory-role names (lower-cased) — L2.
 func (r *Repository) ProtectedRoles(ctx context.Context, tenantID uuid.UUID) ([]string, error) {
 	return r.protectedList(ctx, tenantID, `SELECT lower(role_name) FROM protected_directory_roles`)
+}
+
+// ProtectedHosts returns the tenant's own + global protected-host patterns (lower-cased) — the host-isolation
+// blast-radius net (M3), matched as case-insensitive substrings against an isolate target.
+func (r *Repository) ProtectedHosts(ctx context.Context, tenantID uuid.UUID) ([]string, error) {
+	return r.protectedList(ctx, tenantID, `SELECT lower(pattern) FROM protected_hosts`)
 }
 
 func (r *Repository) protectedList(ctx context.Context, tenantID uuid.UUID, q string) ([]string, error) {

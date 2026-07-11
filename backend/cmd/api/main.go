@@ -293,7 +293,8 @@ func main() {
 	// the same D5 protected-identity guard (blast-radius) + the failed/withheld-containment alerter.
 	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soarReg, soarCreds, log).
 		WithAlerter(soarwire.NewContainmentAlerter(alertSvc, outboxRepo)).
-		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)))
+		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)). // D5 identity net
+		WithGuard(connector.NewHostProtectedGuard(soarRepo)))                   // D5 host net (M3)
 	soarH := soar.NewHandler(soarSvc)
 	// Fleet destructive path (Ghana operator seam #3): a fleet operator fires/approves a SOAR containment on
 	// a target tenant's alert. RunForTarget/ApproveForTarget evaluate per-target authority in the target's

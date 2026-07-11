@@ -44,8 +44,8 @@ type Supervisor struct {
 	actioners *ActionerRegistry
 	creds     CredDecryptor
 	log       *slog.Logger
-	alerter   ContainmentAlerter   // optional; surfaces a failed/stalled containment (reconciler D-3)
-	guard     ProtectedTargetGuard // optional; blast-radius refusal for a protected target (D5)
+	alerter   ContainmentAlerter     // optional; surfaces a failed/stalled containment (reconciler D-3)
+	guards    []ProtectedTargetGuard // optional; blast-radius refusal for a protected target (D5) — consulted in order, ANY protected/error → withhold
 }
 
 // NewSupervisor builds the engine. A nil actioner registry means "no real containment wired" (every
@@ -198,8 +198,11 @@ func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth
 	// (last Global-Admin / break-glass / crown-jewel host / the identity Nirvet authenticates as). Consulted
 	// AFTER creds decrypt (the check may need them) and BEFORE the Actioner call. A guard ERROR fails CLOSED —
 	// when we cannot verify the blast radius we refuse rather than act.
-	if s.guard != nil {
-		protected, reason, gerr := s.guard.CheckProtected(ctx, tenantID, act.ConnectorKey, act.ActionKey, target, creds)
+	// Consult EVERY guard in the chain (identity + host + any future vendor). ANY one returning protected —
+	// or erroring — withholds: a target is safe to action only if NO guard objects, and an unverifiable blast
+	// radius is a refusal, never an action.
+	for _, guard := range s.guards {
+		protected, reason, gerr := guard.CheckProtected(ctx, tenantID, act.ConnectorKey, act.ActionKey, target, creds)
 		if gerr != nil || protected {
 			msg := "protected target: " + reason
 			if gerr != nil {
