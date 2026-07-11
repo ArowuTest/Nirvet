@@ -22,16 +22,66 @@ func NewService(db *database.DB) *Service {
 	return &Service{db: db, repo: NewRepository(db)}
 }
 
-// resolveScope maps the reader to the tenant-set it may see posture for — derived PURELY from the principal
-// (MA4-3), never from client input, and FAIL-CLOSED. The vendor posture-oversight seat is platform_admin (the
-// vendor-vs-operator seat distinction itself is §6.18 provisioning, not a slice-A code gate): a platform_admin
-// resolves to the whole instance; every other principal resolves to an EMPTY set → zero rows via the
-// fail-closed SD function. Deriving from the principal means a "who is the vendor" bug fails CLOSED, not open.
+// resolveScope maps the reader to the tenant-set it may see posture for — derived PURELY from the principal,
+// never from client input, and FAIL-CLOSED. This is the BOLA boundary of the oversight-read family, so it is a
+// CLOSED switch whose DEFAULT is EMPTY (MA-OV-1: an unrecognized/ungranted principal → empty → the SD function's
+// zero rows; never a widening default). Every arm derives its tenant-set from the AUTHENTICATED principal
+// (MA-OV-2: platform_admin from role; org-sub-admin/payer from a grant lookup keyed on p.UserID) — there is no
+// org/account/tenant id anywhere in the request path a caller can supply to widen. Whatever set this returns is
+// then funnelled through the capped, fail-closed tenant_posture_fleet() SD function (MA-OV-4).
 func (s *Service) resolveScope(ctx context.Context, p auth.Principal) ([]uuid.UUID, error) {
-	if p.Role != auth.RolePlatformAdmin {
-		return nil, nil // fail-closed: no posture oversight scope for a non-vendor principal
+	switch p.Role {
+	case auth.RolePlatformAdmin:
+		return s.allInstanceTenants(ctx) // vendor/platform seat: the whole instance
+	case auth.RoleOrgSubAdmin:
+		return s.orgScope(ctx, p.UserID) // only the tenants of the orgs this principal is granted
+	case auth.RolePayer:
+		return s.payerScope(ctx, p.UserID) // only the tenants covered by the accounts this principal is granted
+	default:
+		return nil, nil // MA-OV-1: closed switch, empty default — no oversight scope
 	}
-	return s.allInstanceTenants(ctx)
+}
+
+// orgScope returns the tenants belonging to the organisations this principal holds an org_admin_grant for. The
+// grant set is keyed on the AUTHENTICATED p.UserID (MA-OV-2) — never a client-supplied org id. Read under
+// WithSystem (grant + tenants registries are not per-tenant-RLS'd); a principal with no grant → empty.
+func (s *Service) orgScope(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.scanTenantIDs(ctx, `
+		SELECT t.id FROM tenants t
+		 WHERE t.org_id IN (SELECT org_id FROM org_admin_grant WHERE principal_id = $1)
+		 ORDER BY t.id`, userID)
+}
+
+// payerScope returns the tenants covered by the billing accounts this principal holds a payer_account_grant
+// for, via the cleared billing_account_tenants() SD function. Keyed on the authenticated p.UserID (MA-OV-2).
+func (s *Service) payerScope(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	return s.scanTenantIDs(ctx, `
+		SELECT bat.tenant_id
+		  FROM payer_account_grant g
+		  CROSS JOIN LATERAL billing_account_tenants(g.account_id) bat
+		 WHERE g.principal_id = $1
+		 ORDER BY bat.tenant_id`, userID)
+}
+
+// scanTenantIDs runs a principal-keyed scope query under WithSystem and returns the tenant-set.
+func (s *Service) scanTenantIDs(ctx context.Context, query string, userID uuid.UUID) ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	err := s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, query, userID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if e := rows.Scan(&id); e != nil {
+				return e
+			}
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	return ids, err
 }
 
 // allInstanceTenants lists every tenant in the instance (the fleet on a dedicated single-operator instance).

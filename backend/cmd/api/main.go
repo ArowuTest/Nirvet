@@ -164,6 +164,10 @@ func main() {
 	postureSvc := posture.NewService(db)
 	postureH := posture.NewHandler(postureSvc)
 	postureProjector := postureproj.NewProjector(db, postureSvc)
+	// Oversight scope-resolver family: org-sub-admin + payer read the SAME MA-4 posture, scoped by grant. The
+	// platform_admin administers the grants (issue/revoke, audited). Delegates are gated to the posture read;
+	// their scope is resolved from their own grants (never a client-supplied id).
+	grantH := posture.NewGrantHandler(posture.NewGrantService(db))
 
 	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
 	correlationSvc := correlation.NewService(correlation.NewRepository(db))
@@ -382,6 +386,9 @@ func main() {
 		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin))
 	}
 	detEng := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng)
+	// oversight: the metadata-only posture read for the oversight family — platform_admin (whole instance) +
+	// the scoped delegates (org-sub-admin, payer). resolveScope fail-closes any other principal to empty.
+	oversight := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleOrgSubAdmin, auth.RolePayer)
 	// SOAR approvals gate destructive automation, so they are restricted to senior roles (four-eyes is
 	// additionally enforced in the service: requester != approver).
 	soarApprover := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager)
@@ -454,9 +461,14 @@ func main() {
 	// Bulk onboarding factory (Ghana launch long-pole): batch-create tenants, each via the same secure atomic
 	// path; per-row result report; idempotent on external_ref. padmin-only.
 	mux.Handle("POST /admin/tenants/batch", padmin(tenantH.CreateBatch))
-	// Vendor posture oversight (MA-4): metadata-only fleet health, platform_admin (vendor seat) only. The
-	// scope-resolver also fail-closes any non-vendor principal to an empty scope (defense in depth).
-	mux.Handle("GET /posture/fleet", padmin(postureH.Fleet))
+	// Posture oversight read (MA-4 + oversight resolver family): metadata-only fleet health, scoped per role by
+	// resolveScope — platform_admin → whole instance; org-sub-admin/payer → their granted tenants; else empty.
+	mux.Handle("GET /posture/fleet", oversight(postureH.Fleet))
+	// Oversight grant management (MA-OV-3): platform_admin issues/revokes org/payer grants (audited).
+	mux.Handle("POST /admin/oversight/org-grants", padmin(grantH.GrantOrg))
+	mux.Handle("DELETE /admin/oversight/org-grants", padmin(grantH.RevokeOrg))
+	mux.Handle("POST /admin/oversight/payer-grants", padmin(grantH.GrantPayer))
+	mux.Handle("DELETE /admin/oversight/payer-grants", padmin(grantH.RevokePayer))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))
 	mux.Handle("GET /admin/tenants/{id}", padmin(tenantH.Get))
 	// Tenant governance (§6.1). Status lifecycle is a provider action (platform_admin only);

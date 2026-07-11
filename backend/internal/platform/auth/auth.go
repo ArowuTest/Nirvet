@@ -26,6 +26,10 @@ const (
 	RoleDetectionEng   Role = "detection_engineer"
 	RoleCustomerAdmin  Role = "customer_admin"
 	RoleCustomerViewer Role = "customer_viewer"
+	// Oversight scope-resolver family (Ghana operator seam): bounded, read-only, metadata-only cross-tenant
+	// oversight over a SUBSET of the fleet, scoped by a grant. NOT operator/provider roles.
+	RoleOrgSubAdmin Role = "org_sub_admin" // gov cyber authority overseeing its organisation's tenants
+	RolePayer       Role = "payer"         // anchor/central-buyer overseeing its billing account's tenants
 )
 
 // Principal is the authenticated actor for a request. ElevationID is set only on ELEVATED tokens
