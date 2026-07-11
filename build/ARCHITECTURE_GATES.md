@@ -2513,3 +2513,74 @@ per-sector template packs (framework/policy presets); auto-invitation-at-create 
 
 **→ Awaiting reviewer pre-code pass. No code until greenlit. Reviewer keeps pass 1 on padmin + break-glass in
 parallel. Nothing pushed; HEAD ce24ebd local.**
+
+## Gate — Syslog-listener ingress (Ghana operator L connector) — PRE-CODE DESIGN REVIEW — Jul 2026
+
+The reviewer flagged this as a SHARPER security surface than it looks, and that is correct on source-inspection:
+every ingress today is an AUTHENTICATED HTTP call — `POST /ingest` is `authed(...)` and derives the tenant from
+`p.TenantID` (the authenticated principal), NEVER from the payload. There is NO existing network listener in the
+codebase (no `net.Listen`/UDP/syslog anywhere). So a syslog listener is the platform's FIRST non-HTTP,
+first **unauthenticated-network** ingress — a raw TCP/UDP socket a customer network pushes into. Its whole risk
+is that it must re-establish, over a channel with no JWT, the same tenant-isolation the rest of the platform
+gets from authenticated principals. It gets a real gate on the reviewer's four bars.
+
+### Model
+A net-new listener process (separate from the HTTP server, lifecycle like the worker loops), CONFIG-GATED OFF by
+default and bound to a PRIVATE interface only (never the public internet — in the sovereign/dedicated deploy it
+is reachable only over the customer's private link/VPN). A received line is authenticated → attributed to a
+tenant → parsed into an `IngestInput` → handed to the EXISTING atomic `ingestion.Ingest(ctx, tenantID, in)`
+(StoreRaw+Enqueue, the Critical-#4 atomic path) so a received line is durably ingested. Nothing about the
+downstream pipeline changes; the entire security surface is the listen→authenticate→attribute→parse front edge.
+
+### The four security bars (reviewer — each is a landing-round probe)
+- **BAR-1 Source authentication (trust anchor, explicit):** plain UDP/TCP syslog is trivially spoofable, so the
+  primary trust anchor is **syslog-over-TLS (RFC 5425) with a mTLS CLIENT CERTIFICATE** — the customer's
+  forwarder presents a cert issued/registered for that tenant. A per-tenant-dedicated private port + strict
+  IP-allowlist is the ONLY acceptable fallback, and only on a genuinely isolated per-tenant network segment
+  (documented as a deployment constraint). NO unauthenticated public listener, ever.
+- **BAR-2 Tenant attribution (the cross-tenant integrity core — write-side twin of the read isolation):** the
+  tenant is derived from the AUTHENTICATED CHANNEL only — the mTLS cert fingerprint → a `syslog_sources`
+  registry row (tenant_id). It is NEVER read from a field inside the syslog payload (HOSTNAME / APP-NAME / tag),
+  because a malicious or misconfigured sender could then inject events attributed to ANOTHER tenant. A line whose
+  channel maps to no registered source **fails closed — dropped, never guessed** (and audited, see open Q).
+- **BAR-3 Parser hardening (untrusted input at volume):** RFC 5424/3164 parsing with octet-counting framing
+  (RFC 6587) on TCP; a hard max message size (oversized → truncate/drop, no unbounded buffer); malformed /
+  bad-encoding lines → drop + metric, NEVER crash the listener; per-line fail-safe (one bad line never drops the
+  connection's other lines or the batch). No panics escape the per-connection goroutine (panic-guard like the
+  worker loops).
+- **BAR-4 Rate / DoS:** per-source (per-tenant) token-bucket rate limit + a max-connections cap + read/idle
+  timeouts + bounded per-connection work, so one tenant's firehose (accidental or hostile) cannot starve the
+  listener for other tenants. Backpressure over unbounded buffering.
+
+### New schema
+`syslog_sources` — (id, tenant_id, name, cert_fingerprint [and/or allowed_cidr], enabled). Registered by padmin
+/ the onboarding factory; **secure default = disabled** until a source credential is configured (a tenant has no
+syslog ingress until an operator explicitly provisions one). tenant_id is the attribution key; the fingerprint/
+cidr is the channel credential. (RLS/registry treatment: like other operator-registry tables.)
+
+### Scope — slice A
+TLS listener (mTLS) + `syslog_sources` registry + RFC-5424 parser (bounded, fail-safe per line) → existing
+`Ingest(tenantID)` + per-source rate limit; config-gated, private-bind. **Deferred (own follow-ons):** UDP
+(RFC 5426); high-scale tuning / sharded listeners; a source-provisioning UI; relp/other framings.
+
+### Centerpiece tests
+1. **Spoof/unregistered source → dropped, no ingest** (channel maps to no `syslog_sources` row → fail-closed).
+2. **Payload-claimed tenant is ignored:** a line whose HOSTNAME/tag names tenant B, arriving on tenant A's
+   authenticated channel, is ingested as **tenant A** (attribution is the channel, never the payload) — the
+   cross-tenant-injection probe.
+3. **Malformed / oversized line → dropped + counted, listener survives, other lines/connections unaffected.**
+4. **Per-source rate cap:** a firehose from one source is throttled and does not starve a second source.
+5. **Happy path:** a well-formed line on tenant A's channel lands as tenant A's event via the atomic pipeline.
+
+### Open questions for the reviewer's pre-code pass
+1. **mTLS-only, or allow the IP-allowlist/dedicated-port fallback** for private-network deploys where a customer
+   forwarder can't do mTLS? (Leaning: mTLS primary; allowlist permitted only on an isolated segment, documented.)
+2. **TCP+TLS only for slice A, UDP deferred?** (Leaning yes — UDP has no channel to authenticate without DTLS.)
+3. **Source-miss handling:** silent drop + metric, or drop + a security audit/alert (possible attribution attack
+   or misconfig)? (Leaning: drop + audit, rate-limited, so it's visible without becoming its own DoS.)
+4. **Cert trust:** pin per-source fingerprint, or validate against a per-tenant CA + match subject → source?
+5. **Where it runs:** inline-worker-style loop in the api process (private port) vs a separate `cmd/`. (Leaning:
+   its own bind, started alongside the worker, config-gated.)
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit. Reviewer pre-passes against BAR-1..4; pass 1
+continues on padmin/break-glass. Nothing pushed; HEAD 9f15a79 local.**
