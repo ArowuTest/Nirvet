@@ -11,11 +11,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/netutil"
 
 	"github.com/ArowuTest/nirvet/api"
 	"github.com/ArowuTest/nirvet/internal/ai"
@@ -73,6 +76,9 @@ var (
 	seniorRoles  = auth.SeniorRoles() // single source of truth (auth.IsSenior gates the same set)
 	managerRoles = []auth.Role{auth.RolePlatformAdmin, auth.RoleSOCManager}
 )
+
+// httpMaxConns caps concurrent API connections (M-4 DoS backstop). Tunable at the deployment layer.
+const httpMaxConns = 2048
 
 func main() {
 	cfg, err := config.Load()
@@ -805,9 +811,26 @@ func main() {
 		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper + notification dispatcher started")
 	}
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	// M-4 (DoS): full server timeouts + a bounded header + a concurrent-connection cap, so a slow-loris /
+	// header-flood / connection-exhaustion attack can't tie up the API. WriteTimeout is generous for large
+	// report/evidence downloads. The syslog listener already limits connections the same way.
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      300 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	ln, lerr := net.Listen("tcp", cfg.HTTPAddr)
+	if lerr != nil {
+		log.Error("listen error", "err", lerr)
+		os.Exit(1)
+	}
+	ln = netutil.LimitListener(ln, httpMaxConns)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("server error", "err", err)
 			os.Exit(1)
 		}

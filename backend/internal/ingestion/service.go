@@ -46,6 +46,10 @@ type Service struct {
 // on first sight (cache miss), so coverage sees it immediately.
 const sourceUpsertWindow = 5 * time.Minute
 
+// maxSrcSeen bounds the in-memory source-debounce map (M-2 DoS): a hard cap on distinct (tenant, source)
+// keys so a flood of source names cannot grow it without limit.
+const maxSrcSeen = 50000
+
 // NewService builds the service. quota may be nil to disable quota enforcement.
 func NewService(repo *Repository, q queue.Queue, quota QuotaChecker, blobs blobstore.Store) *Service {
 	return &Service{repo: repo, q: q, quota: quota, blobs: blobs, srcSeen: map[string]time.Time{}}
@@ -60,6 +64,20 @@ func (s *Service) recordSource(ctx context.Context, tenantID uuid.UUID, source s
 	if last, ok := s.srcSeen[key]; ok && now.Sub(last) < sourceUpsertWindow {
 		s.srcMu.Unlock()
 		return
+	}
+	// M-2 (DoS): the debounce map is keyed by (tenant, source) with no bound — a flood of distinct source
+	// names in a shared process would grow it without limit. Cap it: evict stale entries when at the cap,
+	// and if a burst of fresh distinct sources still fills it, reset the debounce entirely (worst case is an
+	// extra DB upsert, never unbounded memory).
+	if _, exists := s.srcSeen[key]; !exists && len(s.srcSeen) >= maxSrcSeen {
+		for k, t := range s.srcSeen {
+			if now.Sub(t) >= sourceUpsertWindow {
+				delete(s.srcSeen, k)
+			}
+		}
+		if len(s.srcSeen) >= maxSrcSeen {
+			s.srcSeen = map[string]time.Time{}
+		}
 	}
 	s.srcSeen[key] = now
 	s.srcMu.Unlock()
