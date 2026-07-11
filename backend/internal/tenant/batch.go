@@ -95,7 +95,7 @@ func (s *Service) createOneBatchRow(ctx context.Context, row BatchRow, rr *Batch
 		return
 	}
 	if err := s.repo.CreateSeeded(ctx, t); err != nil {
-		if isUniqueViolation(err) {
+		if isDuplicateExternalRef(err) {
 			rr.Status = "skipped_duplicate"
 			res.Skipped++
 			return
@@ -109,9 +109,11 @@ func (s *Service) createOneBatchRow(ctx context.Context, row BatchRow, rr *Batch
 	res.Created++
 }
 
-// isUniqueViolation reports whether err is a Postgres unique-constraint violation (SQLSTATE 23505) — here, a
-// duplicate external_ref hitting tenants_external_ref_uniq.
-func isUniqueViolation(err error) bool {
+// isDuplicateExternalRef reports whether err is specifically a duplicate external_ref collision (SQLSTATE 23505
+// on the tenants_external_ref_uniq index) — the ONLY case that is an idempotent skip. Matching the exact
+// constraint (not "any 23505") means a future unique constraint on tenants can never be silently mis-reported
+// as a skipped duplicate; it would surface as a real failure instead (LOW-ONB).
+func isDuplicateExternalRef(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "tenants_external_ref_uniq"
 }
