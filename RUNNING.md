@@ -90,7 +90,10 @@ All authenticated; provider (SOC) roles unless noted. See `cmd/api/main.go` for 
 - **Breadth modules:** connector webhook source-key auth (401/202) + encrypted creds; SOAR run→pending_approval→
   approve→completed under authority-to-act; AI summary (offline fallback or Claude with a key); threat-intel
   enrichment bumps confidence; reporting/compliance/billing endpoints.
-- **Build:** 28 Go packages `go build ./...` + `go vet ./...` clean (5 migrations). Frontend `next build` clean.
+- **Build:** 30+ Go packages `go build ./...` + `go vet ./...` clean (98 migrations, verified from-zero on a fresh
+  DB). Full test suite green incl. `-race` and the RLS integration suite. Frontend `next build` clean.
+- **API docs:** every route is browsable at **`GET /docs`** (Swagger UI) against **`GET /openapi.yaml`**; a CI
+  parity guard fails the build if a registered route is missing from the spec.
 
 ## Known local caveat (Windows MAX_PATH)
 
@@ -101,10 +104,16 @@ current deep folder.
 
 ## Status
 
-Working scaffold — the backend runs. Foundations (multi-tenancy/RLS, ingestion, event store, audit, credential
-vault, blob evidence, rate limiting) **and** all engines (detection, SOAR, AI, threat-intel, connectors,
-reporting, compliance, billing, notify) are **implemented and verified live** — not stubs. Cloud-portable
-(local → Render/Vercel → GCP, ADR-0005), with unit + integration tests, Dockerfiles and CI. **Not production** —
-a security architect reviews the final solution before go-live (see [`build/adr/`](build/adr/)). Remaining
-foundational work: MFA/SSO, real Microsoft OAuth pull connectors, syslog listener, ClickHouse at V1; UI dashboards
-(designer-provided HTML) come after.
+Feature-complete-for-launch backend, in production hardening. All 18 SRS §6 domains are **implemented and
+verified live** — not stubs: multi-tenancy/RLS, IAM (MFA/OIDC/SAML/API-keys/session-revocation/admin
+password-reset/per-user kill-switch), ingestion + mTLS syslog, the Postgres **and ClickHouse** event stores,
+detection (Sigma + CEL), correlation, incident/case management, evidence + signed chain-of-custody, vuln/exposure,
+SOAR with real Defender/Entra containment (four-eyes, dormant-by-default, protected-target guards), AI copilot +
+configurable providers, threat-intel (STIX 2.1), reporting (+ PDF), compliance, billing (umbrella accounts),
+notifications (+ in-app), and the Ghana operator layer (fleet oversight, bulk onboarding, white-label branding).
+Three independent security reviews + remediation, 0 Critical/High outstanding. Cloud-portable by construction
+(ADR-0005), with unit + integration tests (incl. `-race` + RLS suite), Dockerfiles and CI.
+
+**Not yet production.** The remaining pre-go-live work is the go-live cloud adapters (GCS object store, Cloud
+KMS, Pub/Sub — currently interface stubs, ADR-0005), ClickHouse production lifecycle (partitioning/TTL/retention),
+the customer-facing UI/portal, and a final security-architect sign-off. See [`build/adr/`](build/adr/).

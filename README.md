@@ -3,14 +3,16 @@
 > **Nirvet** · *Network Intelligence, Risk Visibility & Event Triage*
 
 **Nirvet** is a modular **Cyber Security Operations Platform** — a native SOC operating layer packaged as SOCaaS,
-MDR, Managed XDR, Sovereign SOC, Enterprise Private SOC, and MSSP white-label. This repository is currently the
-**planning & knowledge base** for the venture: the full requirements/design document suite, organised so any
-teammate — human or AI agent — can get oriented fast and build from a single source of truth.
+MDR, Managed XDR, Sovereign SOC, Enterprise Private SOC, and MSSP white-label. This repository holds both the
+built platform (`backend/`, `frontend/`) and its requirements/design source of truth (`docs/`), organised so any
+teammate — human or AI agent — can get oriented fast.
 
-> **Status:** Working scaffold — the backend runs. Go API + ingest worker + Next.js console + Postgres, with
-> the full SOC value loop, all engines, cloud-portable infra, tests and Docker/CI. Not production (pre-go-live
-> security-architect review pending). The `docs/` here are the requirements/design source of truth; the code lives
-> in `backend/`, `frontend/`, `deploy/`. See [RUNNING.md](RUNNING.md) for how to run and what's verified.
+> **Status:** Feature-complete-for-launch backend, in a production-hardening phase. All 18 SRS §6 domains are
+> implemented (not stubs), the SOC value loop runs end-to-end, and the codebase has been through three
+> independent security reviews plus remediation (0 Critical/High outstanding). Go API + ingest worker + Next.js
+> console + Postgres (98 migrations). **Not yet production:** the go-live cloud adapters (GCS object store, Cloud
+> KMS, Pub/Sub) and the customer-facing UI/portal are the remaining pre-go-live work — see the ADRs and
+> [RUNNING.md](RUNNING.md). The `docs/` remain the canonical requirements/design source; on any conflict, source wins.
 
 ## Start here
 
@@ -35,17 +37,26 @@ nirvet/
 │  ├─ source/           ← IMMUTABLE original files (.docx / .pdf / .xlsx) — never edit
 │  └─ markdown/         ← agent-readable conversions (00_SRS + 01–06 + Ghana)
 ├─ knowledge/           ← synthesized quick-reference (overview, requirements register, standards)
-└─ build/adr/           ← Architecture Decision Records (multi-tenancy, event store, ingestion, vault)
+└─ build/adr/           ← Architecture Decision Records (6: multi-tenancy, event store, ingestion, vault, cloud-portability, canonical schema)
 ```
 
-## Codebase (scaffold — runs locally)
+## Codebase
 
-- **Stack:** Go (entity→repo→usecase→handler) · Next.js + TypeScript · PostgreSQL · Render/Vercel → GCP.
-- **Working today:** the SOC value loop end-to-end (tenant → login → ingest → normalize → detect → alert →
-  incident) with **Postgres RLS tenant isolation** proven across tenants. See [RUNNING.md](RUNNING.md).
-- **Scaffolded (interfaces + stubs):** detection, SOAR, AI copilot, threat-intel, connectors, reporting,
-  compliance, billing, notify — structured so they slot in without re-architecting.
-- **Governed by** the four ADRs in [build/adr/](build/adr/).
+- **Stack:** Go (entity→repo→usecase→handler) · Next.js + TypeScript · PostgreSQL (RLS) · Render/Vercel now →
+  GCP/sovereign at go-live (ADR-0005).
+- **SOC value loop, end-to-end and live:** tenant → login → ingest → normalize → detect → correlate → alert →
+  incident → SOAR, with **Postgres RLS tenant isolation** proven across tenants. See [RUNNING.md](RUNNING.md).
+- **Built (not stubs):** detection (Sigma + CEL, lifecycle, MITRE), correlation + risk scoring, SOAR with real
+  Defender/Entra containment (four-eyes, dormant-by-default, protected-target guards), AI copilot + admin-
+  configurable providers, threat-intel (STIX 2.1), incident/case management, evidence + signed chain-of-custody,
+  vulnerability/exposure, reporting (+ zero-egress PDF), compliance, billing (umbrella accounts), notifications
+  (+ in-app inbox), IAM (MFA/OIDC/SAML/API-keys/session-revocation/admin password-reset/per-user kill-switch),
+  connectors (MS Graph/Defender/Entra pull+action, mTLS syslog, ServiceNow/Jira), and the Ghana operator layer
+  (fleet oversight, bulk onboarding, white-label branding).
+- **Portable by construction (ADR-0005):** relational/telemetry/object/queue/vault/LLM each sit behind a platform
+  interface. Postgres backs the MVP; the **ClickHouse** telemetry store is implemented; the **GCS**, **Cloud
+  KMS**, and **Pub/Sub** go-live adapters are in progress.
+- **Governed by** the six ADRs in [build/adr/](build/adr/).
 
 ## The core idea (in one line)
 
