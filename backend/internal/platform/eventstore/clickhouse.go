@@ -4,12 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/google/uuid"
 )
+
+// ttlDaysFromEnv returns the ClickHouse telemetry retention horizon in days (NIRVET_CLICKHOUSE_TTL_DAYS,
+// default 365). A non-positive or unparseable value falls back to the default.
+func ttlDaysFromEnv() int {
+	if v := os.Getenv("NIRVET_CLICKHOUSE_TTL_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 365
+}
 
 // ClickHouseStore is the V1 telemetry backend (ADR-0002): a columnar hot store for
 // high-volume security events. It satisfies the same EventStore interface as the
@@ -56,7 +69,23 @@ func NewClickHouse(ctx context.Context, dsn string) (*ClickHouseStore, error) {
 func (s *ClickHouseStore) Close() error { return s.conn.Close() }
 
 func (s *ClickHouseStore) migrate(ctx context.Context) error {
-	if err := s.conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS events (
+	// Production ops may pre-create the table through a CONTROLLED, versioned migration (a ClickHouse DDL
+	// change is not a safe on-startup operation at scale) and set NIRVET_CLICKHOUSE_AUTOCREATE=false so the
+	// app never issues DDL. Default (dev) auto-creates for convenience (external-review).
+	if os.Getenv("NIRVET_CLICKHOUSE_AUTOCREATE") == "false" {
+		return nil
+	}
+	// Production data-lifecycle (ADR-0002 §7 tiered retention, external-review):
+	//   - PARTITION BY month → retention is an O(1) partition DROP, and time-range scans prune partitions.
+	//   - ORDER BY leads with (tenant_id, observed_at) for tenant-scoped time-range performance; dedupe_key
+	//     stays in the key so ReplacingMergeTree still collapses true duplicates (same tenant+time+key).
+	//   - TTL DELETE at the configured retention horizon (NIRVET_CLICKHOUSE_TTL_DAYS, default 365) with
+	//     ttl_only_drop_parts so expiry drops whole parts cheaply.
+	// Hot/warm/cold VOLUME tiering (SSD→HDD→object) is a storage-policy concern configured on the ClickHouse
+	// cluster, and per-tenant/per-tier retention is a V1 refinement (a retention dictionary keyed on tenant) —
+	// both layer on top of this without a schema change.
+	ttlDays := ttlDaysFromEnv()
+	create := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS events (
 		id            UUID,
 		tenant_id     UUID,
 		schema_version LowCardinality(String) DEFAULT '1.0',
@@ -80,9 +109,16 @@ func (s *ClickHouseStore) migrate(ctx context.Context) error {
 		checksum     String,
 		data         String
 	) ENGINE = ReplacingMergeTree(collected_at)
-	  ORDER BY (tenant_id, dedupe_key)`); err != nil {
+	  PARTITION BY toYYYYMM(observed_at)
+	  ORDER BY (tenant_id, observed_at, dedupe_key)
+	  TTL toDateTime(observed_at) + INTERVAL %d DAY DELETE
+	  SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1`, ttlDays)
+	if err := s.conn.Exec(ctx, create); err != nil {
 		return err
 	}
+	// Keep retention current on a pre-existing table (PARTITION BY / ORDER BY can't be altered in place — an
+	// existing table keeps its layout; only TTL is adjustable).
+	_ = s.conn.Exec(ctx, fmt.Sprintf(`ALTER TABLE events MODIFY TTL toDateTime(observed_at) + INTERVAL %d DAY DELETE`, ttlDays))
 	// Additive: bring a pre-existing table up to the current schema (ADR-0006).
 	for _, alter := range []string{
 		`ALTER TABLE events ADD COLUMN IF NOT EXISTS schema_version LowCardinality(String) DEFAULT '1.0'`,
