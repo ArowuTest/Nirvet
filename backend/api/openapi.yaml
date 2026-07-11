@@ -344,3 +344,1291 @@ paths:
     get: { tags: [ticketing], summary: List ITSM connections (tenant/platform admin), responses: { '200': { description: connections } } }
     post: { tags: [ticketing], summary: Create a ServiceNow/Jira connection (credential vault-sealed); incidents mirror to it on open, responses: { '201': { description: created } } }
   /admin/ticketing/{id}: { delete: { tags: [ticketing], summary: Delete an ITSM connection, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
+
+  # --- auto-added by cmd/openapigen (external-review OpenAPI parity); enrich schemas incrementally ---
+  /admin/ai/allowed-endpoints:
+    get:
+      tags: [admin]
+      summary: GET /admin/ai/allowed-endpoints
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [admin]
+      summary: POST /admin/ai/allowed-endpoints
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/ai/allowed-endpoints/{id}:
+    delete:
+      tags: [admin]
+      summary: DELETE /admin/ai/allowed-endpoints/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/ai/provider:
+    get:
+      tags: [admin]
+      summary: GET /admin/ai/provider
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [admin]
+      summary: PUT /admin/ai/provider
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/accounts:
+    post:
+      tags: [admin]
+      summary: POST /admin/billing/accounts
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/accounts/{id}/invoice:
+    get:
+      tags: [admin]
+      summary: GET /admin/billing/accounts/{id}/invoice
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/accounts/{id}/suspend:
+    post:
+      tags: [admin]
+      summary: POST /admin/billing/accounts/{id}/suspend
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/packages:
+    post:
+      tags: [admin]
+      summary: POST /admin/billing/packages
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/packages/{id}/rates:
+    post:
+      tags: [admin]
+      summary: POST /admin/billing/packages/{id}/rates
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/branding:
+    put:
+      tags: [admin]
+      summary: PUT /admin/branding
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/flags:
+    put:
+      tags: [admin]
+      summary: PUT /admin/flags
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/flags/rollback:
+    post:
+      tags: [admin]
+      summary: POST /admin/flags/rollback
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/maintenance-windows:
+    post:
+      tags: [admin]
+      summary: POST /admin/maintenance-windows
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/oversight/org-grants:
+    delete:
+      tags: [admin]
+      summary: DELETE /admin/oversight/org-grants
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [admin]
+      summary: POST /admin/oversight/org-grants
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/oversight/payer-grants:
+    delete:
+      tags: [admin]
+      summary: DELETE /admin/oversight/payer-grants
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [admin]
+      summary: POST /admin/oversight/payer-grants
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/syslog-sources:
+    get:
+      tags: [admin]
+      summary: GET /admin/syslog-sources
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [admin]
+      summary: POST /admin/syslog-sources
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/syslog-sources/{id}:
+    delete:
+      tags: [admin]
+      summary: DELETE /admin/syslog-sources/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/syslog-sources/{id}/enabled:
+    post:
+      tags: [admin]
+      summary: POST /admin/syslog-sources/{id}/enabled
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/batch:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/batch
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/ai-policy:
+    put:
+      tags: [admin]
+      summary: PUT /admin/tenants/{id}/ai-policy
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/billing-mode:
+    put:
+      tags: [admin]
+      summary: PUT /admin/tenants/{id}/billing-mode
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/billing-package:
+    put:
+      tags: [admin]
+      summary: PUT /admin/tenants/{id}/billing-package
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/billing-suspend:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/billing-suspend
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/correlation-policy:
+    get:
+      tags: [admin]
+      summary: GET /admin/tenants/{id}/correlation-policy
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [admin]
+      summary: PUT /admin/tenants/{id}/correlation-policy
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/legal-hold:
+    delete:
+      tags: [admin]
+      summary: DELETE /admin/tenants/{id}/legal-hold
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/legal-hold
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/mark-exported:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/mark-exported
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/offboard:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/offboard
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/sla-policies:
+    get:
+      tags: [admin]
+      summary: GET /admin/tenants/{id}/sla-policies
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [admin]
+      summary: PUT /admin/tenants/{id}/sla-policies
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/users/{uid}/disable:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/users/{uid}/disable
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/users/{uid}/reactivate:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/users/{uid}/reactivate
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/tenants/{id}/users/{uid}/reset-password:
+    post:
+      tags: [admin]
+      summary: POST /admin/tenants/{id}/users/{uid}/reset-password
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: uid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /alerts/{id}/disposition:
+    post:
+      tags: [alerts]
+      summary: POST /alerts/{id}/disposition
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      summary: POST /auth/password-reset/confirm
+      security: []
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /billing/invoice:
+    get:
+      tags: [billing]
+      summary: GET /billing/invoice
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /billing/usage:
+    get:
+      tags: [billing]
+      summary: GET /billing/usage
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /branding:
+    get:
+      tags: [branding]
+      summary: GET /branding
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /compliance/controls:
+    get:
+      tags: [compliance]
+      summary: GET /compliance/controls
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /compliance/frameworks:
+    get:
+      tags: [compliance]
+      summary: GET /compliance/frameworks
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /compliance/status:
+    put:
+      tags: [compliance]
+      summary: PUT /compliance/status
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /connectors/{id}/test:
+    post:
+      tags: [connectors]
+      summary: POST /connectors/{id}/test
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /correlation-suppressions:
+    get:
+      tags: [correlation-suppressions]
+      summary: GET /correlation-suppressions
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [correlation-suppressions]
+      summary: POST /correlation-suppressions
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /correlation-suppressions/{id}:
+    delete:
+      tags: [correlation-suppressions]
+      summary: DELETE /correlation-suppressions/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /correlations/metrics:
+    get:
+      tags: [correlations]
+      summary: GET /correlations/metrics
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /correlations/storm:
+    get:
+      tags: [correlations]
+      summary: GET /correlations/storm
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /correlations/{id}/explain:
+    get:
+      tags: [correlations]
+      summary: GET /correlations/{id}/explain
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /correlations/{id}/override:
+    put:
+      tags: [correlations]
+      summary: PUT /correlations/{id}/override
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/coverage:
+    get:
+      tags: [detections]
+      summary: GET /detections/coverage
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/settings:
+    get:
+      tags: [detections]
+      summary: GET /detections/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [detections]
+      summary: PUT /detections/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/tuning:
+    get:
+      tags: [detections]
+      summary: GET /detections/tuning
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/feedback:
+    get:
+      tags: [detections]
+      summary: GET /detections/{id}/feedback
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/metadata:
+    put:
+      tags: [detections]
+      summary: PUT /detections/{id}/metadata
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/rollback:
+    post:
+      tags: [detections]
+      summary: POST /detections/{id}/rollback
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/tests:
+    get:
+      tags: [detections]
+      summary: GET /detections/{id}/tests
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [detections]
+      summary: POST /detections/{id}/tests
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/tests/run:
+    post:
+      tags: [detections]
+      summary: POST /detections/{id}/tests/run
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/tests/samples:
+    post:
+      tags: [detections]
+      summary: POST /detections/{id}/tests/samples
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/tests/{tid}:
+    delete:
+      tags: [detections]
+      summary: DELETE /detections/{id}/tests/{tid}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/transition:
+    post:
+      tags: [detections]
+      summary: POST /detections/{id}/transition
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /detections/{id}/versions:
+    get:
+      tags: [detections]
+      summary: GET /detections/{id}/versions
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /fleet/alerts:
+    get:
+      tags: [fleet]
+      summary: GET /fleet/alerts
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /fleet/alerts/{id}/assign:
+    post:
+      tags: [fleet]
+      summary: POST /fleet/alerts/{id}/assign
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /fleet/alerts/{id}/contain:
+    post:
+      tags: [fleet]
+      summary: POST /fleet/alerts/{id}/contain
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /fleet/alerts/{id}/contain/{runID}/approve:
+    post:
+      tags: [fleet]
+      summary: POST /fleet/alerts/{id}/contain/{runID}/approve
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: runID, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /fleet/alerts/{id}/contain/{runID}/reject:
+    post:
+      tags: [fleet]
+      summary: POST /fleet/alerts/{id}/contain/{runID}/reject
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: runID, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /fleet/alerts/{id}/disposition:
+    post:
+      tags: [fleet]
+      summary: POST /fleet/alerts/{id}/disposition
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incident-categories:
+    get:
+      tags: [incident-categories]
+      summary: GET /incident-categories
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incident-tasks/{id}:
+    put:
+      tags: [incident-tasks]
+      summary: PUT /incident-tasks/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/attachments:
+    get:
+      tags: [incidents]
+      summary: GET /incidents/{id}/attachments
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [incidents]
+      summary: POST /incidents/{id}/attachments
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/category:
+    put:
+      tags: [incidents]
+      summary: PUT /incidents/{id}/category
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/children:
+    get:
+      tags: [incidents]
+      summary: GET /incidents/{id}/children
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/customer-timeline:
+    get:
+      tags: [incidents]
+      summary: GET /incidents/{id}/customer-timeline
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/kb-links:
+    get:
+      tags: [incidents]
+      summary: GET /incidents/{id}/kb-links
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [incidents]
+      summary: POST /incidents/{id}/kb-links
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/major:
+    put:
+      tags: [incidents]
+      summary: PUT /incidents/{id}/major
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/parent:
+    post:
+      tags: [incidents]
+      summary: POST /incidents/{id}/parent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/tasks:
+    get:
+      tags: [incidents]
+      summary: GET /incidents/{id}/tasks
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [incidents]
+      summary: POST /incidents/{id}/tasks
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/transition:
+    post:
+      tags: [incidents]
+      summary: POST /incidents/{id}/transition
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /investigation/data-gaps:
+    get:
+      tags: [investigation]
+      summary: GET /investigation/data-gaps
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /investigation/get-entity-graph:
+    get:
+      tags: [investigation]
+      summary: GET /investigation/get-entity-graph
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /investigation/get-entity-profile:
+    get:
+      tags: [investigation]
+      summary: GET /investigation/get-entity-profile
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /investigation/get-timeline:
+    get:
+      tags: [investigation]
+      summary: GET /investigation/get-timeline
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /investigation/run-hunt-query:
+    post:
+      tags: [investigation]
+      summary: POST /investigation/run-hunt-query
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /investigation/search-events:
+    patch:
+      tags: [investigation]
+      summary: PATCH /investigation/search-events
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /knowledge-base:
+    get:
+      tags: [knowledge-base]
+      summary: GET /knowledge-base
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [knowledge-base]
+      summary: POST /knowledge-base
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /normalization/quality:
+    get:
+      tags: [normalization]
+      summary: GET /normalization/quality
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /normalization/settings:
+    get:
+      tags: [normalization]
+      summary: GET /normalization/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [normalization]
+      summary: PUT /normalization/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/inbox:
+    get:
+      tags: [notify]
+      summary: GET /notify/inbox
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/inbox/prefs:
+    get:
+      tags: [notify]
+      summary: GET /notify/inbox/prefs
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [notify]
+      summary: PUT /notify/inbox/prefs
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/inbox/read-all:
+    post:
+      tags: [notify]
+      summary: POST /notify/inbox/read-all
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/inbox/unread-count:
+    get:
+      tags: [notify]
+      summary: GET /notify/inbox/unread-count
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/inbox/{id}/read:
+    post:
+      tags: [notify]
+      summary: POST /notify/inbox/{id}/read
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/links:
+    post:
+      tags: [notify]
+      summary: POST /notify/links
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/links/verify:
+    get:
+      tags: [notify]
+      summary: GET /notify/links/verify
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/senders:
+    get:
+      tags: [notify]
+      summary: GET /notify/senders
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [notify]
+      summary: PUT /notify/senders
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/settings:
+    put:
+      tags: [notify]
+      summary: PUT /notify/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/templates:
+    get:
+      tags: [notify]
+      summary: GET /notify/templates
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [notify]
+      summary: PUT /notify/templates
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /notify/test:
+    post:
+      tags: [notify]
+      summary: POST /notify/test
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /posture/fleet:
+    get:
+      tags: [posture]
+      summary: GET /posture/fleet
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /reports:
+    post:
+      tags: [reports]
+      summary: POST /reports
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /reports/{id}:
+    get:
+      tags: [reports]
+      summary: GET /reports/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /reports/{id}/download:
+    get:
+      tags: [reports]
+      summary: GET /reports/{id}/download
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/action-catalog:
+    get:
+      tags: [soar]
+      summary: GET /soar/action-catalog
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [soar]
+      summary: PUT /soar/action-catalog
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/platform:
+    get:
+      tags: [soar]
+      summary: GET /soar/platform
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [soar]
+      summary: PUT /soar/platform
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/runs/{id}/reverse:
+    post:
+      tags: [soar]
+      summary: POST /soar/runs/{id}/reverse
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/settings:
+    get:
+      tags: [soar]
+      summary: GET /soar/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [soar]
+      summary: PUT /soar/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /tenant/ai/provider:
+    get:
+      tags: [tenant]
+      summary: GET /tenant/ai/provider
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [tenant]
+      summary: PUT /tenant/ai/provider
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /threat-intel/settings:
+    get:
+      tags: [threat-intel]
+      summary: GET /threat-intel/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [threat-intel]
+      summary: PUT /threat-intel/settings
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /threat-intel/stix:
+    get:
+      tags: [threat-intel]
+      summary: GET /threat-intel/stix
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [threat-intel]
+      summary: POST /threat-intel/stix
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /threat-intel/stix/bundle:
+    post:
+      tags: [threat-intel]
+      summary: POST /threat-intel/stix/bundle
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /threat-intel/stix/{id}:
+    get:
+      tags: [threat-intel]
+      summary: GET /threat-intel/stix/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
