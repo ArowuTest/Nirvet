@@ -61,17 +61,39 @@ func (s *localStore) Put(_ context.Context, tenantID uuid.UUID, key string, data
 }
 
 func (s *localStore) Get(_ context.Context, uri string) ([]byte, error) {
-	rel := strings.TrimPrefix(uri, "file://")
-	return os.ReadFile(filepath.Join(s.root, filepath.FromSlash(rel)))
+	full, err := s.resolve(uri)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(full)
 }
 
 func (s *localStore) Delete(_ context.Context, uri string) error {
-	rel := strings.TrimPrefix(uri, "file://")
-	err := os.Remove(filepath.Join(s.root, filepath.FromSlash(rel)))
-	if os.IsNotExist(err) {
-		return nil // already gone — best-effort
+	full, err := s.resolve(uri)
+	if err != nil {
+		return err
 	}
-	return err
+	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil // already gone / removed — best-effort
+}
+
+// resolve maps a stored file:// URI to an absolute on-disk path and CONFIRMS it stays under the storage
+// root — defence in depth against a path-traversal read if a client-supplied pointer ever reaches Get
+// (today all URIs are produced by Put, but the invariant should be enforced, not assumed). It rejects a
+// non-file:// scheme and any path that escapes the root after cleaning (e.g. an embedded `../`).
+func (s *localStore) resolve(uri string) (string, error) {
+	if !strings.HasPrefix(uri, "file://") {
+		return "", fmt.Errorf("blobstore: unsupported blob URI scheme")
+	}
+	rel := strings.TrimPrefix(uri, "file://")
+	full := filepath.Clean(filepath.Join(s.root, filepath.FromSlash(rel)))
+	root := filepath.Clean(s.root)
+	if full != root && !strings.HasPrefix(full, root+string(os.PathSeparator)) {
+		return "", fmt.Errorf("blobstore: resolved path escapes the storage root")
+	}
+	return full, nil
 }
 
 // The GCP (GCS) backend is not yet implemented (ADR-0005). It is intentionally absent rather

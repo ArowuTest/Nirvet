@@ -235,13 +235,23 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 	return wk.detect(ctx, ev)
 }
 
-// detect evaluates the event against the tenant's rule catalogue and raises an
-// alert per matching rule. Each alert is idempotent on event_id:rule_id, so a
-// reprocessed event never duplicates alerts.
+// detect evaluates the event against the tenant's rule catalogue and raises an alert per matching rule.
+// Each alert is idempotent on <event dedupe key>:rule_id. Keying on the event's DETERMINISTIC content
+// dedupe key — not its random per-normalization UUID — means two duplicates of the same event collapse to
+// ONE alert on (tenant, dedupe_key) even if they reached detection as distinct rows: the ClickHouse event
+// store's ReplacingMergeTree dedup is ASYNCHRONOUS (two concurrent workers can both insert + both detect),
+// and a reconciler re-normalize could re-run detection. The Postgres store is already protected upstream
+// (Append ON CONFLICT → inserted==0 → detection skipped), so this makes the alert layer robust regardless
+// of the event-store backend or worker count (external-reviewer finding, ClickHouse alert-amplification).
 func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) error {
 	matches, err := wk.detector.Evaluate(ctx, ev.TenantID, ev)
 	if err != nil {
 		return err
+	}
+	// The deterministic content key; fall back to the event id only when an event carries no dedupe key.
+	alertKey := ev.ID.String()
+	if ev.DedupeKey != "" {
+		alertKey = ev.DedupeKey
 	}
 	for _, m := range matches {
 		ruleID := m.RuleID
@@ -255,7 +265,7 @@ func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) err
 			Title:       title,
 			Severity:    m.Severity,
 			Confidence:  m.Confidence,
-			DedupeKey:   ev.ID.String() + ":" + m.RuleID.String(),
+			DedupeKey:   alertKey + ":" + m.RuleID.String(),
 			DetectionID: &ruleID,
 			MITRE:       m.MITRE,
 		}
