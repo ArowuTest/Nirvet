@@ -284,10 +284,24 @@ func (s *Service) LookupInTenant(ctx context.Context, tenantID, userID uuid.UUID
 	return u.Email, nil
 }
 
-// EnrollMFA generates a TOTP secret for the user, stores it encrypted (pending),
-// and returns the otpauth URI + secret to show once. MFA is not active until the
-// user confirms a code via Activate.
-func (s *Service) EnrollMFA(ctx context.Context, p auth.Principal) (uri, secret string, err error) {
+// EnrollMFA generates a TOTP secret, STAGES it (never touching the active factor), and returns the
+// otpauth URI + secret to show once. It is re-auth gated (M4): the caller must supply the current password,
+// and — if MFA is already active — a valid current TOTP code, so a stolen live session cannot silently swap
+// or disable the second factor. MFA is not active until the user confirms the staged code via ActivateMFA.
+func (s *Service) EnrollMFA(ctx context.Context, p auth.Principal, currentPassword, currentCode string) (uri, secret string, err error) {
+	u, err := s.repo.GetByID(ctx, p.TenantID, p.UserID)
+	if err != nil {
+		return "", "", httpx.ErrNotFound("user not found")
+	}
+	if !auth.ComparePassword(u.PasswordHash, currentPassword) {
+		return "", "", httpx.ErrUnauthorized("current password is incorrect")
+	}
+	if u.MFAEnabled {
+		cur, derr := s.cipher.Decrypt(p.TenantID, u.MFASecret)
+		if derr != nil || !totp.Validate(string(cur), currentCode, time.Now()) {
+			return "", "", httpx.ErrUnauthorized("a valid current MFA code is required to re-enrol")
+		}
+	}
 	secret, err = totp.GenerateSecret()
 	if err != nil {
 		return "", "", httpx.ErrInternal("could not generate secret")
@@ -296,25 +310,28 @@ func (s *Service) EnrollMFA(ctx context.Context, p auth.Principal) (uri, secret 
 	if err != nil {
 		return "", "", httpx.ErrInternal("could not seal secret")
 	}
-	if err := s.repo.SetMFASecret(ctx, p.TenantID, p.UserID, sealed); err != nil {
+	if err := s.repo.SetMFAPending(ctx, p.TenantID, p.UserID, sealed); err != nil {
 		return "", "", httpx.ErrInternal("could not store secret")
 	}
+	s.auditMFA(ctx, p, "iam.mfa_enroll")
 	return totp.URI(secret, p.Email, "Nirvet"), secret, nil
 }
 
-// ActivateMFA verifies a code against the pending secret and enables MFA.
+// ActivateMFA verifies a code against the STAGED secret and atomically promotes it to the active factor.
 func (s *Service) ActivateMFA(ctx context.Context, p auth.Principal, code string) error {
-	u, err := s.repo.GetByID(ctx, p.TenantID, p.UserID)
-	if err != nil || len(u.MFASecret) == 0 {
+	pending, err := s.repo.GetMFAPending(ctx, p.TenantID, p.UserID)
+	if err != nil || len(pending) == 0 {
 		return httpx.ErrBadRequest("enroll MFA first")
 	}
-	secret, err := s.cipher.Decrypt(p.TenantID, u.MFASecret)
+	secret, err := s.cipher.Decrypt(p.TenantID, pending)
 	if err != nil || !totp.Validate(string(secret), code, time.Now()) {
 		return httpx.ErrBadRequest("invalid code")
 	}
-	if err := s.repo.SetMFAEnabled(ctx, p.TenantID, p.UserID, true); err != nil {
+	ok, err := s.repo.PromoteMFAPending(ctx, p.TenantID, p.UserID)
+	if err != nil || !ok {
 		return httpx.ErrInternal("could not enable MFA")
 	}
+	s.auditMFA(ctx, p, "iam.mfa_activate")
 	return nil
 }
 
@@ -333,5 +350,15 @@ func (s *Service) DisableMFA(ctx context.Context, p auth.Principal, code string)
 	if err := s.repo.SetMFAEnabled(ctx, p.TenantID, p.UserID, false); err != nil {
 		return httpx.ErrInternal("could not disable MFA")
 	}
+	s.auditMFA(ctx, p, "iam.mfa_disable")
 	return nil
+}
+
+// auditMFA writes an immutable audit row for an MFA lifecycle action in the user's tenant context (M4).
+func (s *Service) auditMFA(ctx context.Context, p auth.Principal, action string) {
+	_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return audit.Record(ctx, tx, audit.Entry{
+			ActorID: p.UserID, ActorEmail: p.Email, Action: action, Target: "user:" + p.UserID.String(),
+		})
+	})
 }

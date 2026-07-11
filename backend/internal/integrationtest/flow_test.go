@@ -1902,7 +1902,11 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("MFAEnrollActivateEnforce", func(t *testing.T) {
-		uri, secret, err := h.iamSvc.EnrollMFA(h.ctx, h.principal)
+		// M4: enrolment is re-auth gated — a wrong current password is refused.
+		if _, _, err := h.iamSvc.EnrollMFA(h.ctx, h.principal, "wrongpassword", ""); err == nil {
+			t.Fatal("SECURITY: MFA enrol must reject a wrong current password")
+		}
+		uri, secret, err := h.iamSvc.EnrollMFA(h.ctx, h.principal, "password123", "")
 		if err != nil || secret == "" || len(uri) < 10 {
 			t.Fatalf("enroll: uri=%q err=%v", uri, err)
 		}

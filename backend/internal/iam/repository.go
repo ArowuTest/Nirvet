@@ -52,23 +52,46 @@ func (r *Repository) FindForAuth(ctx context.Context, email string) (*User, erro
 	return &u, nil
 }
 
-// SetMFASecret stores a (vault-encrypted) pending TOTP secret and leaves MFA
-// disabled until the user activates it.
-func (r *Repository) SetMFASecret(ctx context.Context, tenantID, userID uuid.UUID, secret []byte) error {
+// SetMFAPending stages a (vault-encrypted) TOTP secret WITHOUT touching the active mfa_secret/mfa_enabled
+// (M4). The active second factor is only replaced once the user proves possession via ActivateMFA.
+func (r *Repository) SetMFAPending(ctx context.Context, tenantID, userID uuid.UUID, secret []byte) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE users SET mfa_secret=$2, mfa_enabled=false WHERE id=$1`, userID, secret)
+		_, err := tx.Exec(ctx, `UPDATE users SET mfa_pending_secret=$2 WHERE id=$1`, userID, secret)
 		return err
 	})
 }
 
-// SetMFAEnabled toggles MFA; disabling also clears the secret.
+// GetMFAPending returns the staged (not-yet-activated) TOTP secret, or nil if none is pending.
+func (r *Repository) GetMFAPending(ctx context.Context, tenantID, userID uuid.UUID) ([]byte, error) {
+	var secret []byte
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT mfa_pending_secret FROM users WHERE id=$1`, userID).Scan(&secret)
+	})
+	return secret, err
+}
+
+// PromoteMFAPending atomically promotes the staged secret to the active one and enables MFA, clearing the
+// staging column (M4). RowsAffected==0 means there was no pending secret to promote.
+func (r *Repository) PromoteMFAPending(ctx context.Context, tenantID, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, e := tx.Exec(ctx,
+			`UPDATE users SET mfa_secret=mfa_pending_secret, mfa_enabled=true, mfa_pending_secret=NULL
+			 WHERE id=$1 AND mfa_pending_secret IS NOT NULL`, userID)
+		ok = ct.RowsAffected() == 1
+		return e
+	})
+	return ok, err
+}
+
+// SetMFAEnabled toggles MFA; disabling also clears the active AND any staged secret.
 func (r *Repository) SetMFAEnabled(ctx context.Context, tenantID, userID uuid.UUID, enabled bool) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if enabled {
 			_, err := tx.Exec(ctx, `UPDATE users SET mfa_enabled=true WHERE id=$1`, userID)
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE users SET mfa_enabled=false, mfa_secret=NULL WHERE id=$1`, userID)
+		_, err := tx.Exec(ctx, `UPDATE users SET mfa_enabled=false, mfa_secret=NULL, mfa_pending_secret=NULL WHERE id=$1`, userID)
 		return err
 	})
 }

@@ -62,10 +62,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, u)
 }
 
-// EnrollMFA handles POST /mfa/enroll — returns the otpauth URI + secret (once).
+// EnrollMFA handles POST /mfa/enroll — returns the otpauth URI + secret (once). Re-auth gated (M4): the
+// body must carry the current password, plus a current TOTP code when MFA is already active.
 func (h *Handler) EnrollMFA(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
-	uri, secret, err := h.svc.EnrollMFA(r.Context(), p)
+	var in struct {
+		CurrentPassword string `json:"current_password"`
+		Code            string `json:"code"` // current TOTP, required only when re-enrolling an active factor
+	}
+	_ = httpx.Decode(r, &in)
+	uri, secret, err := h.svc.EnrollMFA(r.Context(), p, in.CurrentPassword, in.Code)
 	if err != nil {
 		httpx.Error(w, err)
 		return

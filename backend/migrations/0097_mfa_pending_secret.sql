@@ -1,0 +1,11 @@
+-- M4 (builder pass, MEDIUM): stop MFA enrollment from silently disabling an active second factor.
+--
+-- The old EnrollMFA wrote the new TOTP secret straight into users.mfa_secret and set mfa_enabled=false,
+-- BEFORE the user ever confirmed a code. So any live session (e.g. a stolen token, already past login MFA)
+-- could POST /mfa/enroll and instantly turn the victim's MFA off for all future logins — and a user who
+-- merely STARTED then abandoned a legitimate re-enrol left their own MFA off. Enrolment must not touch the
+-- active factor until the new one is proven.
+--
+-- Add a STAGING column: enrol writes here (active mfa_secret + mfa_enabled untouched); activate validates a
+-- code against the pending secret, then atomically promotes it to the active secret and clears the staging.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_pending_secret bytea;
