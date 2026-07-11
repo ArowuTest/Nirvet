@@ -27,10 +27,24 @@ import (
 )
 
 const (
-	natsStream  = "NIRVET_INGEST"
-	natsSubject = "nirvet.ingest.jobs"
-	natsDurable = "ingest-worker"
+	natsStream     = "NIRVET_INGEST"
+	natsSubject    = "nirvet.ingest.jobs"
+	natsDeadLetter = "nirvet.ingest.deadletter" // durable DLQ subject (external-review)
+	natsDurable    = "ingest-worker"
 )
+
+// DeadLetter is the envelope published to nirvet.ingest.deadletter when a job exhausts its retries. It is a
+// DURABLE, inspectable, replayable record (captured by the stream) instead of a silent Term() — a terminated
+// security-telemetry job that leaves no operational trace is unacceptable (external-review).
+type DeadLetter struct {
+	JobID    uuid.UUID `json:"job_id"`
+	TenantID uuid.UUID `json:"tenant_id"`
+	Kind     string    `json:"kind"`
+	Payload  []byte    `json:"payload"`
+	Reason   string    `json:"reason"`
+	Attempts int       `json:"attempts"`
+	FailedAt time.Time `json:"failed_at"`
+}
 
 // jobMsg is the wire form of a Job on the stream.
 type jobMsg struct {
@@ -64,8 +78,8 @@ func NewNATS(ctx context.Context, url string) (*NATSQueue, error) {
 	}
 	if _, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:       natsStream,
-		Subjects:   []string{natsSubject},
-		Duplicates: 2 * time.Minute, // Nats-Msg-Id dedup window
+		Subjects:   []string{natsSubject, natsDeadLetter}, // DLQ captured in the same durable stream
+		Duplicates: 2 * time.Minute,                       // Nats-Msg-Id dedup window
 	}); err != nil {
 		nc.Close()
 		return nil, err
@@ -156,9 +170,63 @@ func (q *NATSQueue) Fail(ctx context.Context, id uuid.UUID, reason string) error
 		return nil
 	}
 	if md, err := msg.Metadata(); err == nil && md.NumDelivered >= uint64(MaxAttempts) {
+		// Exhausted retries: record a durable dead-letter BEFORE terminating, so the terminated job is
+		// inspectable / alertable / replayable instead of silently vanishing (external-review).
+		q.publishDeadLetter(ctx, msg, reason, int(md.NumDelivered))
 		return msg.Term()
 	}
 	return msg.NakWithDelay(q.backoff)
+}
+
+// publishDeadLetter writes a DeadLetter envelope to the DLQ subject (best-effort — a failure here must not
+// change the Term outcome). A poison payload that won't unmarshal still records the raw bytes + reason.
+func (q *NATSQueue) publishDeadLetter(ctx context.Context, msg jetstream.Msg, reason string, attempts int) {
+	var jm jobMsg
+	_ = json.Unmarshal(msg.Data(), &jm)
+	dl := DeadLetter{JobID: jm.ID, TenantID: jm.TenantID, Kind: jm.Kind, Payload: jm.Payload, Reason: reason, Attempts: attempts, FailedAt: time.Now()}
+	if jm.Kind == "" { // unparseable job — keep the raw bytes for forensics
+		dl.Payload = msg.Data()
+	}
+	if data, err := json.Marshal(dl); err == nil {
+		_, _ = q.js.Publish(ctx, natsDeadLetter, data)
+	}
+}
+
+// ListDeadLetters returns up to `limit` dead-lettered jobs for operator inspection (read-only ordered
+// consumer; does not consume or ack, so the DLQ record is preserved).
+func (q *NATSQueue) ListDeadLetters(ctx context.Context, limit int) ([]DeadLetter, error) {
+	c, err := q.js.OrderedConsumer(ctx, natsStream, jetstream.OrderedConsumerConfig{FilterSubjects: []string{natsDeadLetter}})
+	if err != nil {
+		return nil, err
+	}
+	batch, err := c.Fetch(limit, jetstream.FetchMaxWait(2*time.Second))
+	if err != nil {
+		return nil, err
+	}
+	var out []DeadLetter
+	for msg := range batch.Messages() {
+		var dl DeadLetter
+		if json.Unmarshal(msg.Data(), &dl) == nil {
+			out = append(out, dl)
+		}
+	}
+	return out, batch.Error()
+}
+
+// ReplayDeadLetters re-enqueues up to `limit` dead-lettered jobs onto the ingest subject (fresh job IDs, so
+// they retry from scratch). The DLQ records remain as an audit trail. Returns the number re-enqueued.
+func (q *NATSQueue) ReplayDeadLetters(ctx context.Context, limit int) (int, error) {
+	dls, err := q.ListDeadLetters(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, dl := range dls {
+		if err := q.Enqueue(ctx, dl.TenantID, dl.Kind, dl.Payload); err == nil {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // ReapStale is a no-op for JetStream: AckWait already redelivers a message whose ack never arrived (a
