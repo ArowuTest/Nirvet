@@ -22,6 +22,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/billing"
+	"github.com/ArowuTest/nirvet/internal/branding"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
@@ -171,6 +172,9 @@ func main() {
 	// Syslog source provisioning (padmin): register/enable/disable/list the mTLS syslog sources the listener
 	// attributes by cert fingerprint. Secure default: a new source is disabled until explicitly enabled.
 	syslogAdminH := syslogd.NewAdminHandler(syslogd.NewSourceStore(db))
+	// White-label branding (Ghana operator L): instance-level presentation config (operator name/logo/color),
+	// PUBLIC read for the login page, padmin write. Not per-tenant; never touches tenant isolation.
+	brandingH := branding.NewHandler(branding.NewService(db))
 
 	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
 	correlationSvc := correlation.NewService(correlation.NewRepository(db))
@@ -477,6 +481,9 @@ func main() {
 	mux.Handle("GET /admin/syslog-sources", padmin(syslogAdminH.List))
 	mux.Handle("POST /admin/syslog-sources/{id}/enabled", padmin(syslogAdminH.SetEnabled))
 	mux.Handle("DELETE /admin/syslog-sources/{id}", padmin(syslogAdminH.Delete))
+	// White-label branding: PUBLIC read (rate-limited, no auth — the login page needs it), padmin write.
+	mux.Handle("GET /branding", httpx.Chain(http.HandlerFunc(brandingH.Get), apiLimit))
+	mux.Handle("PUT /admin/branding", padmin(brandingH.Set))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))
 	mux.Handle("GET /admin/tenants/{id}", padmin(tenantH.Get))
 	// Tenant governance (§6.1). Status lifecycle is a provider action (platform_admin only);
