@@ -2584,3 +2584,76 @@ TLS listener (mTLS) + `syslog_sources` registry + RFC-5424 parser (bounded, fail
 
 **→ Awaiting reviewer pre-code pass. No code until greenlit. Reviewer pre-passes against BAR-1..4; pass 1
 continues on padmin/break-glass. Nothing pushed; HEAD 9f15a79 local.**
+
+## Gate — Oversight scope-resolver family (org-sub-admin + payer) — PRE-CODE DESIGN REVIEW — Jul 2026
+
+The reframe's oversight-read family (brief §9): bounded, read-only, metadata-only cross-tenant reads for roles
+that oversee a SUBSET of the fleet — the org-sub-admin (a gov cyber authority overseeing a group of MDAs) and
+the payer/anchor (a central buyer overseeing the tenants they pay for). Owner + reviewer settled the two open
+decisions: **binding = a grant table (yes, decisively)**, and **build BOTH resolvers now** (the payer read is
+already L; org-sub-admin rides the same plumbing at near-zero marginal cost).
+
+### What they READ (decided): POSTURE, not content or the operational queue
+The oversight family reads the **MA-4 vendor-posture metadata store** (`tenant_posture`) scoped to the reader's
+granted tenants — NOT alert bodies, NOT the operator fleet alert queue. This is exact reuse of the cleared MA-4
+primitive: `posture.resolveScope` already maps `platform_admin → whole instance` and everyone else → empty; this
+gate ADDS `org_sub_admin` and `payer` resolvers to that one function, and the read stays the cleared, fail-closed
+`tenant_posture_fleet()` SD-fn + read-audit. So oversight = "how healthy are my tenants" (open-incident counts,
+SLA state), never their content — the accreditation-safe posture already argued for MA-4.
+
+### Binding — grant table with a REAL FK (reviewer's refinement)
+Two TYPED grant tables so each carries a real FK (a grant can never dangle to a deleted scope):
+- `org_admin_grant` (id, principal_id, org_id **FK organisation(id) ON DELETE CASCADE**, granted_by, created_at)
+- `payer_account_grant` (id, principal_id, account_id **FK billing_account(id) ON DELETE CASCADE**, granted_by,
+  created_at)
+Grants are padmin-issued; deleting an org/account cascades its grants away (no dangling grant). "Who can see
+across tenants, granted by whom, when" is answerable as data (rows + timestamps + `granted_by`) — the CSA
+accreditation trail. Revocation is a `DELETE`.
+
+### The resolvers (extend posture.resolveScope; scope is server-derived, never client-supplied)
+- **org_sub_admin** → `SELECT id FROM tenants WHERE org_id = ANY(<orgs from this principal's org_admin_grant>)`.
+- **payer** → the union of `billing_account_tenants(account)` over this principal's `payer_account_grant`
+  accounts (reuse the mig-0080 SD-fn).
+- Both derive the grant set from the AUTHENTICATED PRINCIPAL (a `WithSystem` grant lookup keyed on
+  `principal_id`), never a client-supplied org/account id; a principal with no grant → EMPTY → the SD-fn
+  fail-closes to zero rows. Same discipline as the fleet resolver.
+
+### New role + exposure (owner/reviewer decision)
+- `org_sub_admin` is a NET-NEW customer-side scoped-oversight role. The payer scope attaches to the anchor
+  central-buyer principal via its grant (role naming for payer = open Q; the grant is the authority, the role
+  gates the route).
+- **Exposure:** the payer oversight read is **L — build + expose now**. The **org_sub_admin ROLE exposure is
+  config-gated, default OFF (fast-follow)** — the resolver is built now, but the gov-cyber-authority role is
+  turned on at/after the venture→authority transition. **Owner flips it to day-one L IF the national authority
+  is a confirmed launch stakeholder** (the sovereignty pitch: "the government sees its own posture from day
+  one"); else fast-follow. Zero retrofit either way (`org_id` seam + resolver both already in).
+
+### Scope — slice A
+Two grant tables (migration, FK-cascade) + `org_sub_admin` role + the two resolvers folded into
+`posture.resolveScope` + padmin grant-management endpoints (issue/revoke/list) + the org_sub_admin route
+exposure config flag. **Deferred:** a grant-management UI; payer-portal read surfaces beyond posture; nested-org
+hierarchies.
+
+### Centerpiece tests (ONE adversarial family round — each resolver proves it CANNOT widen)
+1. **org_sub_admin sees ONLY its granted org's tenants' posture** — a tenant in another org is invisible; a
+   principal with no grant → zero.
+2. **payer sees ONLY its granted account's tenants' posture** — another account's tenants invisible; no grant →
+   zero.
+3. **Scope is server-derived, un-widenable:** there is no org/account parameter in the request path a caller can
+   supply to widen (mirror the fleet-resolver structural proof).
+4. **Revocation / cascade:** deleting a grant (or its org/account, via FK cascade) drops those tenants from the
+   principal's scope immediately.
+5. **Cross-grant isolation:** principal A's grant never widens principal B's scope.
+6. **Read-audited** (reuse the MA-4 `posture.fleet_read` audit).
+
+### Open questions for the reviewer's pre-code pass
+1. **Payer role naming** — a new `payer` role, or attach the payer grant to an existing customer-side role and
+   gate the route on "has a payer grant"? (Leaning: a thin `payer` role for a clean route gate.)
+2. **Grant management authz** — padmin-only to issue org/payer grants (leaning yes), or can an operator
+   soc_manager issue them? (Leaning padmin-only — cross-tenant scope is a platform-governance act.)
+3. **org_sub_admin exposure flag granularity** — a single instance-wide flag, or per-org enablement?
+4. **Posture-only for slice A** confirmed as the payer/org read surface (vs any operational read)? (Leaning
+   posture-only — anything more is content-adjacent and re-opens the MA-4 line.)
+
+**→ Awaiting reviewer pre-code pass. No code until greenlit. Builds on the cleared MA-4 posture primitive +
+existing organisation/billing_account registries. Nothing pushed; HEAD 2ac33b0 local.**
