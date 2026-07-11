@@ -13,6 +13,7 @@ package schemacheck_test
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -101,6 +102,69 @@ func TestTenantCompositeConstraints(t *testing.T) {
 	if len(offenders) > 0 {
 		t.Fatalf("PK/UNIQUE on a tenant table omits tenant_id (cross-tenant collision risk) — make it "+
 			"composite, or add an explicit waiver if it is a global pre-tenant lookup key: %v", offenders)
+	}
+}
+
+// TestTenantForceRLS (guard #4, reviewer P2-1): every table carrying a tenant_id column must have FORCE
+// ROW LEVEL SECURITY plus policy coverage for BOTH read (a USING clause) and write (a WITH CHECK clause) —
+// the platform's #1 isolation invariant, now regression-guarded in CI rather than by a one-time review. A
+// future tenant-data table that ships with a tenant_id column and no RLS fails the build. The ONLY
+// exceptions are three system/platform tables that carry tenant_id as routing/attribution metadata and
+// have no tenant-context (WithTenant) read path — each explicitly allowlisted with a justification, exactly
+// as the composite-constraint waiver does. USING+WITH_CHECK coverage may come from one ALL policy (the
+// canonical tenant_isolation) or from a set of policies; we require the set to provide both.
+func TestTenantForceRLS(t *testing.T) {
+	db := connect(t)
+
+	// System tables that carry tenant_id but are NOT tenant-owned content and have no tenant-facing reader
+	// (verified in pass 2): each is touched only at pool level, under WithSystem, or via padmin CRUD, so
+	// FORCE-RLS would break it (no tenant GUC → zero rows). Every future exception must be added here with a
+	// justification — that IS the control.
+	allowed := map[string]string{
+		"ingest_jobs":        "internal work queue drained at pool level by the worker across ALL tenants (never WithTenant); tenant_id is routing metadata",
+		"syslog_sources":     "cert-fingerprint→tenant attribution registry, read under WithSystem at connection-accept BEFORE any tenant context exists (the lookup discovers the tenant); padmin CRUD only",
+		"tenant_offboarding": "offboard-evidence record deliberately retained through the purge; padmin-managed; no tenant-facing reader",
+	}
+
+	// One row per tenant_id table: does it FORCE RLS, and do its policies (if any) collectively provide a
+	// USING clause and a WITH CHECK clause? LEFT JOIN so a table with zero policies yields has_using=has_check=false.
+	rows, err := db.Pool.Query(context.Background(), `
+		SELECT c.relname,
+		       c.relforcerowsecurity,
+		       COALESCE(bool_or(p.qual IS NOT NULL), false)       AS has_using,
+		       COALESCE(bool_or(p.with_check IS NOT NULL), false) AS has_check
+		FROM pg_class c
+		JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+		LEFT JOIN pg_policies p ON p.schemaname = 'public' AND p.tablename = c.relname
+		WHERE c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace
+		GROUP BY c.relname, c.relforcerowsecurity
+		ORDER BY c.relname`)
+	if err != nil {
+		t.Fatalf("catalog query: %v", err)
+	}
+	defer rows.Close()
+
+	var offenders []string
+	for rows.Next() {
+		var tbl string
+		var force, hasUsing, hasCheck bool
+		if err := rows.Scan(&tbl, &force, &hasUsing, &hasCheck); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if _, ok := allowed[tbl]; ok {
+			continue
+		}
+		if !force || !hasUsing || !hasCheck {
+			offenders = append(offenders, fmt.Sprintf("%s(force=%v using=%v check=%v)", tbl, force, hasUsing, hasCheck))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("tenant_id table missing FORCE-RLS + USING+WITH_CHECK policy coverage (the #1 tenant-isolation "+
+			"invariant) — add the tenant_isolation policy, or add a justified allowlist entry if it is a system "+
+			"table: %v", offenders)
 	}
 }
 
