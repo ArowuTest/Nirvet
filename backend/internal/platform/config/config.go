@@ -40,8 +40,11 @@ type Config struct {
 	// signed, but cannot be verified across a restart. Required in production.
 	EvidenceSigningKey string
 
-	// Evidence/object storage (ADR-0002/0005). GCS bucket => cloud; else local dir.
+	// Evidence/object storage (ADR-0002/0005). An S3-compatible bucket (Backblaze B2 / R2 / AWS S3 / MinIO,
+	// via NIRVET_S3_*) OR a GCS bucket => durable cloud storage; else the local dir. The S3 credentials
+	// themselves are read by the blobstore package from the environment (never held in this struct).
 	GCSBucket string
+	S3Bucket  string
 	BlobDir   string
 
 	// Telemetry event store (ADR-0002). Empty => Postgres (MVP). Set a ClickHouse
@@ -99,6 +102,7 @@ func Load() (*Config, error) {
 		AnthropicAPIKey:    env("NIRVET_ANTHROPIC_API_KEY", ""),
 		AIModel:            env("NIRVET_AI_MODEL", "claude-sonnet-5"),
 		GCSBucket:          env("NIRVET_GCS_BUCKET", ""),
+		S3Bucket:           env("NIRVET_S3_BUCKET", ""),
 		BlobDir:            env("NIRVET_BLOB_DIR", ""),
 		ClickHouseDSN:      env("NIRVET_CLICKHOUSE_DSN", ""),
 		OTLPEndpoint:       env("NIRVET_OTLP_ENDPOINT", env("OTEL_EXPORTER_OTLP_ENDPOINT", "")),
@@ -143,8 +147,8 @@ func Load() (*Config, error) {
 	// The local filesystem store defaults to an ephemeral temp dir, so those would be lost on restart/redeploy.
 	// Require a configured object store (NIRVET_GCS_BUCKET) OR an explicit acknowledgement that the local blob
 	// path is a persistent disk — fail closed otherwise (external-review P0).
-	if c.IsProduction() && c.GCSBucket == "" && env("NIRVET_ALLOW_EPHEMERAL_BLOBS", "") != "true" {
-		return nil, fmt.Errorf("config: production requires durable object storage — set NIRVET_GCS_BUCKET, or set NIRVET_ALLOW_EPHEMERAL_BLOBS=true ONLY if the local blob path is a persistent disk (evidence/attachments/reports are lost on restart otherwise)")
+	if c.IsProduction() && c.GCSBucket == "" && c.S3Bucket == "" && env("NIRVET_ALLOW_EPHEMERAL_BLOBS", "") != "true" {
+		return nil, fmt.Errorf("config: production requires durable object storage — set NIRVET_S3_BUCKET (Backblaze B2 / R2 / S3) or NIRVET_GCS_BUCKET, or set NIRVET_ALLOW_EPHEMERAL_BLOBS=true ONLY if the local blob path is a persistent disk (evidence/attachments/reports are lost on restart otherwise)")
 	}
 	return c, nil
 }

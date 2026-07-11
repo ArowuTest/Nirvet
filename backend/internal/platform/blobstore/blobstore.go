@@ -105,8 +105,15 @@ func (s *localStore) resolve(uri string) (string, error) {
 // GCS bucket FAILS FAST at startup rather than returning a store that errors on every Put/Get
 // at runtime (which would silently break evidence capture in production).
 func New(gcsBucket, localDir string) (Store, error) {
+	// S3-compatible store (Backblaze B2 / R2 / AWS S3 / MinIO / GCS-interop) — selected when NIRVET_S3_*
+	// is configured. This is the durable interim store AND the production path (ADR-0005).
+	if c, ok := s3ConfigFromEnv(); ok {
+		return newS3(c)
+	}
 	if gcsBucket != "" {
-		return nil, fmt.Errorf("blobstore: GCS backend not yet implemented (ADR-0005); unset NIRVET_GCS_BUCKET to use the local disk store, or wire the GCS backend before configuring a bucket")
+		// Native GCS is not implemented; use the S3 adapter against the GCS S3-interoperability endpoint
+		// (NIRVET_S3_* with the GCS HMAC key), or the local disk store.
+		return nil, fmt.Errorf("blobstore: native GCS backend not implemented (ADR-0005); use NIRVET_S3_* (S3-compatible, incl. the GCS interop endpoint), or unset NIRVET_GCS_BUCKET for the local store")
 	}
 	return NewLocal(localDir)
 }
