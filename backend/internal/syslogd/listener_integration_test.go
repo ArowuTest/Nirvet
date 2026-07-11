@@ -254,6 +254,81 @@ func TestSyslog_MalformedAndOversized(t *testing.T) {
 	}
 }
 
+// TestSyslog_SourceProvisioning_And_DisabledAudit: the padmin source lifecycle (create disabled → enable →
+// disable → delete) drives what the listener honors, and a disabled source's connect writes the LOW-SYS
+// data-owner-visible audit under the source's tenant.
+func TestSyslog_SourceProvisioning_And_DisabledAudit(t *testing.T) {
+	db := syslogDB(t)
+	store := NewSourceStore(db)
+	addr, fake := startListener(t, db, Config{})
+	ctx := context.Background()
+	tA := mkTenant(t, db)
+	cert, fp := genCert(t)
+
+	// Created DISABLED (secure default) → the listener rejects it, and records the data-owner-visible audit.
+	id, err := store.Create(ctx, tA, "gw1", fp)
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if !rejected(addr, &cert) {
+		t.Fatal("a disabled source must be rejected")
+	}
+	if !waitAudit(t, db, tA, "syslog.source.rejected") {
+		t.Fatal("LOW-SYS: a disabled source's rejected connect must write a data-owner-visible audit under its tenant")
+	}
+
+	// Enable → now accepted, ingests under the source's tenant.
+	if err := store.SetEnabled(ctx, id, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	conn, err := dial(addr, &cert)
+	if err != nil {
+		t.Fatalf("dial enabled: %v", err)
+	}
+	sendFrame(conn, "<13>1 2024-01-01T00:00:00Z h app - - - hi")
+	if !waitCalls(fake, 1) || fake.calls()[0].tenant != tA {
+		t.Fatal("an enabled source must ingest under its tenant")
+	}
+	conn.Close()
+
+	// List shows it enabled.
+	rows, _ := store.List(ctx)
+	var seen bool
+	for _, r := range rows {
+		if r.ID == id && r.Enabled {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("List must show the enabled source")
+	}
+
+	// Disable (revoke) → rejected again; Delete → gone.
+	_ = store.SetEnabled(ctx, id, false)
+	if !rejected(addr, &cert) {
+		t.Fatal("a re-disabled source must be rejected")
+	}
+	_ = store.Delete(ctx, id)
+	if _, ok, _ := store.LookupByFingerprint(ctx, fp); ok {
+		t.Fatal("a deleted source must be gone")
+	}
+}
+
+func waitAudit(t *testing.T, db *database.DB, tenantID uuid.UUID, action string) bool {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		var n int
+		_ = db.WithTenant(context.Background(), tenantID, func(ctx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action=$1`, action).Scan(&n)
+		})
+		if n > 0 {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
 // TestSyslog_PerSourceRateCap (MA-SYS-4): a burst from one source is throttled — not every line is ingested.
 func TestSyslog_PerSourceRateCap(t *testing.T) {
 	db := syslogDB(t)

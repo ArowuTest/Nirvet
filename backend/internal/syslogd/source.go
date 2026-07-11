@@ -15,7 +15,9 @@ package syslogd
 
 import (
 	"context"
+	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,4 +57,75 @@ func (s *SourceStore) LookupByFingerprint(ctx context.Context, fingerprint strin
 		return nil
 	})
 	return src, found, err
+}
+
+// AuditDisabledReject records (under the source's OWN tenant) that a disabled source's cert tried to connect —
+// data-owner-visible (LOW-SYS). Best-effort; a system-actor entry (no principal).
+func (s *SourceStore) AuditDisabledReject(ctx context.Context, tenantID uuid.UUID, fingerprint string) {
+	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return audit.Record(ctx, tx, audit.Entry{Action: "syslog.source.rejected",
+			Target: "fingerprint:" + fingerprint, Metadata: map[string]any{"reason": "disabled"}})
+	})
+}
+
+// SourceRow is a registered source as listed by the padmin management surface (no key material beyond the
+// fingerprint, which is public).
+type SourceRow struct {
+	ID          uuid.UUID `json:"id"`
+	TenantID    uuid.UUID `json:"tenant_id"`
+	Name        string    `json:"name"`
+	Fingerprint string    `json:"cert_fingerprint"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// Create registers a source for a tenant, DISABLED by default (secure default — an operator must explicitly
+// enable it). Returns the new id.
+func (s *SourceStore) Create(ctx context.Context, tenantID uuid.UUID, name, fingerprint string) (uuid.UUID, error) {
+	id := uuid.New()
+	err := s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO syslog_sources (id, tenant_id, name, cert_fingerprint, enabled) VALUES ($1,$2,$3,$4,false)`,
+			id, tenantID, name, fingerprint)
+		return e
+	})
+	return id, err
+}
+
+// SetEnabled enables/disables a source (disabling is the revocation path — the listener stops honoring it on
+// live connections at the next re-check, and rejects new handshakes).
+func (s *SourceStore) SetEnabled(ctx context.Context, id uuid.UUID, enabled bool) error {
+	return s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `UPDATE syslog_sources SET enabled=$2 WHERE id=$1`, id, enabled)
+		return e
+	})
+}
+
+// Delete removes a source.
+func (s *SourceStore) Delete(ctx context.Context, id uuid.UUID) error {
+	return s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `DELETE FROM syslog_sources WHERE id=$1`, id)
+		return e
+	})
+}
+
+// List returns all registered sources (padmin sees the whole registry).
+func (s *SourceStore) List(ctx context.Context) ([]SourceRow, error) {
+	var out []SourceRow
+	err := s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT id, tenant_id, name, cert_fingerprint, enabled, created_at FROM syslog_sources ORDER BY created_at DESC`)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r SourceRow
+			if e := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Fingerprint, &r.Enabled, &r.CreatedAt); e != nil {
+				return e
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	return out, err
 }

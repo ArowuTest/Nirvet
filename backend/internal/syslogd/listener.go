@@ -110,11 +110,21 @@ func (l *Listener) verifyPeer(rawCerts [][]byte, _ [][]*x509.Certificate) error 
 	if err != nil {
 		return errors.New("syslog: source lookup failed") // fail-closed
 	}
-	if !ok || !src.Enabled {
+	if !ok {
+		// LOW-SYS: an UNREGISTERED cert has no tenant to attribute — keep it a rate-limited PLATFORM-scope
+		// Warn (do NOT invent a sentinel tenant to force it into the tenant-scoped audit_log).
 		if l.missLog.Allow() {
-			l.log.Warn("syslog: rejected client cert (not a registered enabled source)", "fingerprint", fp)
+			l.log.Warn("syslog: rejected unregistered client cert", "fingerprint", fp)
 		}
-		return errors.New("syslog: client certificate is not a registered enabled source")
+		return errors.New("syslog: client certificate is not a registered source")
+	}
+	if !src.Enabled {
+		// LOW-SYS: a DISABLED/revoked source has a KNOWN tenant — record a data-owner-visible audit (the
+		// tenant should see that its disabled source is still trying to connect). Rate-limited.
+		if l.missLog.Allow() {
+			l.sources.AuditDisabledReject(ctx, src.TenantID, fp)
+		}
+		return errors.New("syslog: source is disabled")
 	}
 	return nil
 }

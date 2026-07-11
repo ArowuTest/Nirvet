@@ -168,6 +168,9 @@ func main() {
 	// platform_admin administers the grants (issue/revoke, audited). Delegates are gated to the posture read;
 	// their scope is resolved from their own grants (never a client-supplied id).
 	grantH := posture.NewGrantHandler(posture.NewGrantService(db))
+	// Syslog source provisioning (padmin): register/enable/disable/list the mTLS syslog sources the listener
+	// attributes by cert fingerprint. Secure default: a new source is disabled until explicitly enabled.
+	syslogAdminH := syslogd.NewAdminHandler(syslogd.NewSourceStore(db))
 
 	// Alert correlation + risk scoring (§6.7): risk-ranked clusters of related alerts.
 	correlationSvc := correlation.NewService(correlation.NewRepository(db))
@@ -469,6 +472,11 @@ func main() {
 	mux.Handle("DELETE /admin/oversight/org-grants", padmin(grantH.RevokeOrg))
 	mux.Handle("POST /admin/oversight/payer-grants", padmin(grantH.GrantPayer))
 	mux.Handle("DELETE /admin/oversight/payer-grants", padmin(grantH.RevokePayer))
+	// Syslog source provisioning (padmin; auditMut in the chain records each mutation).
+	mux.Handle("POST /admin/syslog-sources", padmin(syslogAdminH.Create))
+	mux.Handle("GET /admin/syslog-sources", padmin(syslogAdminH.List))
+	mux.Handle("POST /admin/syslog-sources/{id}/enabled", padmin(syslogAdminH.SetEnabled))
+	mux.Handle("DELETE /admin/syslog-sources/{id}", padmin(syslogAdminH.Delete))
 	mux.Handle("GET /admin/tenants", padmin(tenantH.List))
 	mux.Handle("GET /admin/tenants/{id}", padmin(tenantH.Get))
 	// Tenant governance (§6.1). Status lifecycle is a provider action (platform_admin only);
