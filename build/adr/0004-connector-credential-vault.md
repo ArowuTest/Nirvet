@@ -1,7 +1,18 @@
 # ADR-0004 — Connector credential vault
 
 **Status:** Accepted (assumed sign-off, Jul 2026; pre-go-live review pending)
-**Stack:** Go · GCP Cloud KMS · PostgreSQL
+**Stack:** Go · GCP Cloud KMS (envelope, go-live) · AES-GCM master key (interim) · PostgreSQL
+
+> **Implementation note (Jul 2026):** the decision below specifies the GCP Cloud KMS envelope hierarchy as the
+> go-live target. What is BUILT today is the interim leg of that same design: AES-GCM encryption behind the
+> `platform/crypto.SecretCipher` interface, keyed by an env-provided master key with **tenant_id as AAD** (so a
+> row swapped across tenants fails to decrypt), and a **startup guard that refuses a weak/short master key in
+> production**. Decision point #6 ("audit every access") is fully realized: `connector.Vault.Open` is the single
+> AUDITED decrypt chokepoint — it emits an immutable `connector.credential_decrypt` audit event on every decrypt,
+> and a CI fence (`scripts/check-connector-decrypt-audit.sh`) forbids any other code path from decrypting a
+> connector secret (GC-1). The one remaining piece is swapping the AES master key for the **Cloud KMS envelope
+> adapter** behind the same interface — deferred to GCP provisioning (needs a real key ring to verify). No caller
+> changes when that lands.
 
 ## Context
 

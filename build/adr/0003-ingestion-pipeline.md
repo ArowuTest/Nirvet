@@ -1,7 +1,16 @@
 # ADR-0003 — Ingestion pipeline
 
 **Status:** Accepted (assumed sign-off, Jul 2026; pre-go-live review pending)
-**Stack:** Go · River/PostgreSQL (MVP) · GCP Pub/Sub (prod)
+**Stack:** Go · PostgreSQL `SKIP LOCKED` queue (MVP) · **NATS/JetStream** (built scaling backend) · GCP Pub/Sub (optional prod alternative)
+
+> **Implementation note (Jul 2026):** the durable buffer is a single `platform/queue.Queue` interface with two
+> LANDED backends — the Postgres `SKIP LOCKED` queue (default, MVP) and **NATS/JetStream** (the built scaling
+> backend, selected by `NIRVET_NATS_URL`), which provides durable streams, AckWait redelivery, and a **real
+> dead-letter subject** (`nirvet.ingest.deadletter`) with inspect/replay tooling. GCP Pub/Sub remains a valid
+> portability target behind the same interface but is NOT the built path — where the original text below says
+> "Pub/Sub later", read "NATS/JetStream now, Pub/Sub optional". The Postgres backend's `Claim` is tenant-fair
+> (per-tenant round-robin, not global FIFO) so one noisy tenant cannot starve others (M-3). The River library
+> was not used; the Postgres queue is a direct `FOR UPDATE SKIP LOCKED` implementation.
 
 ## Context
 
