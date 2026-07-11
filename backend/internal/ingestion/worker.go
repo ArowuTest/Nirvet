@@ -13,9 +13,17 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/platform/safe"
+	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// workerTracer instruments the async ingest→detect→correlate pipeline (GC-4). Each job gets a trace so a
+// stuck or slow event can be followed across the three stages; a no-op when tracing is disabled.
+var workerTracer = tracing.Tracer("nirvet/ingest-worker")
 
 // Correlator clusters a raised alert with related alerts and returns the cluster id
 // plus the alert's individual risk (SRS §6.7). Implemented by correlation.Service;
@@ -130,12 +138,25 @@ func mitreFromData(data map[string]any) []string {
 	}
 }
 
-func (wk *Worker) process(ctx context.Context, j queue.Job) error {
+func (wk *Worker) process(ctx context.Context, j queue.Job) (err error) {
+	ctx, span := workerTracer.Start(ctx, "ingest.process_job", trace.WithAttributes(
+		attribute.String("nirvet.tenant_id", j.TenantID.String()),
+		attribute.String("nirvet.job_id", j.ID.String()),
+	))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	var nj normalizeJob
 	if err := json.Unmarshal(j.Payload, &nj); err != nil {
 		return err // malformed -> dead-letters after retries (parser error queue)
 	}
 	in := Normalize(nj.Input) // source-aware mapping to the canonical event shape
+	span.SetAttributes(attribute.String("nirvet.source", in.Source), attribute.String("nirvet.event_class", in.ClassName))
 	observed := in.ObservedAt
 	if observed.IsZero() {
 		observed = time.Now()
@@ -243,11 +264,24 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) error {
 // and a reconciler re-normalize could re-run detection. The Postgres store is already protected upstream
 // (Append ON CONFLICT → inserted==0 → detection skipped), so this makes the alert layer robust regardless
 // of the event-store backend or worker count (external-reviewer finding, ClickHouse alert-amplification).
-func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) error {
+func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) (err error) {
+	ctx, span := workerTracer.Start(ctx, "ingest.detect", trace.WithAttributes(
+		attribute.String("nirvet.tenant_id", ev.TenantID.String()),
+		attribute.String("nirvet.source", ev.Source),
+	))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	matches, err := wk.detector.Evaluate(ctx, ev.TenantID, ev)
 	if err != nil {
 		return err
 	}
+	span.SetAttributes(attribute.Int("nirvet.detection_matches", len(matches)))
 	// The deterministic content key; fall back to the event id only when an event carries no dedupe key.
 	alertKey := ev.ID.String()
 	if ev.DedupeKey != "" {
@@ -288,15 +322,24 @@ func (wk *Worker) correlate(ctx context.Context, ev eventstore.NormalizedEvent, 
 	if wk.correlator == nil {
 		return
 	}
+	ctx, span := workerTracer.Start(ctx, "ingest.correlate", trace.WithAttributes(
+		attribute.String("nirvet.tenant_id", ev.TenantID.String()),
+		attribute.String("nirvet.alert_id", a.ID.String()),
+	))
+	defer span.End()
+
 	entity := ev.TargetRef
 	if entity == "" {
 		entity = ev.ActorRef
 	}
 	cid, risk, err := wk.correlator.Correlate(ctx, ev.TenantID, entity, a.Severity, a.MITRE, a.Confidence)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		wk.log.Warn("correlation failed", "alert", a.ID, "err", err)
 		return
 	}
+	span.SetAttributes(attribute.Int("nirvet.alert_risk", risk))
 	var cptr *uuid.UUID
 	if cid != uuid.Nil {
 		cptr = &cid

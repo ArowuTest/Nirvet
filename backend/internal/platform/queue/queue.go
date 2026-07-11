@@ -20,6 +20,10 @@ import (
 // MaxAttempts before a job is dead-lettered.
 const MaxAttempts = 5
 
+// claimCandidateFactor over-selects fair-ordered candidates (n * factor) before locking, so a batch can still
+// reach n after SKIP LOCKED drops rows another worker already holds. Bounded so the window scan stays cheap.
+const claimCandidateFactor = 8
+
 // Job is a unit of ingestion work (e.g. normalize a raw event).
 type Job struct {
 	ID       uuid.UUID
@@ -58,17 +62,38 @@ func (q *PostgresQueue) Enqueue(ctx context.Context, tenantID uuid.UUID, kind st
 	return err
 }
 
-// Claim atomically claims up to n runnable jobs and marks them running.
+// Claim atomically claims up to n runnable jobs and marks them running, scheduled FAIRLY across tenants
+// (M-3). A plain `ORDER BY run_at` is global FIFO: one tenant that floods the queue (an ingest storm, a
+// misbehaving connector) fills every claimed batch and starves every other tenant's security events behind
+// it. Instead we round-robin — row_number() per tenant orders each tenant's jobs oldest-first, then we take
+// the oldest-of-each-tenant, then the second-oldest-of-each, etc. A single noisy tenant can occupy at most
+// its fair share of any batch. The window ranking runs unlocked (a CTE), then we lock the actual rows with
+// FOR UPDATE OF ... SKIP LOCKED so concurrent workers never double-claim; a candidate pool larger than n
+// absorbs rows skipped because another worker holds them. Within a tenant, run_at still preserves FIFO.
 func (q *PostgresQueue) Claim(ctx context.Context, n int) ([]Job, error) {
 	rows, err := q.pool.Query(ctx,
-		`UPDATE ingest_jobs SET state='running', attempts=attempts+1, claimed_at=now()
-		   WHERE id IN (
-		     SELECT id FROM ingest_jobs
+		`WITH ranked AS (
+		     SELECT id, tenant_id, run_at,
+		            row_number() OVER (PARTITION BY tenant_id ORDER BY run_at, id) AS rn
+		       FROM ingest_jobs
 		      WHERE state='queued' AND run_at <= now()
-		      ORDER BY run_at
-		      FOR UPDATE SKIP LOCKED
-		      LIMIT $1)
-		 RETURNING id, tenant_id, kind, payload, attempts`, n)
+		 ),
+		 candidates AS (
+		     SELECT id, rn, run_at FROM ranked ORDER BY rn, run_at LIMIT $2
+		 ),
+		 locked AS (
+		     SELECT j.id
+		       FROM candidates c
+		       JOIN ingest_jobs j ON j.id = c.id
+		      ORDER BY c.rn, c.run_at
+		      FOR UPDATE OF j SKIP LOCKED
+		      LIMIT $1
+		 )
+		 UPDATE ingest_jobs j
+		    SET state='running', attempts=attempts+1, claimed_at=now()
+		   FROM locked
+		  WHERE j.id = locked.id
+		 RETURNING j.id, j.tenant_id, j.kind, j.payload, j.attempts`, n, n*claimCandidateFactor)
 	if err != nil {
 		return nil, err
 	}
