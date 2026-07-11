@@ -195,6 +195,7 @@ func main() {
 		WithTemplates(notify.NewTemplateRepo(db)).                                // §6.16 templates + throttle/localization
 		WithLinkKey([]byte(cfg.JWTSecret))                                        // §6.16 secure expiring links (HMAC)
 	notifyH := notify.NewHandler(notifySvc)
+	inboxH := notify.NewInboxHandler(notify.NewInbox(db)) // §6.16 per-user in-app feed
 	// Break-glass access fires an automatic alert (§6.2 IAM-006).
 	iamSvc.WithAlerter(notifySvc)
 
@@ -688,6 +689,13 @@ func main() {
 	mux.Handle("PUT /notify/settings", manager(notifyH.UpdateSettings))
 	mux.Handle("POST /notify/links", provider(notifyH.MintLink))
 	mux.Handle("GET /notify/links/verify", provider(notifyH.VerifyLink))
+	// Per-user in-app inbox (§6.16): any authenticated user, scoped to their OWN notifications.
+	mux.Handle("GET /notify/inbox", authed(inboxH.List))
+	mux.Handle("GET /notify/inbox/unread-count", authed(inboxH.UnreadCount))
+	mux.Handle("POST /notify/inbox/read-all", authed(inboxH.MarkAllRead))
+	mux.Handle("POST /notify/inbox/{id}/read", authed(inboxH.MarkRead))
+	mux.Handle("GET /notify/inbox/prefs", authed(inboxH.GetPrefs))
+	mux.Handle("PUT /notify/inbox/prefs", authed(inboxH.SetPrefs))
 	// incidents (SOC)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
