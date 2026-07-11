@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"log/slog"
@@ -53,6 +54,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
 	"github.com/ArowuTest/nirvet/internal/sso"
+	"github.com/ArowuTest/nirvet/internal/syslogd"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/ArowuTest/nirvet/internal/ticketing"
@@ -702,6 +704,23 @@ func main() {
 	// --- inline ingest worker (dev convenience; prod runs cmd/worker) ---
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	defer stopWorker()
+
+	// Syslog listener (Ghana L connector): mTLS network ingress, config-gated OFF and bound to a PRIVATE
+	// interface only. Dormant unless NIRVET_SYSLOG_BIND is set. Its own goroutine — a listener panic is
+	// panic-guarded per connection and cannot take down the HTTP server.
+	if cfg.SyslogBind != "" {
+		if cert, cerr := tls.LoadX509KeyPair(cfg.SyslogTLSCert, cfg.SyslogTLSKey); cerr != nil {
+			log.Error("syslog listener NOT started: TLS cert/key load failed", "err", cerr)
+		} else {
+			sl := syslogd.New(syslogd.NewSourceStore(db), ingestSvc, log, syslogd.Config{BindAddr: cfg.SyslogBind, ServerCert: cert})
+			go func() {
+				if err := sl.Serve(workerCtx); err != nil {
+					log.Error("syslog listener stopped", "err", err)
+				}
+			}()
+			log.Info("syslog listener started (mTLS)", "bind", cfg.SyslogBind)
+		}
+	}
 	if cfg.InlineWorker {
 		wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc).WithNormQuality(normQ)
 		go wk.Start(workerCtx, time.Second)

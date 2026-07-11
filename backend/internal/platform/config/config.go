@@ -73,6 +73,12 @@ type Config struct {
 	// Bootstrap: first-run provider tenant + platform admin.
 	BootstrapEmail    string
 	BootstrapPassword string
+
+	// Syslog listener (Ghana L connector) — OFF unless SyslogBind is set (bind a PRIVATE interface only).
+	// mTLS: SyslogTLSCert/Key are the server's cert/key PEM file paths.
+	SyslogBind    string
+	SyslogTLSCert string
+	SyslogTLSKey  string
 }
 
 // Load reads configuration from the environment, applying development defaults.
@@ -103,6 +109,9 @@ func Load() (*Config, error) {
 		InlineWorker:       env("NIRVET_INLINE_WORKER", "true") == "true",
 		BootstrapEmail:     env("NIRVET_BOOTSTRAP_EMAIL", "admin@nirvet.local"),
 		BootstrapPassword:  env("NIRVET_BOOTSTRAP_PASSWORD", "ChangeMe123!"),
+		SyslogBind:         env("NIRVET_SYSLOG_BIND", ""),
+		SyslogTLSCert:      env("NIRVET_SYSLOG_TLS_CERT", ""),
+		SyslogTLSKey:       env("NIRVET_SYSLOG_TLS_KEY", ""),
 	}
 	if c.IsProduction() && c.JWTSecret == "dev-insecure-change-me" {
 		return nil, fmt.Errorf("config: NIRVET_JWT_SECRET must be set in production")
