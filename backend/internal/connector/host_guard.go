@@ -28,7 +28,9 @@ func NewHostProtectedGuard(cfg protectedHostsReader) *HostProtectedGuard { retur
 // CheckProtected withholds an isolate_endpoint whose target matches a protected-host pattern.
 func (g *HostProtectedGuard) CheckProtected(ctx context.Context, tenantID uuid.UUID, connectorKey, actionKey, target string, _ []byte) (bool, string, error) {
 	// Vendor-aware: only Defender host ISOLATION is gated here (release_endpoint is the reversible undo).
-	if connectorKey != string(KindDefender) || actionKey != "isolate_endpoint" {
+	// Case-INSENSITIVE (H-1): the actioner registry matches connector/action case-insensitively, so a
+	// mis-cased catalog override ("Defender") must not slip past this guard while still firing the actioner.
+	if !strings.EqualFold(connectorKey, string(KindDefender)) || !strings.EqualFold(actionKey, "isolate_endpoint") {
 		return false, "", nil
 	}
 	patterns, err := g.cfg.ProtectedHosts(ctx, tenantID)

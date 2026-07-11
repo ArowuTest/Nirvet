@@ -119,6 +119,11 @@ func (r *Repository) listActionCatalog(ctx context.Context, tenantID uuid.UUID) 
 // upsertActionCatalog writes a tenant OVERRIDE row (never a global row — RLS WITH CHECK forbids it)
 // and audits the change atomically.
 func (r *Repository) upsertActionCatalog(ctx context.Context, p auth.Principal, tenantID uuid.UUID, a ActionCatalog) error {
+	// Canonicalise casing (H-1): the actioner registry and the D5 guards must all see the same
+	// lower-cased connector/action key, so a mis-cased override ("Defender") can't fire the actioner
+	// while skipping the guard. The DB also enforces this with a CHECK (mig 0099).
+	a.ConnectorKey = strings.ToLower(strings.TrimSpace(a.ConnectorKey))
+	a.ActionKey = strings.ToLower(strings.TrimSpace(a.ActionKey))
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO soar_action_catalog (id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled)

@@ -60,8 +60,8 @@ func (g *EntraProtectedGuard) clientFor(cb Credentials) *entraClient {
 
 // CheckProtected implements soar.ProtectedTargetGuard.
 func (g *EntraProtectedGuard) CheckProtected(ctx context.Context, tenantID uuid.UUID, connectorKey, actionKey, target string, creds []byte) (bool, string, error) {
-	if connectorKey != string(KindEntraID) {
-		return false, "", nil // vendor-aware: this guard only covers identity actions
+	if !strings.EqualFold(connectorKey, string(KindEntraID)) {
+		return false, "", nil // vendor-aware: this guard only covers identity actions (case-insensitive, H-1)
 	}
 	var cb Credentials
 	if err := json.Unmarshal(creds, &cb); err != nil {
