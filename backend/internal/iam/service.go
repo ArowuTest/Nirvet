@@ -17,6 +17,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/totp"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/time/rate"
 )
 
 // Service holds IAM business logic.
@@ -153,7 +154,13 @@ const (
 func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID string) (*LoginResult, error) {
 	u, err := s.repo.FindForAuth(ctx, email)
 	if err != nil || u.Status != UserActive {
-		// No such (active) user — generic error, no account enumeration and no lock.
+		// No such (active) user — generic error, no account enumeration and no lock. There is no tenant to
+		// attribute an audit row to, and writing one per attacker-supplied email would let a spray flood the
+		// immutable audit_log; so this is a RATE-LIMITED platform log (mirrors the syslog missLog guard) — a
+		// credential-spray against unknown accounts still leaves a diagnosable signal (M5).
+		if unknownLoginLog.Allow() {
+			slog.Warn("login attempt for unknown or inactive account", "request_id", requestID)
+		}
 		return nil, httpx.ErrUnauthorized("invalid credentials")
 	}
 	// If the account is locked, reject WITHOUT checking the password (so an attacker
@@ -167,6 +174,7 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 		if ferr := s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow); ferr != nil {
 			slog.Warn("failed to record login failure (lockout may not trip)", "tenant", u.TenantID, "user", u.ID, "err", ferr)
 		}
+		s.auditLoginFailed(ctx, u, "bad_password", requestID) // M5: immutable trail for a known-account attempt
 		return nil, httpx.ErrUnauthorized("invalid credentials")
 	}
 	if u.MFAEnabled {
@@ -178,6 +186,7 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 			if ferr := s.repo.RecordLoginFailure(ctx, u.TenantID, u.ID, maxFailedLogins, loginLockWindow); ferr != nil {
 				slog.Warn("failed to record MFA login failure (lockout may not trip)", "tenant", u.TenantID, "user", u.ID, "err", ferr)
 			}
+			s.auditLoginFailed(ctx, u, "bad_mfa", requestID) // M5: immutable trail for a known-account attempt
 			return nil, httpx.ErrUnauthorized("invalid or missing MFA code")
 		}
 	}
@@ -199,6 +208,22 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 	})
 	u.PasswordHash = ""
 	return &LoginResult{Token: token, Principal: p, User: u}, nil
+}
+
+// unknownLoginLog rate-limits the platform-scope log for login attempts against unknown/inactive accounts,
+// so a credential spray against random emails can't self-DoS the logs (mirrors the syslog missLog guard).
+var unknownLoginLog = rate.NewLimiter(rate.Every(2*time.Second), 5)
+
+// auditLoginFailed writes an immutable auth.login_failed row in the user's tenant context (M5). Best-effort:
+// a failed audit write must never turn a rejected login into anything other than a rejected login.
+func (s *Service) auditLoginFailed(ctx context.Context, u *User, reason, requestID string) {
+	_ = s.db.WithTenant(ctx, u.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return audit.Record(ctx, tx, audit.Entry{
+			ActorID: u.ID, ActorEmail: u.Email, Action: "auth.login_failed",
+			Target: "user:" + u.ID.String(), RequestID: requestID,
+			Metadata: map[string]any{"reason": reason},
+		})
+	})
 }
 
 // ChangePassword lets an authenticated user rotate their own password. The current

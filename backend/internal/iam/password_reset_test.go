@@ -149,6 +149,29 @@ func TestReset_DisabledRefusedAtConfirm(t *testing.T) {
 	}
 }
 
+// TestLogin_FailedAttemptIsAudited (M5) proves a bad-password login against a KNOWN account writes an
+// immutable auth.login_failed row in that tenant's audit trail — so a spray against a real account is
+// reconstructable post-incident, not just a mutable counter that resets on the next success.
+func TestLogin_FailedAttemptIsAudited(t *testing.T) {
+	s, db := resetSvc(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	_, email := seedUser(t, db, tenantID, auth.RoleAnalystT1, "correcthorse", UserActive)
+
+	if _, err := s.Login(ctx, email, "wrongpassword", "", "req-1"); err == nil {
+		t.Fatal("a wrong password must be rejected")
+	}
+	var n int
+	if err := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action='auth.login_failed'`).Scan(&n)
+	}); err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 auth.login_failed audit row, got %d", n)
+	}
+}
+
 func TestReset_InvalidTokenRejected(t *testing.T) {
 	s, _ := resetSvc(t)
 	if err := s.ConfirmPasswordReset(context.Background(), "nvr_deadbeefdeadbeef", "newpassword123"); err == nil {
