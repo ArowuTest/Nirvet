@@ -135,6 +135,11 @@ func (s *Service) Ingest(ctx context.Context, tenantID uuid.UUID, in IngestInput
 	// Idempotency: a duplicate re-ingest is a no-op — do not re-enqueue, so
 	// normalization and detection never run twice for the same event.
 	if !inserted {
+		// L6: the existing raw_events row keeps its ORIGINAL blob_uri, so the blob we just wrote for
+		// this attempt's (unique) raw.ID is unreferenced — delete it best-effort so an at-least-once
+		// source can't grow the evidence store unbounded. raw.ID is per-attempt unique, so this only
+		// ever removes THIS attempt's orphan, never the winning row's blob.
+		_ = s.blobs.Delete(ctx, raw.BlobURI)
 		return dedupeKey, nil
 	}
 

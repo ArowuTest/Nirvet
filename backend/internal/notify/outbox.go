@@ -88,10 +88,13 @@ func (r *OutboxRepository) pending(ctx context.Context, limit int) ([]OutboxItem
 	return out, err
 }
 
-// markSent flips a delivered row to 'sent' (tenant-scoped; RLS allows own-tenant write).
+// markSent flips a delivered row to 'sent' (tenant-scoped; RLS allows own-tenant write). The
+// AND status='sending' guard (L5, matching the ingest queue's state guard) means only the worker that
+// currently holds the claim can finalize it: if the row was reclaimed after the visibility window by
+// another worker, this stale update no-ops instead of clobbering the new claimant's terminal state.
 func (r *OutboxRepository) markSent(ctx context.Context, tenantID, id uuid.UUID) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE notification_outbox SET status='sent', sent_at=now() WHERE id=$1`, id)
+		_, err := tx.Exec(ctx, `UPDATE notification_outbox SET status='sent', sent_at=now() WHERE id=$1 AND status='sending'`, id)
 		return err
 	})
 }
@@ -107,8 +110,11 @@ func (r *OutboxRepository) markFailed(ctx context.Context, tenantID, id uuid.UUI
 		status = "failed"
 	}
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// AND status='sending' (L5): only the current claim-holder may record the failure/dead-letter,
+		// so a stale worker's late markFailed can't flip a row another worker already marked 'sent' back
+		// to pending (which would trigger a duplicate send on the next drain).
 		_, err := tx.Exec(ctx,
-			`UPDATE notification_outbox SET attempts=attempts+1, last_error=$2, status=$3 WHERE id=$1`,
+			`UPDATE notification_outbox SET attempts=attempts+1, last_error=$2, status=$3 WHERE id=$1 AND status='sending'`,
 			id, errMsg, status)
 		return err
 	})

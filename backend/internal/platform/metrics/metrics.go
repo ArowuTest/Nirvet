@@ -37,6 +37,14 @@ var (
 		Name: "nirvet_alerts_raised_total",
 		Help: "Alerts raised by the detection engine.",
 	})
+
+	// SyslogDropped counts syslog lines dropped because ingestion failed (a backend blip). A syslog TCP
+	// source never retries a line already read off the socket, so this is the silent-loss signal for the
+	// operator's syslog connector — a rising rate should page (M6).
+	SyslogDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "nirvet_syslog_dropped_total",
+		Help: "Syslog lines dropped due to an ingestion failure.",
+	})
 )
 
 type statusRecorder struct {

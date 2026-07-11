@@ -25,6 +25,9 @@ type Store interface {
 	Put(ctx context.Context, tenantID uuid.UUID, key string, data []byte) (string, error)
 	// Get retrieves a blob by its URI.
 	Get(ctx context.Context, uri string) ([]byte, error)
+	// Delete removes a blob by its URI (best-effort cleanup of an orphaned write — e.g. a blob
+	// written for a raw event that turned out to be a duplicate). Missing is not an error.
+	Delete(ctx context.Context, uri string) error
 	// Backend identifies the implementation (for health/diagnostics).
 	Backend() string
 }
@@ -60,6 +63,15 @@ func (s *localStore) Put(_ context.Context, tenantID uuid.UUID, key string, data
 func (s *localStore) Get(_ context.Context, uri string) ([]byte, error) {
 	rel := strings.TrimPrefix(uri, "file://")
 	return os.ReadFile(filepath.Join(s.root, filepath.FromSlash(rel)))
+}
+
+func (s *localStore) Delete(_ context.Context, uri string) error {
+	rel := strings.TrimPrefix(uri, "file://")
+	err := os.Remove(filepath.Join(s.root, filepath.FromSlash(rel)))
+	if os.IsNotExist(err) {
+		return nil // already gone — best-effort
+	}
+	return err
 }
 
 // The GCP (GCS) backend is not yet implemented (ADR-0005). It is intentionally absent rather

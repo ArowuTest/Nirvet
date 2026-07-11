@@ -549,7 +549,10 @@ func main() {
 	mux.Handle("POST /fleet/alerts/{id}/disposition", provider(fleetH.DispositionAlert))
 	// Fleet DESTRUCTIVE (seam #3): fire/approve a SOAR containment on a target tenant's alert. Per-target
 	// authority is evaluated in the target's context; effect + audit land durably in the target (supervisor).
-	mux.Handle("POST /fleet/alerts/{id}/contain", provider(fleetH.FireContainment))
+	// L7: the cross-tenant containment FIRE is gated to `senior` (analyst_t2+), matching the same-tenant
+	// POST /playbooks/{id}/run — a higher-consequence route must not have a lower role bar than the lesser
+	// one. Approve/reject floors are additionally enforced in-service (soc_manager).
+	mux.Handle("POST /fleet/alerts/{id}/contain", senior(fleetH.FireContainment))
 	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/approve", provider(fleetH.ApproveContainment))
 	mux.Handle("POST /fleet/alerts/{id}/contain/{runID}/reject", provider(fleetH.RejectContainment))
 	mux.Handle("GET /alerts/{id}", provider(alertH.Get))

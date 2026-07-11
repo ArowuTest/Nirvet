@@ -14,10 +14,16 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/ArowuTest/nirvet/internal/platform/safe"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 )
+
+// maxConsecIngestFail bounds how many consecutive ingest failures a single connection tolerates before the
+// listener closes it (M6). A short run of failures is a transient backend blip; a sustained run is a real
+// outage, and closing the socket makes the sender back off instead of streaming lines into a black hole.
+const maxConsecIngestFail = 10
 
 // Ingester is the subset of the ingestion service the listener feeds. The listener passes the VERIFIED tenant
 // (from the client cert), never anything from the payload. *ingestion.Service satisfies it.
@@ -183,6 +189,7 @@ func (l *Listener) handleConn(ctx context.Context, conn *tls.Conn) {
 		lim := l.limiterFor(fp)
 		br := bufio.NewReaderSize(conn, 64*1024)
 		lastCheck := time.Now()
+		consecFail := 0 // M6: consecutive ingest failures → close on persistent backend outage (backpressure)
 		for {
 			if ctx.Err() != nil {
 				return
@@ -207,7 +214,25 @@ func (l *Listener) handleConn(ctx context.Context, conn *tls.Conn) {
 				lastCheck = time.Now()
 			}
 			in := parse(msg) // the payload never sets the tenant
-			_, _ = l.ingest.Ingest(ctx, tenantID, in)
+			if _, err := l.ingest.Ingest(ctx, tenantID, in); err != nil {
+				// M6: never drop a line silently. A TCP syslog source can't retry a line already read off
+				// the socket, so a swallowed error = permanent invisible detection-data loss. Count it,
+				// log it (rate-limited so a backend blip can't self-DoS the logs), and on a PERSISTENT
+				// backend failure close the connection so the sender/queue backs off (TCP backpressure)
+				// rather than firehosing into a black hole.
+				metrics.SyslogDropped.Inc()
+				if l.missLog.Allow() {
+					l.log.Warn("syslog: dropping line, ingest failed", "tenant", tenantID, "err", err)
+				}
+				consecFail++
+				if consecFail >= maxConsecIngestFail {
+					l.log.Error("syslog: closing connection after repeated ingest failures (backpressure)",
+						"tenant", tenantID, "failures", consecFail)
+					return
+				}
+				continue
+			}
+			consecFail = 0
 		}
 	})
 }
