@@ -14,6 +14,7 @@ package reporting
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -251,6 +252,17 @@ func (rs *ReportService) buildServiceReview(ctx context.Context, tenantID uuid.U
 	add("sla_ack_breaching", sum.SLA.AckBreaching)
 	add("sla_resolve_breaching", sum.SLA.ResolveBreaching)
 	add("sla_resolved_late", sum.SLA.ResolvedLate)
+	// Mean-time KPIs (MTTA/MTTR) over the rolling window — only emitted when a sample exists (nil ⇒ omit,
+	// never a misleading 0). Numeric cells (seconds); the window/sample-size travel as metadata.
+	if sum.MeanTimes.MTTASeconds != nil {
+		ds.Rows = append(ds.Rows, []Cell{Str("mtta_seconds"), Num(*sum.MeanTimes.MTTASeconds)})
+	}
+	if sum.MeanTimes.MTTRSeconds != nil {
+		ds.Rows = append(ds.Rows, []Cell{Str("mttr_seconds"), Num(*sum.MeanTimes.MTTRSeconds)})
+	}
+	ds.Meta["mean_time_window_days"] = strconv.Itoa(sum.MeanTimes.WindowDays)
+	ds.Meta["mtta_sample_count"] = strconv.Itoa(sum.MeanTimes.AcknowledgedCount)
+	ds.Meta["mttr_sample_count"] = strconv.Itoa(sum.MeanTimes.ResolvedCount)
 	for sev, n := range sum.AlertsBySeverity {
 		add("alerts_severity_"+sev, n)
 	}

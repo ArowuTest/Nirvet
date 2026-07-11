@@ -8,6 +8,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
@@ -115,6 +116,79 @@ func TestReport_CapEnforced(t *testing.T) {
 	svc := repSvc(t, db).WithLimits(Limits{MaxRows: 1, MaxCells: 1, MaxBytes: 10})
 	if _, err := svc.Generate(context.Background(), repActor(tid), "service_review", FormatCSV); err == nil {
 		t.Fatal("a report exceeding the row ceiling must be refused")
+	}
+}
+
+// seedIncidentTimes inserts an incident with explicit created/acknowledged/closed timestamps so the mean-time
+// KPIs can be asserted deterministically. ack/closed may be nil (an open or unacknowledged incident).
+func seedIncidentTimes(t *testing.T, db *database.DB, tid uuid.UUID, created time.Time, ack, closed *time.Time) {
+	t.Helper()
+	stage := "investigating"
+	if closed != nil {
+		stage = "closed"
+	}
+	if err := db.WithTenant(context.Background(), tid, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO incidents (id, tenant_id, title, severity, category, stage, created_at,
+			                        acknowledged_at, closed_at, disposition, root_cause, impact, actions_taken)
+			 VALUES ($1,$2,$3,'high','',$4,$5,$6,$7,$8,$9,$10,$11)`,
+			uuid.New(), tid, "mt-"+uuid.NewString(), stage, created, ack, closed,
+			"true_positive", "rc", "impact", "actions")
+		return e
+	}); err != nil {
+		t.Fatalf("seed incident: %v", err)
+	}
+}
+
+// MTTA/MTTR are the mean of (acknowledged_at−created_at) and (closed_at−created_at) over in-window incidents;
+// out-of-window and open incidents are excluded; an empty sample yields nil (never a misleading 0).
+func TestMeanTimes_MTTA_MTTR(t *testing.T) {
+	db := repDB(t)
+	tid := repTenant(t, db)
+	ctx := context.Background()
+	content := NewService(db, eventstore.NewPostgres(db))
+
+	// No incidents yet → both means nil, sample counts 0.
+	sum0, err := content.Summary(ctx, tid)
+	if err != nil {
+		t.Fatalf("summary(empty): %v", err)
+	}
+	if sum0.MeanTimes.MTTASeconds != nil || sum0.MeanTimes.MTTRSeconds != nil {
+		t.Fatalf("empty sample must yield nil means, got %+v", sum0.MeanTimes)
+	}
+	if sum0.MeanTimes.WindowDays != meanTimeWindowDays {
+		t.Fatalf("window_days = %d, want %d", sum0.MeanTimes.WindowDays, meanTimeWindowDays)
+	}
+
+	now := time.Now()
+	ackAt := func(base time.Time, d time.Duration) *time.Time { v := base.Add(d); return &v }
+	// Two in-window, acknowledged + closed: ack deltas 60s/120s → MTTA 90; resolve deltas 3600s/7200s → MTTR 5400.
+	c1 := now.Add(-10 * 24 * time.Hour)
+	seedIncidentTimes(t, db, tid, c1, ackAt(c1, 60*time.Second), ackAt(c1, 3600*time.Second))
+	c2 := now.Add(-5 * 24 * time.Hour)
+	seedIncidentTimes(t, db, tid, c2, ackAt(c2, 120*time.Second), ackAt(c2, 7200*time.Second))
+	// Out-of-window (60d ago): must be excluded from both means.
+	c3 := now.Add(-60 * 24 * time.Hour)
+	seedIncidentTimes(t, db, tid, c3, ackAt(c3, 999*time.Second), ackAt(c3, 999*time.Second))
+	// Open + unacknowledged, in-window: contributes to neither.
+	seedIncidentTimes(t, db, tid, now.Add(-1*24*time.Hour), nil, nil)
+
+	sum, err := content.Summary(ctx, tid)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	mt := sum.MeanTimes
+	if mt.AcknowledgedCount != 2 || mt.ResolvedCount != 2 {
+		t.Fatalf("sample counts: acked=%d resolved=%d, want 2/2", mt.AcknowledgedCount, mt.ResolvedCount)
+	}
+	if mt.MTTASeconds == nil || mt.MTTRSeconds == nil {
+		t.Fatalf("means must be present: %+v", mt)
+	}
+	if *mt.MTTASeconds < 89.9 || *mt.MTTASeconds > 90.1 {
+		t.Fatalf("MTTA = %.3f, want ~90", *mt.MTTASeconds)
+	}
+	if *mt.MTTRSeconds < 5399.9 || *mt.MTTRSeconds > 5400.1 {
+		t.Fatalf("MTTR = %.3f, want ~5400", *mt.MTTRSeconds)
 	}
 }
 

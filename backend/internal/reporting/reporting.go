@@ -25,8 +25,9 @@ type Summary struct {
 	IncidentsByStage map[string]int          `json:"incidents_by_stage"`
 	OpenIncidents    int                     `json:"open_incidents"`
 	EventsLast24h    int                     `json:"events_last_24h"`
-	TopMITRE         []eventstore.MITRECount `json:"top_mitre"` // ATT&CK coverage (v1.1)
-	SLA              SLAPosture              `json:"sla"`       // §6.8 SLA posture
+	TopMITRE         []eventstore.MITRECount `json:"top_mitre"`  // ATT&CK coverage (v1.1)
+	SLA              SLAPosture              `json:"sla"`        // §6.8 SLA posture
+	MeanTimes        MeanTimes               `json:"mean_times"` // MTTA/MTTR mean-time KPIs
 }
 
 // SLAPosture summarises the tenant's incident SLA health (SRS §6.8).
@@ -36,6 +37,27 @@ type SLAPosture struct {
 	ResolveBreaching int `json:"resolve_breaching"` // open, past resolve deadline
 	ResolvedLate     int `json:"resolved_late"`     // closed after the resolve deadline
 }
+
+// MeanTimes reports mean-time KPIs over a rolling window (SRS §6.8; Ghana MTTT KPI). Only metrics that are
+// correct-by-construction from stored control-plane timestamps are reported here:
+//   - MTTA (mean time to acknowledge) = mean(acknowledged_at − created_at) over incidents acknowledged in-window.
+//   - MTTR (mean time to resolve)     = mean(closed_at − created_at) over incidents closed in-window.
+//
+// Values are nil when there are no qualifying incidents (a mean over zero is undefined — never rendered as 0).
+// The sample counts are exposed so the UI can caveat a mean drawn from very few incidents.
+// NOTE (deferred, by design): MTTC (contain) needs a stage-transition history — no "reached-contained" timestamp
+// is stored today; MTTD (detect) needs reliable source event-time (ObservedAt falls back to ingestion time). Both
+// are a documented fast-follow rather than a fabricated number.
+type MeanTimes struct {
+	WindowDays        int      `json:"window_days"`
+	MTTASeconds       *float64 `json:"mtta_seconds"`       // nil if no acknowledged incidents in-window
+	MTTRSeconds       *float64 `json:"mttr_seconds"`       // nil if no closed incidents in-window
+	AcknowledgedCount int      `json:"acknowledged_count"` // sample size behind MTTA
+	ResolvedCount     int      `json:"resolved_count"`     // sample size behind MTTR
+}
+
+// meanTimeWindowDays is the rolling window for the mean-time KPIs.
+const meanTimeWindowDays = 30
 
 // Service computes reports. Alerts/incidents come from the Postgres system of
 // record; the event count comes from the EventStore so it is correct on any
@@ -70,14 +92,34 @@ func (s *Service) Summary(ctx context.Context, tenantID uuid.UUID) (*Summary, er
 			return err
 		}
 		// SLA posture (§6.8) in one pass over incidents.
-		return tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			`SELECT
 			   count(*) FILTER (WHERE closed_at IS NULL),
 			   count(*) FILTER (WHERE closed_at IS NULL AND ack_due_at < now() AND acknowledged_at IS NULL),
 			   count(*) FILTER (WHERE closed_at IS NULL AND resolve_due_at < now()),
 			   count(*) FILTER (WHERE closed_at IS NOT NULL AND resolve_due_at IS NOT NULL AND closed_at > resolve_due_at)
 			 FROM incidents`,
-		).Scan(&sum.SLA.OpenIncidents, &sum.SLA.AckBreaching, &sum.SLA.ResolveBreaching, &sum.SLA.ResolvedLate)
+		).Scan(&sum.SLA.OpenIncidents, &sum.SLA.AckBreaching, &sum.SLA.ResolveBreaching, &sum.SLA.ResolvedLate); err != nil {
+			return err
+		}
+		// Mean-time KPIs (MTTA/MTTR) over the rolling window, in one pass over incidents. avg() returns NULL
+		// for an empty sample → scanned into *float64 (nil), never a misleading 0. The `>= created_at` guards
+		// exclude clock-skew/backfill rows that would yield a negative duration.
+		sum.MeanTimes.WindowDays = meanTimeWindowDays
+		since := sum.GeneratedAt.Add(-time.Duration(meanTimeWindowDays) * 24 * time.Hour)
+		return tx.QueryRow(ctx,
+			`SELECT
+			   avg(extract(epoch FROM (acknowledged_at - created_at)))
+			     FILTER (WHERE acknowledged_at IS NOT NULL AND acknowledged_at >= $1 AND acknowledged_at >= created_at),
+			   count(*)
+			     FILTER (WHERE acknowledged_at IS NOT NULL AND acknowledged_at >= $1 AND acknowledged_at >= created_at),
+			   avg(extract(epoch FROM (closed_at - created_at)))
+			     FILTER (WHERE closed_at IS NOT NULL AND closed_at >= $1 AND closed_at >= created_at),
+			   count(*)
+			     FILTER (WHERE closed_at IS NOT NULL AND closed_at >= $1 AND closed_at >= created_at)
+			 FROM incidents`, since,
+		).Scan(&sum.MeanTimes.MTTASeconds, &sum.MeanTimes.AcknowledgedCount,
+			&sum.MeanTimes.MTTRSeconds, &sum.MeanTimes.ResolvedCount)
 	})
 	if err != nil {
 		return nil, err
