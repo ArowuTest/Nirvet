@@ -46,6 +46,12 @@ jobs:
       - name: Guard — SECURITY DEFINER functions must REVOKE PUBLIC (RLS-bypass)
         working-directory: backend
         run: bash scripts/check-security-definer-revoke.sh
+      - name: Guard — posture store must not import content (MA-4 metadata-only)
+        working-directory: backend
+        run: bash scripts/check-posture-no-content-import.sh
+      - name: Guard — PDF renderer must be zero-egress (no net/http, os/exec, HTML render)
+        working-directory: backend
+        run: bash scripts/check-pdf-render-fence.sh
       - name: Apply migrations
         working-directory: backend
         env:

@@ -164,8 +164,8 @@ func (rs *ReportService) Generate(ctx context.Context, p auth.Principal, typ str
 	if !reportTypes[typ] {
 		return nil, httpx.ErrBadRequest("unknown report type: " + typ)
 	}
-	if format != FormatJSON && format != FormatCSV && format != FormatXLSX {
-		return nil, httpx.ErrBadRequest("unsupported format (pdf/docx are deferred): " + string(format))
+	if format != FormatJSON && format != FormatCSV && format != FormatXLSX && format != FormatPDF {
+		return nil, httpx.ErrBadRequest("unsupported format (docx is deferred): " + string(format))
 	}
 	lim := rs.limits(ctx)
 	params, _ := json.Marshal(map[string]string{"type": typ}) // tenant-fixed; no scope-widening input
@@ -184,7 +184,14 @@ func (rs *ReportService) Generate(ctx context.Context, p auth.Principal, typ str
 		_ = rs.repo.MarkFailed(ctx, p.TenantID, id, "report exceeds row/cell ceiling")
 		return nil, httpx.ErrBadRequest("report exceeds the configured row/cell ceiling")
 	}
-	data, err := Serialize(ds, format)
+	// PDF is rendered by the fenced pdfrender sub-package (deterministic, zero-egress); all other formats go
+	// through the serializer choke point. Both are bounded by the caps above (rows/cells) and the byte cap below.
+	var data []byte
+	if format == FormatPDF {
+		data, err = renderReportPDF(ds)
+	} else {
+		data, err = Serialize(ds, format)
+	}
 	if err != nil {
 		_ = rs.repo.MarkFailed(ctx, p.TenantID, id, err.Error())
 		return nil, httpx.ErrInternal("serialize failed")

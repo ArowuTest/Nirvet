@@ -221,6 +221,7 @@ const (
 	FormatJSON Format = "json"
 	FormatCSV  Format = "csv"
 	FormatXLSX Format = "xlsx"
+	FormatPDF  Format = "pdf" // rendered by the fenced pdfrender sub-package (not via Serialize — see pdf.go)
 )
 
 // Serialize renders a dataset in the requested format.
@@ -245,6 +246,8 @@ func (f Format) ContentType() string {
 		return "text/csv"
 	case FormatXLSX:
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case FormatPDF:
+		return "application/pdf"
 	}
 	return "application/octet-stream"
 }

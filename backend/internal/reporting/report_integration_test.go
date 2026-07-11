@@ -87,6 +87,32 @@ func TestReport_GenerateDownloadAudit(t *testing.T) {
 	}
 }
 
+// PDF export: Generate(pdf) → ready + downloadable as application/pdf with a valid %PDF header (launch-line, heavy).
+func TestReport_GeneratePDF(t *testing.T) {
+	db := repDB(t)
+	tid := repTenant(t, db)
+	svc := repSvc(t, db)
+	ctx := context.Background()
+
+	rep, err := svc.Generate(ctx, repActor(tid), "service_review", FormatPDF)
+	if err != nil {
+		t.Fatalf("generate pdf: %v", err)
+	}
+	if rep.Status != "ready" || rep.Format != FormatPDF || rep.ByteSize < 1 {
+		t.Fatalf("pdf report should be ready with content: %+v", rep)
+	}
+	data, format, err := svc.Download(ctx, repActor(tid), rep.ID)
+	if err != nil || format != FormatPDF {
+		t.Fatalf("download pdf: err=%v format=%s", err, format)
+	}
+	if !strings.HasPrefix(string(data), "%PDF-") {
+		t.Fatalf("downloaded artifact must be a PDF (missing %%PDF- header)")
+	}
+	if FormatPDF.ContentType() != "application/pdf" {
+		t.Fatalf("pdf content-type: %s", FormatPDF.ContentType())
+	}
+}
+
 // Reviewer probe: a report is NOT a bearer capability — tenant B cannot download tenant A's report id.
 func TestReport_DownloadTenantIsolation(t *testing.T) {
 	db := repDB(t)
