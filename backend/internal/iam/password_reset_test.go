@@ -172,6 +172,45 @@ func TestLogin_FailedAttemptIsAudited(t *testing.T) {
 	}
 }
 
+// TestSetUserActive_DisableRevokesAndBlocks (L9) proves the per-user kill-switch: disabling revokes the
+// user's live sessions immediately (generation bump) AND blocks fresh logins; role-domain + self-disable
+// guards hold; reactivation restores login.
+func TestSetUserActive_DisableRevokesAndBlocks(t *testing.T) {
+	s, db := resetSvc(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	uid, email := seedUser(t, db, tenantID, auth.RoleAnalystT1, "password123", UserActive)
+	sess := mintPrincipal(t, s, auth.Principal{UserID: uid, TenantID: tenantID, Role: auth.RoleAnalystT1, Email: email})
+	admin := padminOf(tenantID)
+
+	// self-disable is refused (an admin must not lock themselves out).
+	self := auth.Principal{UserID: uid, TenantID: tenantID, Role: auth.RolePlatformAdmin, Email: email}
+	if err := s.SetUserActive(ctx, self, tenantID, uid, false); err == nil {
+		t.Fatal("self-disable must be refused")
+	}
+	// a customer_admin cannot disable a provider-role user (role-domain boundary).
+	custAdmin := auth.Principal{UserID: uuid.New(), TenantID: tenantID, Role: auth.RoleCustomerAdmin, Email: "ca@x"}
+	if err := s.SetUserActive(ctx, custAdmin, tenantID, uid, false); err == nil {
+		t.Fatal("customer_admin must not disable a provider-role user")
+	}
+
+	if err := s.SetUserActive(ctx, admin, tenantID, uid, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if status(s.CheckSession(ctx, sess, "")) != 401 {
+		t.Fatal("disable must revoke the user's live sessions")
+	}
+	if _, err := s.Login(ctx, email, "password123", "", "r"); err == nil {
+		t.Fatal("a disabled user must not log in")
+	}
+	if err := s.SetUserActive(ctx, admin, tenantID, uid, true); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if _, err := s.Login(ctx, email, "password123", "", "r"); err != nil {
+		t.Fatalf("reactivated user must log in: %v", err)
+	}
+}
+
 func TestReset_InvalidTokenRejected(t *testing.T) {
 	s, _ := resetSvc(t)
 	if err := s.ConfirmPasswordReset(context.Background(), "nvr_deadbeefdeadbeef", "newpassword123"); err == nil {

@@ -512,6 +512,8 @@ func main() {
 	mux.Handle("POST /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.CreateServiceAccount))
 	// G1 admin-issued password reset (platform_admin any tenant / customer_admin own; RP-1 role-domain guard in svc).
 	mux.Handle("POST /admin/tenants/{id}/users/{uid}/reset-password", ssoAdmin(iamH.IssuePasswordReset))
+	mux.Handle("POST /admin/tenants/{id}/users/{uid}/disable", ssoAdmin(iamH.DisableUser))       // L9 kill-switch
+	mux.Handle("POST /admin/tenants/{id}/users/{uid}/reactivate", ssoAdmin(iamH.ReactivateUser)) // L9
 	mux.Handle("GET /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.ListServiceAccounts))
 	mux.Handle("POST /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.CreateAPIKey))
 	mux.Handle("GET /admin/tenants/{id}/service-accounts/{sid}/keys", ssoAdmin(iamH.ListAPIKeys))

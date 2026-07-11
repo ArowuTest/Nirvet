@@ -61,6 +61,17 @@ func (r *Repository) SetMFAPending(ctx context.Context, tenantID, userID uuid.UU
 	})
 }
 
+// SetStatus sets a user's account status (e.g. active/disabled) within the tenant's RLS context (L9).
+func (r *Repository) SetStatus(ctx context.Context, tenantID, userID uuid.UUID, status UserStatus) (bool, error) {
+	var ok bool
+	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, e := tx.Exec(ctx, `UPDATE users SET status=$2 WHERE id=$1`, userID, string(status))
+		ok = ct.RowsAffected() == 1
+		return e
+	})
+	return ok, err
+}
+
 // GetMFAPending returns the staged (not-yet-activated) TOTP secret, or nil if none is pending.
 func (r *Repository) GetMFAPending(ctx context.Context, tenantID, userID uuid.UUID) ([]byte, error) {
 	var secret []byte
