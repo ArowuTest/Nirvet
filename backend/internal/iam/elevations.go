@@ -280,7 +280,9 @@ func (s *Service) MintElevatedToken(ctx context.Context, p auth.Principal, id uu
 	// Carry the elevation id in the token (Round-4 M6) so every request re-checks the grant is still
 	// active — a RevokeElevation takes effect on the next request, not only at the token's exp.
 	elevated := auth.Principal{UserID: p.UserID, TenantID: p.TenantID, Role: e.ElevatedRole, Email: p.Email, ElevationID: id.String()}
-	token, terr := s.tokens.IssueWithTTL(elevated, remaining)
+	// Route through the single mint chokepoint so the elevated token is also stamped with the current session
+	// generation (MA-SR-9) — a user-generation bump revokes the elevated token too.
+	token, terr := s.MintSession(ctx, &elevated, remaining)
 	if terr != nil {
 		return "", nil, httpx.ErrInternal("could not issue elevated token")
 	}

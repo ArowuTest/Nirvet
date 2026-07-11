@@ -75,6 +75,14 @@ func (s *Service) OffboardTenant(ctx context.Context, actor auth.Principal, tena
 	if err := requireElevated(actor, approvedBy, reason); err != nil {
 		return "", err
 	}
+	// Kill every live session in the tenant BEFORE the purge (§6.2 revocation): bump the tenant generation so all
+	// pre-offboard tokens are rejected immediately. The tombstone row survives the purge (mig 0093 excludes the
+	// generation tables), so revoked stays revoked even after the tenant's data is gone.
+	if s.revoker != nil {
+		if err := s.revoker.BumpTenantGeneration(ctx, tenantID); err != nil {
+			return "", httpx.ErrInternal("could not revoke tenant sessions before offboarding")
+		}
+	}
 	n, err := s.repo.OffboardPurge(ctx, tenantID) // the SECURITY DEFINER routine refuses on hold / wrong-state / retention
 	if err != nil {
 		switch {

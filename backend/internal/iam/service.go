@@ -166,9 +166,9 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 	// Success: clear any accumulated failures and the lock.
 	_ = s.repo.ResetLoginFailures(ctx, u.TenantID, u.ID)
 	p := auth.Principal{UserID: u.ID, TenantID: u.TenantID, Role: u.Role, Email: u.Email}
-	// Issue the token with the tenant's configured session TTL (§6.2 IAM-007) — not a
-	// hardcoded lifetime. sessionTTL returns 0 (=> manager default) if unconfigured.
-	token, err := s.tokens.IssueWithTTL(p, s.sessionTTL(ctx, u.TenantID))
+	// Issue the token with the tenant's configured session TTL (§6.2 IAM-007) — not a hardcoded lifetime.
+	// mintSession is the single stamp chokepoint: it stamps the current session generation (§6.2 revocation).
+	token, err := s.MintSession(ctx, &p, s.sessionTTL(ctx, u.TenantID))
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +210,12 @@ func (s *Service) ChangePassword(ctx context.Context, p auth.Principal, current,
 	}
 	if err := s.repo.UpdatePassword(ctx, p.TenantID, p.UserID, hash); err != nil {
 		return httpx.ErrInternal("could not update password")
+	}
+	// A credential change revokes the user's OTHER live sessions (§6.2 session revocation): bump their session
+	// generation so tokens minted before this change are rejected. Surface a failure rather than silently leave
+	// old sessions valid.
+	if err := s.BumpUserGeneration(ctx, p.TenantID, p.UserID); err != nil {
+		return httpx.ErrInternal("password changed but could not revoke existing sessions; retry")
 	}
 	return nil
 }

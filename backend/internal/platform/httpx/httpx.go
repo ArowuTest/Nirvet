@@ -34,6 +34,13 @@ func ErrTooManyRequests(msg string) *APIError {
 // ErrBadGateway signals an upstream dependency failure (e.g. an external IdP).
 func ErrBadGateway(msg string) *APIError { return &APIError{http.StatusBadGateway, "bad_gateway", msg} }
 
+// ErrUnavailable signals a TRANSIENT, retryable failure (503) — e.g. a dependency needed to make a fail-closed
+// security decision is momentarily unreachable, so the request is denied-when-uncertain WITHOUT being treated as a
+// permanent failure (the caller may retry and succeed on recovery).
+func ErrUnavailable(msg string) *APIError {
+	return &APIError{http.StatusServiceUnavailable, "unavailable", msg}
+}
+
 // JSON writes v as a JSON response with the given status.
 func JSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

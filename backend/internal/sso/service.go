@@ -26,6 +26,10 @@ type Directory interface {
 	// SessionTTL returns the tenant's configured access-token lifetime (0 => manager default),
 	// so SSO logins honour the same §6.2 IAM-007 session policy as password logins.
 	SessionTTL(ctx context.Context, tenantID uuid.UUID) time.Duration
+	// MintSession issues a session token through iam's single stamp chokepoint (MA-SR-9), so an SSO login's token
+	// carries the current session generation just like a password login. It stamps the passed principal (pointer)
+	// with the gen/tgen the token carries. SSO must NOT mint tokens directly.
+	MintSession(ctx context.Context, p *auth.Principal, ttl time.Duration) (string, error)
 }
 
 // Service orchestrates the OIDC login flow and connection management.

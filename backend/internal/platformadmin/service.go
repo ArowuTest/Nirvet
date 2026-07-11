@@ -30,16 +30,27 @@ type Alerter interface {
 	RaisePlatform(ctx context.Context, tenantID uuid.UUID, dedupeKey, title, severity, targetRef, source string) (bool, error)
 }
 
+// SessionRevoker kills every live session in a tenant by bumping its session generation (§6.2 revocation).
+// *iam.Service satisfies it. Used on offboard so a purged tenant's tokens are rejected immediately (the tombstone
+// row survives the purge — mig 0093).
+type SessionRevoker interface {
+	BumpTenantGeneration(ctx context.Context, tenantID uuid.UUID) error
+}
+
 // Service owns the flag write path + its safety gate.
 type Service struct {
 	repo    *Repository
 	alerter Alerter
+	revoker SessionRevoker // optional; set via WithSessionRevoker
 }
 
 // NewService builds the service.
 func NewService(repo *Repository, alerter Alerter) *Service {
 	return &Service{repo: repo, alerter: alerter}
 }
+
+// WithSessionRevoker wires the session revoker so tenant offboarding also kills the tenant's live sessions.
+func (s *Service) WithSessionRevoker(r SessionRevoker) *Service { s.revoker = r; return s }
 
 // SetFlagInput is a flag mutation request. ApprovedBy is the four-eyes co-signer required to weaken a protected flag.
 type SetFlagInput struct {

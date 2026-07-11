@@ -46,6 +46,12 @@ type Principal struct {
 	// JWT claim, so a human cannot forge it. Consumers that gate INTERACTIVE HUMAN access (e.g. the
 	// billing-suspension AccessGate) exempt machine principals so telemetry/ingest keeps flowing.
 	ServiceAccount bool
+	// Gen/TGen carry the per-user and per-tenant SESSION GENERATION the token was minted at (§6.2 session
+	// revocation). Stamped at mint from the current generation; the per-request CheckSession rejects a token
+	// whose generation is behind current (a bump = immediate revocation). Absent/0 on tokens minted before the
+	// feature (still valid until the first bump).
+	Gen  int64
+	TGen int64
 }
 
 // Claims is the JWT payload.
@@ -53,7 +59,9 @@ type Claims struct {
 	TenantID    string `json:"tid"`
 	Role        string `json:"role"`
 	Email       string `json:"email"`
-	ElevationID string `json:"eid,omitempty"` // elevated tokens only (Round-4 M6)
+	ElevationID string `json:"eid,omitempty"`  // elevated tokens only (Round-4 M6)
+	Gen         int64  `json:"gen,omitempty"`  // per-user session generation at mint (session revocation)
+	TGen        int64  `json:"tgen,omitempty"` // per-tenant session generation at mint (tenant-wide kill)
 	jwt.RegisteredClaims
 }
 
@@ -85,6 +93,8 @@ func (m *Manager) IssueWithTTL(p Principal, ttl time.Duration) (string, error) {
 		Role:        string(p.Role),
 		Email:       p.Email,
 		ElevationID: p.ElevationID,
+		Gen:         p.Gen,
+		TGen:        p.TGen,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   p.UserID.String(),
@@ -115,7 +125,8 @@ func (m *Manager) Verify(token string) (Principal, error) {
 	if err != nil {
 		return Principal{}, errors.New("invalid tenant")
 	}
-	return Principal{UserID: uid, TenantID: tid, Role: Role(claims.Role), Email: claims.Email, ElevationID: claims.ElevationID}, nil
+	return Principal{UserID: uid, TenantID: tid, Role: Role(claims.Role), Email: claims.Email,
+		ElevationID: claims.ElevationID, Gen: claims.Gen, TGen: claims.TGen}, nil
 }
 
 // HashPassword returns a bcrypt hash.

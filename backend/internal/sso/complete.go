@@ -63,9 +63,10 @@ func completeSSO(ctx context.Context, dir Directory, tokens *auth.Manager, db *d
 	}
 
 	p := auth.Principal{UserID: uid, TenantID: tid, Role: auth.Role(role), Email: email}
-	// Honour the tenant's configured session TTL (§6.2 IAM-007), same as password login —
-	// not the manager default. sessionTTL returns 0 (=> default) if unconfigured.
-	token, terr := tokens.IssueWithTTL(p, dir.SessionTTL(ctx, tenantID))
+	// Honour the tenant's configured session TTL (§6.2 IAM-007), same as password login. Mint through iam's
+	// single chokepoint (dir.MintSession) so the SSO token is stamped with the current session generation
+	// (MA-SR-9) — SSO must not call the token Manager directly.
+	token, terr := dir.MintSession(ctx, &p, dir.SessionTTL(ctx, tenantID))
 	if terr != nil {
 		return nil, httpx.ErrInternal("could not issue session")
 	}

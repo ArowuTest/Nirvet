@@ -275,6 +275,14 @@ func TestIntegration(t *testing.T) {
 		if err := h.iamSvc.ChangePassword(h.ctx, h.principal, "newpassword456", "password123"); err != nil {
 			t.Fatalf("restore password: %v", err)
 		}
+		// Each password change bumped this user's session generation (§6.2 revocation), so the principal minted at
+		// harness setup is now REVOKED. Refresh it from a fresh login so later CheckSession-based subtests reflect a
+		// current session (this is the correct new behaviour — a credential change kills existing sessions).
+		if res, err := h.iamSvc.Login(h.ctx, h.email, "password123", "", "req-itest-refresh"); err != nil {
+			t.Fatalf("re-login to refresh principal after password change: %v", err)
+		} else {
+			h.principal = res.Principal
+		}
 	})
 
 	t.Run("AuditLogIsAppendOnly", func(t *testing.T) {

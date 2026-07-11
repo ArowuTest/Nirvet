@@ -52,6 +52,9 @@ jobs:
       - name: Guard — PDF renderer must be zero-egress (no net/http, os/exec, HTML render)
         working-directory: backend
         run: bash scripts/check-pdf-render-fence.sh
+      - name: Guard — session tokens minted only via the MintSession chokepoint (MA-SR-9 stamp completeness)
+        working-directory: backend
+        run: bash scripts/check-session-mint-single-path.sh
       - name: Apply migrations
         working-directory: backend
         env:

@@ -164,6 +164,12 @@ func (s *Service) sessionTTL(ctx context.Context, tenantID uuid.UUID) time.Durat
 // enforces the tenant IP allow-list (§6.2 IAM-007). An empty allow-list means no restriction; access
 // from outside it is denied and, when geo_anomaly_logging is on, recorded to the audit trail.
 func (s *Service) CheckSession(ctx context.Context, p auth.Principal, clientIP string) error {
+	// Session revocation (§6.2): a token whose per-user/per-tenant generation is behind current is REVOKED
+	// (password change/reset, offboard, admin-disable) — reject immediately rather than honour it until exp.
+	// This is the first gate: a revoked session shouldn't pass the elevation/IP checks either.
+	if err := s.checkSessionGeneration(ctx, p); err != nil {
+		return err
+	}
 	// Revocable elevated tokens: a token minted for a PAM/break-glass grant carries the grant id; if
 	// that grant is no longer active (revoked/expired/foreign), reject NOW rather than honouring the
 	// elevated role until the token's ≤8h exp.

@@ -314,7 +314,7 @@ func main() {
 	// through) live in the services; the handler is thin plumbing. All routes are padmin-gated below.
 	padminRepo := platformadmin.NewRepository(db)
 	padminH := platformadmin.NewHandler(
-		platformadmin.NewService(padminRepo, alertSvc),
+		platformadmin.NewService(padminRepo, alertSvc).WithSessionRevoker(iamSvc), // offboard kills the tenant's sessions
 		platformadmin.NewMaintenanceService(padminRepo),
 	)
 	// §6.9 #124 investigation surface. The hunt-query engine is allow-list-compiles-to-bound-params (the codebase's
