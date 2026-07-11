@@ -23,7 +23,10 @@ type ProtectedTargetGuard interface {
 // WithGuard APPENDS a protected-target guard to the chain (identity, host, …) — call it once per guard.
 // Every guard in the chain is consulted before a destructive action; any one may withhold. Returns the
 // supervisor for chaining.
-func (s *Supervisor) WithGuard(g ProtectedTargetGuard) *Supervisor { s.guards = append(s.guards, g); return s }
+func (s *Supervisor) WithGuard(g ProtectedTargetGuard) *Supervisor {
+	s.guards = append(s.guards, g)
+	return s
+}
 
 // ProtectedIdentities returns the tenant's own + global protected identity refs (lower-cased) — the L1 deny-list.
 func (r *Repository) ProtectedIdentities(ctx context.Context, tenantID uuid.UUID) ([]string, error) {

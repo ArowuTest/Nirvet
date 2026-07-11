@@ -27,12 +27,12 @@ func TestLoadDevelopmentDefaults(t *testing.T) {
 func TestProductionGuards(t *testing.T) {
 	// A fully-valid production environment (mutated per case below).
 	base := map[string]string{
-		"NIRVET_ENV":                  "production",
-		"NIRVET_JWT_SECRET":           "a-real-secret-at-least-32-chars-long!!", // >= 32-char entropy floor (M1)
-		"NIRVET_BOOTSTRAP_PASSWORD":   "a-real-bootstrap-pw",
-		"NIRVET_SECRET_MASTER_KEY":    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32 bytes b64
-		"NIRVET_KMS_KEY_NAME":         "",
-		"NIRVET_EVIDENCE_SIGNING_KEY": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+		"NIRVET_ENV":                   "production",
+		"NIRVET_JWT_SECRET":            "a-real-secret-at-least-32-chars-long!!", // >= 32-char entropy floor (M1)
+		"NIRVET_BOOTSTRAP_PASSWORD":    "a-real-bootstrap-pw",
+		"NIRVET_SECRET_MASTER_KEY":     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", // 32 bytes b64
+		"NIRVET_KMS_KEY_NAME":          "",
+		"NIRVET_EVIDENCE_SIGNING_KEY":  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
 		"NIRVET_ALLOW_EPHEMERAL_BLOBS": "true", // durable-storage guard ack (or set NIRVET_GCS_BUCKET)
 	}
 
