@@ -1775,3 +1775,16 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+
+  # --- auto-added by cmd/openapigen (external-review OpenAPI parity); enrich schemas incrementally ---
+  /connectors/{id}/cred-expiry:
+    put:
+      tags: [connectors]
+      summary: PUT /connectors/{id}/cred-expiry
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }

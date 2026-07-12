@@ -288,7 +288,10 @@ func main() {
 	normQ := ingestion.NewNormQuality(db)
 	normH := ingestion.NewNormHandler(normQ)
 
-	connectorH := connector.NewHandler(connector.NewService(connector.NewRepository(db), vault, ingestSvc))
+	connSvc := connector.NewService(connector.NewRepository(db), vault, ingestSvc).
+		WithEscalation(tenantSvc). // #188 cred-expiry reminders route to the tenant escalation matrix...
+		WithEnqueuer(outboxRepo)   // ...and queue durably on the notify outbox
+	connectorH := connector.NewHandler(connSvc)
 	// SOAR resolves authority-to-act per action from the tenant's authority_policies
 	// (single source of truth; Phase 0 reconciliation — replaces tenants.authority_mode).
 	// SOAR action executors (§6.11): notify actions run for real via the durable outbox; connector
@@ -693,6 +696,7 @@ func main() {
 	mux.Handle("GET /connectors", provider(connectorH.List))
 	mux.Handle("POST /connectors", senior(connectorH.Create))
 	mux.Handle("POST /connectors/{id}/test", senior(connectorH.TestConnection))
+	mux.Handle("PUT /connectors/{id}/cred-expiry", senior(connectorH.SetCredExpiry)) // #188 record credential expiry
 	mux.Handle("DELETE /connectors/{id}", senior(connectorH.Delete))
 	// public webhook ingestion (source-key authenticated, per-IP rate limited)
 	webhookLimit := ratelimit.Middleware(ratelimit.Build(redisClient, 50, 100, "webhook"), ratelimit.ByIP)
@@ -874,6 +878,8 @@ func main() {
 		go postureProjector.StartRefreshLoop(workerCtx, log, time.Minute)
 		// SLA breach alerting (§6.8): claim + timeline + durably enqueue once per deadline.
 		go incidentSvc.StartSLASweeper(workerCtx, log, time.Minute, 200)
+		// #188 connector credential-expiry reminder: claim + durably enqueue once, before a credential lapses.
+		go connSvc.StartCredExpiryReaper(workerCtx, log)
 		// Notification dispatcher: drains the outbox and delivers with retry (§6.16, R3 §6.5).
 		go notifySvc.StartDispatcher(workerCtx, log, 15*time.Second, 200)
 		// Refresh-token reaper (ADR-0007 LOW #4): deletes un-redeemable refresh rows (expired / past absolute cap)

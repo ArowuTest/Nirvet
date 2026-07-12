@@ -25,6 +25,13 @@ type Service struct {
 	probeHTTP     *http.Client
 	probeTokenURL string
 	probeGraphURL string
+
+	// #188 credential-expiry reminder seams (optional; nil in unit tests that don't sweep). escalation routes a
+	// reminder to the tenant's escalation-matrix contacts (implemented by tenant.Service); enqueuer durably queues
+	// it on the notify outbox. Both nil ⇒ SweepCredExpiry falls back to the log channel so a reminder is never
+	// silently dropped.
+	escalation CredEscalationResolver
+	enqueuer   CredEnqueuer
 }
 
 // NewService builds the service.

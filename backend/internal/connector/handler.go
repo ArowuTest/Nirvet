@@ -2,6 +2,7 @@ package connector
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -18,6 +19,29 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 // Catalogue handles GET /connectors/catalogue (available connector types).
 func (h *Handler) Catalogue(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"catalogue": Registry()})
+}
+
+// SetCredExpiry handles PUT /connectors/{id}/cred-expiry with {"expires_at": "<RFC3339>"|null} (#188). Records the
+// connector credential's expiry so the platform can remind the tenant before it lapses; null clears it.
+func (h *Handler) SetCredExpiry(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid connector id"))
+		return
+	}
+	var in struct {
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.SetCredExpiry(r.Context(), p.TenantID, id, in.ExpiresAt); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"id": id, "cred_expires_at": in.ExpiresAt})
 }
 
 // Create handles POST /connectors.
