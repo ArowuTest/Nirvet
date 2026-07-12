@@ -331,6 +331,57 @@ paths:
   /soar/runs/{id}: { get: { tags: [soar], summary: Get run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: run } } } }
   /soar/runs/{id}/approve: { post: { tags: [soar], summary: Approve a pending run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: completed } } } }
   /soar/runs/{id}/reject: { post: { tags: [soar], summary: Reject a pending run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: rejected } } } }
+  /soar/runs/{id}/approval-link:
+    post:
+      tags: [soar]
+      summary: Issue a single-use, run-bound customer approval link for a pending run (#188, soarApprover)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '201': { description: '{token} — shown once' }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/approve-link:
+    post:
+      tags: [soar]
+      summary: Customer approval via a single-use token (PUBLIC — the token is the capability, #188)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [token], properties: { token: { type: string } } }
+      responses:
+        '200': { description: run (executed if the policy is now satisfied, else still pending) }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: not enabled / not permitted, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: invalid / expired / already-used link, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /soar/customer-approval:
+    get:
+      tags: [soar]
+      summary: Get the tenant's destructive-approval authority policy (#188)
+      responses:
+        '200': { description: '{authority, bc_customer_authorizable, link_ttl_seconds, customer_approver_ref}' }
+        '401': { description: unauthenticated }
+    put:
+      tags: [soar]
+      summary: Set the destructive-approval authority routing (#188, soarApprover)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authority, link_ttl_seconds]
+              properties:
+                authority: { type: string, enum: [platform_analyst, customer_approver, both_required] }
+                bc_customer_authorizable: { type: boolean }
+                link_ttl_seconds: { type: integer, minimum: 300, maximum: 86400 }
+                customer_approver_ref: { type: string }
+      responses:
+        '200': { description: updated policy }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
   /soar/authority: { post: { tags: [soar], summary: Set tenant authority-to-act mode (platform_admin), responses: { '200': { description: set } } } }
   /threat-intel:
     get: { tags: [threat-intel], summary: List watchlist indicators, responses: { '200': { description: indicators } } }

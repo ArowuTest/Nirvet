@@ -330,6 +330,9 @@ func main() {
 		WithAlerter(soarwire.NewContainmentAlerter(alertSvc, outboxRepo)).
 		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)). // D5 identity net
 		WithGuard(connector.NewHostProtectedGuard(soarRepo)))                   // D5 host net (M3)
+	// #188 customer-approval: re-validate a recorded internal approver is still active at execution time (a stale
+	// approval by a since-disabled user cannot fire a destructive action).
+	soarSvc.WithApproverValidator(approverActiveAdapter{iam: iamSvc})
 	soarH := soar.NewHandler(soarSvc)
 	// Fleet destructive path (Ghana operator seam #3): a fleet operator fires/approves a SOAR containment on
 	// a target tenant's alert. RunForTarget/ApproveForTarget evaluate per-target authority in the target's
@@ -733,6 +736,12 @@ func main() {
 	mux.Handle("GET /soar/runs/{id}", provider(soarH.GetRun))
 	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))
 	mux.Handle("POST /soar/runs/{id}/reject", soarApprover(soarH.Reject))
+	// #188 customer-approval: issue a single-use link for a pending run (internal, soarApprover); the public
+	// approve-link endpoint consumes it (the token is the capability — no session); tenant authority routing.
+	mux.Handle("POST /soar/runs/{id}/approval-link", soarApprover(soarH.IssueApprovalLink))
+	mux.Handle("POST /soar/approve-link", httpx.Chain(http.HandlerFunc(soarH.ApproveViaLink), loginLimit))
+	mux.Handle("GET /soar/customer-approval", provider(soarH.GetCustomerApprovalPolicy))
+	mux.Handle("PUT /soar/customer-approval", soarApprover(soarH.SetCustomerApprovalPolicy))
 	mux.Handle("POST /soar/runs/{id}/reverse", soarApprover(soarH.Reverse)) // §6.11 slice B: undo containment (MUST-3)
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	mux.Handle("GET /soar/action-catalog", provider(soarH.ListActionCatalog))
@@ -987,6 +996,14 @@ func (a caseJournalAdapter) CaseJournal(ctx context.Context, tenantID, incidentI
 		out = append(out, investigation.CaseJournalEntry{At: e.At, Author: e.Author, Kind: e.Kind, Visibility: e.Visibility, Note: e.Note})
 	}
 	return out, nil
+}
+
+// approverActiveAdapter adapts iam.Service to soar.ApproverValidator (#188) — re-validates a recorded internal
+// approver is still an active user at execution time.
+type approverActiveAdapter struct{ iam *iam.Service }
+
+func (a approverActiveAdapter) IsActive(ctx context.Context, tenantID, userID uuid.UUID) bool {
+	return a.iam.ActiveInTenant(ctx, tenantID, userID)
 }
 
 // breachIncidentAdapter adapts incident.Service to reporting.BreachIncidentReader for the #188 regulatory breach

@@ -294,6 +294,14 @@ func (s *Service) LookupInTenant(ctx context.Context, tenantID, userID uuid.UUID
 	return u.Email, nil
 }
 
+// ActiveInTenant reports whether the user exists in the tenant AND is still active (not disabled). Used by SOAR
+// (#188) to re-validate a recorded internal approver at execution time, so a stale approval by a since-disabled
+// user cannot fire a destructive action.
+func (s *Service) ActiveInTenant(ctx context.Context, tenantID, userID uuid.UUID) bool {
+	u, err := s.repo.GetByID(ctx, tenantID, userID)
+	return err == nil && u.Status == UserActive
+}
+
 // EnrollMFA generates a TOTP secret, STAGES it (never touching the active factor), and returns the
 // otpauth URI + secret to show once. It is re-auth gated (M4): the caller must supply the current password,
 // and — if MFA is already active — a valid current TOTP code, so a stolen live session cannot silently swap

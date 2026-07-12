@@ -217,6 +217,63 @@ func (h *Handler) decision(w http.ResponseWriter, r *http.Request, approve bool)
 	httpx.JSON(w, http.StatusOK, run)
 }
 
+// IssueApprovalLink handles POST /soar/runs/{id}/approval-link — mint a single-use, run-bound customer approval
+// link for a pending run (#188). Gated to the same seniority as approval (soarApprover). Returns the raw token once.
+func (h *Handler) IssueApprovalLink(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid run id"))
+		return
+	}
+	token, err := h.svc.IssueApprovalLink(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]string{"token": token})
+}
+
+// ApproveViaLink handles POST /soar/approve-link — the PUBLIC customer approval path (#188). No session: the
+// single-use token in the body is the capability (it resolves the tenant + run and is consumed atomically).
+func (h *Handler) ApproveViaLink(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Token string `json:"token"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	run, err := h.svc.ApproveViaLink(r.Context(), in.Token)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, run)
+}
+
+// GetCustomerApprovalPolicy handles GET /soar/customer-approval — the tenant's destructive-approval authority (#188).
+func (h *Handler) GetCustomerApprovalPolicy(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	httpx.JSON(w, http.StatusOK, h.svc.GetCustomerPolicy(r.Context(), p))
+}
+
+// SetCustomerApprovalPolicy handles PUT /soar/customer-approval — set the authority routing (#188).
+func (h *Handler) SetCustomerApprovalPolicy(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in CustomerApprovalPolicy
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	res, err := h.svc.SetCustomerPolicy(r.Context(), p, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
 // ListActionRecords handles GET /soar/action-records — the durable records internal executors wrote (#187 slice C).
 func (h *Handler) ListActionRecords(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

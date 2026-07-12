@@ -81,7 +81,12 @@ func (s *Service) IssueApprovalLink(ctx context.Context, p auth.Principal, runID
 	if err != nil {
 		return "", err
 	}
-	if err := s.repo.insertApprovalLink(ctx, p.TenantID, runID, hashToken(raw), time.Now().Add(defaultApprovalLinkTTL), p.UserID); err != nil {
+	// Link lifetime from the tenant's policy (config-tunable, default 3h) — containment authorization is short-lived.
+	ttl := defaultApprovalLinkTTL
+	if pol := s.resolveCustomerPolicy(ctx, p.TenantID); pol.LinkTTLSeconds >= 300 {
+		ttl = time.Duration(pol.LinkTTLSeconds) * time.Second
+	}
+	if err := s.repo.insertApprovalLink(ctx, p.TenantID, runID, hashToken(raw), time.Now().Add(ttl), p.UserID); err != nil {
 		return "", httpx.ErrInternal("could not issue approval link")
 	}
 	_ = s.repo.RunTx(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {

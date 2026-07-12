@@ -28,9 +28,19 @@ type Service struct {
 	repo      *Repository
 	authz     Authorizer
 	execs     *Executors
-	sup       *Supervisor       // §6.11 slice B: drives real connector containment two-phase (optional)
-	actioners *ActionerRegistry // registered real connector actions (empty = none → slice-A behavior)
+	sup       *Supervisor        // §6.11 slice B: drives real connector containment two-phase (optional)
+	actioners *ActionerRegistry  // registered real connector actions (empty = none → slice-A behavior)
+	validator ApproverValidator  // §6.12 #188: re-validate a recorded internal approver is still active (optional)
 }
+
+// ApproverValidator re-checks, at execution time, that a recorded internal approver is still an active user — so a
+// stale approval (the approver was disabled after approving) cannot fire a destructive action. Optional (nil skips).
+type ApproverValidator interface {
+	IsActive(ctx context.Context, tenantID, userID uuid.UUID) bool
+}
+
+// WithApproverValidator wires the re-validation seam (#188).
+func (s *Service) WithApproverValidator(v ApproverValidator) *Service { s.validator = v; return s }
 
 // NewService builds the service. The executor registry starts empty (every action simulates); real
 // executors are registered via WithExecutors at wiring time.
@@ -380,6 +390,32 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 		}
 	}
 
+	// #188 customer-approval gate. Default (platform_analyst) runs the historical path unchanged. customer_approver
+	// / both_required record this internal approval and only EXECUTE once the policy's required set of distinct
+	// principals is present (never customer-alone; business_critical is never executed here — it stays skipped).
+	policy := s.resolveCustomerPolicy(ctx, tenantID)
+	if policy.Authority != AuthorityPlatformAnalyst {
+		if err := s.recordApproval(ctx, tenantID, run.ID, approvalInternal, &p.UserID, p.Email, string(p.Role)); err != nil {
+			return nil, httpx.ErrInternal("could not record approval")
+		}
+		ready, execP, ea, gerr := s.evaluateGate(ctx, tenantID, run, policy)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if !ready {
+			return run, nil // internal approval recorded; the run stays pending until the customer approves
+		}
+		return s.executeRun(ctx, execP, tenantID, run, cf, ea)
+	}
+	return s.executeRun(ctx, p, tenantID, run, cf, execAuth{})
+}
+
+// executeRun runs the authorization + (supervised or inline) execution phases for an approved run, acting as
+// `execP`. `ea` carries the #188 customer-approval context: `skipInternalRank` means a customer's tenant-delegated
+// authorization stands in for the platform approver-rank floor on non-business_critical steps. business_critical
+// steps are NEVER executed here — they stay skipped (fail-safe); customer-approval covers high-risk destructive
+// actions, and the extreme business_critical class needs the incident-commander flow (out of scope).
+func (s *Service) executeRun(ctx context.Context, execP auth.Principal, tenantID uuid.UUID, run *PlaybookRun, cf map[string]Step, ea execAuth) (*PlaybookRun, error) {
 	// Authorization phase (no side effects): re-resolve each pending step and check the approver floor
 	// BEFORE executing any step, so a too-junior approver is rejected without partial execution.
 	var steps []approvedStep
@@ -396,12 +432,16 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 			steps = append(steps, approvedStep{idx: i, act: act, block: true, cond: cfStep.Condition, continueOnFail: cfStep.ContinueOnFailure})
 			continue
 		}
-		_, approverRole, _, derr := s.resolveDecision(ctx, tenantID, run.Steps[i].Action)
-		if derr != nil {
-			return nil, httpx.ErrInternal("could not read authority-to-act")
-		}
-		if auth.RoleRank(p.Role) < requiredApproverRank(act.RiskClass, approverRole) {
-			return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", p.Role, act.RiskClass))
+		// Non-BC: the platform approver-rank floor applies UNLESS a customer authorized this run (customer_approver
+		// mode — the tenant delegated authority to the customer approver, so no platform rank is required).
+		if !ea.skipInternalRank {
+			_, approverRole, _, derr := s.resolveDecision(ctx, tenantID, run.Steps[i].Action)
+			if derr != nil {
+				return nil, httpx.ErrInternal("could not read authority-to-act")
+			}
+			if auth.RoleRank(execP.Role) < requiredApproverRank(act.RiskClass, approverRole) {
+				return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", execP.Role, act.RiskClass))
+			}
 		}
 		steps = append(steps, approvedStep{idx: i, act: act, cond: cfStep.Condition, continueOnFail: cfStep.ContinueOnFailure})
 	}
@@ -422,7 +462,7 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 					return nil
 				}
 				claimed = true
-				return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_approve",
+				return audit.Record(ctx, tx, audit.Entry{ActorID: execP.UserID, ActorEmail: execP.Email, Action: "soar.run_approve",
 					Target: "run:" + run.ID.String(), Metadata: map[string]any{"supervised": true}})
 			}); e != nil {
 				return nil, httpx.ErrInternal("could not approve run")
@@ -430,9 +470,11 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 			if !claimed {
 				return nil, httpx.ErrConflict("run is no longer pending approval (already decided)")
 			}
-			run.ApprovedBy = &p.UserID
+			if execP.UserID != uuid.Nil {
+				run.ApprovedBy = &execP.UserID
+			}
 			run.Status = RunRunning
-			s.advanceRun(ctx, p, run, plans, run.IncidentID, 0)
+			s.advanceRun(ctx, execP, run, plans, run.IncidentID, 0)
 			return run, nil
 		}
 	}
@@ -441,7 +483,7 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 	// concurrent approves can't both execute (Round-4 R-2 claim-then-act — the row lock serialises
 	// them and the loser sees status≠pending_approval). Then dispatch, persist, audit.
 	claimed := false
-	err = s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+	err := s.repo.RunTx(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		ok, e := s.repo.claimPendingTx(ctx, tx, run.ID)
 		if e != nil {
 			return e
@@ -470,19 +512,21 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 			}
 			status, note := s.execs.dispatch(ctx, tx, tenantID, st.act, stepParams(run.IncidentID, "", run.Steps[st.idx].Name))
 			run.Steps[st.idx].Status = status
-			run.Steps[st.idx].Note = note + " (approved by " + p.Email + ")"
+			run.Steps[st.idx].Note = note + " (approved by " + execP.Email + ")"
 			if status == StatusFailed {
 				anyFailed = true
 				if !st.continueOnFail {
 					halted = true // stop-on-failure (EXECUTION failure only — a denied approval already halts via Reject)
 				}
 			}
-			if e := audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
+			if e := audit.Record(ctx, tx, audit.Entry{ActorID: execP.UserID, ActorEmail: execP.Email, Action: "soar.action_execute",
 				Target: "action:" + run.Steps[st.idx].Action, Metadata: map[string]any{"status": status, "risk": st.act.RiskClass, "approved": true}}); e != nil {
 				return e
 			}
 		}
-		run.ApprovedBy = &p.UserID
+		if execP.UserID != uuid.Nil {
+			run.ApprovedBy = &execP.UserID
+		}
 		if anyFailed {
 			run.Status = RunFailed
 		} else {
@@ -493,7 +537,7 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 		if e := s.repo.updateRunTx(ctx, tx, run); e != nil {
 			return e
 		}
-		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.run_approve",
+		return audit.Record(ctx, tx, audit.Entry{ActorID: execP.UserID, ActorEmail: execP.Email, Action: "soar.run_approve",
 			Target: "run:" + run.ID.String(), Metadata: map[string]any{"status": run.Status}})
 	})
 	if err != nil {
