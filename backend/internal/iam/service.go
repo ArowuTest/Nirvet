@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -138,6 +139,7 @@ type LoginResult struct {
 	Token     string         `json:"token"`
 	Principal auth.Principal `json:"-"`
 	User      *User          `json:"user"`
+	AccessTTL time.Duration  `json:"-"` // access-cookie lifetime (ADR-0007); not serialized to the body
 }
 
 // Brute-force lockout policy (SEC). After maxFailedLogins consecutive failed attempts
@@ -178,6 +180,13 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 		return nil, httpx.ErrUnauthorized("invalid credentials")
 	}
 	if u.MFAEnabled {
+		if mfaCode == "" {
+			// Two-step login: the password is verified; prompt for the TOTP code. NOT counted as a failed
+			// attempt (no bad code was submitted yet). The distinct `mfa_required` code lets the SPA show the MFA
+			// step. This reveals password validity — the standard two-step-MFA UX tradeoff, and only to a caller
+			// who already holds the correct password.
+			return nil, &httpx.APIError{Status: http.StatusUnauthorized, Code: "mfa_required", Message: "mfa code required"}
+		}
 		secret, derr := s.cipher.Decrypt(u.TenantID, u.MFASecret)
 		if derr != nil || !totp.Validate(string(secret), mfaCode, time.Now()) {
 			// A wrong/absent MFA code counts toward lockout — brute-forcing the 6-digit
@@ -195,7 +204,8 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 	p := auth.Principal{UserID: u.ID, TenantID: u.TenantID, Role: u.Role, Email: u.Email}
 	// Issue the token with the tenant's configured session TTL (§6.2 IAM-007) — not a hardcoded lifetime.
 	// mintSession is the single stamp chokepoint: it stamps the current session generation (§6.2 revocation).
-	token, err := s.MintSession(ctx, &p, s.sessionTTL(ctx, u.TenantID))
+	ttl := s.sessionTTL(ctx, u.TenantID)
+	token, err := s.MintSession(ctx, &p, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +217,7 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 		})
 	})
 	u.PasswordHash = ""
-	return &LoginResult{Token: token, Principal: p, User: u}, nil
+	return &LoginResult{Token: token, Principal: p, User: u, AccessTTL: ttl}, nil
 }
 
 // unknownLoginLog rate-limits the platform-scope log for login attempts against unknown/inactive accounts,

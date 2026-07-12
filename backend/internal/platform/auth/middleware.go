@@ -80,12 +80,18 @@ func resolvePrincipal(w http.ResponseWriter, r *http.Request, m *Manager, resolv
 			return p, true
 		}
 	}
-	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, "Bearer ") {
-		httpx.Error(w, httpx.ErrUnauthorized("missing bearer token"))
-		return Principal{}, false
+	// Access JWT from the Authorization header (API/CLI) OR the httpOnly access cookie (browser, ADR-0007).
+	// The header wins when both are present, so a programmatic caller is never affected by a stale cookie.
+	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if raw == "" || raw == r.Header.Get("Authorization") { // no/invalid Bearer prefix → try the cookie
+		if c := accessTokenFromCookie(r); c != "" {
+			raw = c
+		} else {
+			httpx.Error(w, httpx.ErrUnauthorized("missing bearer token"))
+			return Principal{}, false
+		}
 	}
-	p, err := m.Verify(strings.TrimPrefix(h, "Bearer "))
+	p, err := m.Verify(raw)
 	if err != nil {
 		httpx.Error(w, httpx.ErrUnauthorized("invalid token"))
 		return Principal{}, false

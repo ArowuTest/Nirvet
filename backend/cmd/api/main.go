@@ -159,7 +159,8 @@ func main() {
 	tenantH := tenant.NewHandler(tenantSvc)
 
 	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens, cipher)
-	iamH := iam.NewHandler(iamSvc)
+	cookieOpts := auth.DefaultCookieOpts(cfg.IsProduction()) // ADR-0007 session cookies (Secure in prod)
+	iamH := iam.NewHandler(iamSvc, cookieOpts)
 
 	// SSO (OIDC): per-tenant IdP connections + JIT provisioning (§6.2 IAM-001).
 	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, string(auth.DeriveKey(cfg.JWTSecret, "sso-state")))
@@ -477,6 +478,10 @@ func main() {
 	mux.Handle("GET /docs", api.DocsHandler())
 	// auth + self
 	mux.Handle("POST /auth/login", httpx.Chain(http.HandlerFunc(iamH.Login), loginLimit))
+	// ADR-0007 browser session: refresh rotates the access cookie; logout clears + revokes. Both authenticate by
+	// the refresh cookie (no bearer), so they sit outside the authed chain, rate-limited like login.
+	mux.Handle("POST /auth/refresh", httpx.Chain(http.HandlerFunc(iamH.Refresh), loginLimit))
+	mux.Handle("POST /auth/logout", httpx.Chain(http.HandlerFunc(iamH.Logout), loginLimit))
 	// Invitation acceptance (public, §6.2 IAM-001/008): the invitee sets a password. Rate-
 	// limited like login since it provisions a user.
 	mux.Handle("POST /auth/invitations/accept", httpx.Chain(http.HandlerFunc(iamH.AcceptInvitation), loginLimit))
@@ -807,7 +812,10 @@ func main() {
 	mux.Handle("GET /admin/tenants/{tenant_id}/disclosure-policy", padmin(custReadH.GetDisclosurePolicy))
 	mux.Handle("PUT /admin/tenants/{tenant_id}/disclosure-policy", padmin(custReadH.SetDisclosurePolicy))
 
-	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))
+	// auth.CSRF() enforces the double-submit token on unsafe methods of COOKIE-authenticated requests (ADR-0007);
+	// it self-skips Bearer/API-key/pre-login requests, so it's safe as a global middleware. Placed after CORS so
+	// preflight OPTIONS is answered first.
+	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), auth.CSRF(), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))
 
 	// --- inline ingest worker (dev convenience; prod runs cmd/worker) ---
 	workerCtx, stopWorker := context.WithCancel(ctx)

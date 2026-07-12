@@ -51,6 +51,7 @@ func TestTenantCompositeConstraints(t *testing.T) {
 		"api_keys_prefix_key":                  "api-key prefix is a global pre-tenant lookup (auth resolves the tenant from the key)",
 		"user_invitations_token_hash_key":      "invite token hash is a global pre-tenant lookup (validated before any tenant context)",
 		"password_reset_tokens_token_hash_key": "reset token hash is a global pre-tenant lookup (the token resolves the tenant; validated before any tenant context)",
+		"refresh_tokens_token_hash_key":        "refresh token hash is a global pre-tenant lookup (the /auth/refresh cookie resolves the tenant via the SD function; validated before any tenant context) — ADR-0007",
 	}
 
 	// A constraint is "already globally unique by construction" (so it needn't include tenant_id) when it

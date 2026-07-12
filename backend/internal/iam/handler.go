@@ -2,6 +2,7 @@ package iam
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -9,12 +10,19 @@ import (
 )
 
 // Handler exposes IAM endpoints.
-type Handler struct{ svc *Service }
+type Handler struct {
+	svc     *Service
+	cookies auth.CookieOpts // ADR-0007 browser session cookies
+}
 
-// NewHandler builds the handler.
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+// NewHandler builds the handler with the environment-appropriate cookie attributes.
+func NewHandler(svc *Service, cookies auth.CookieOpts) *Handler {
+	return &Handler{svc: svc, cookies: cookies}
+}
 
-// Login handles POST /auth/login (public).
+// Login handles POST /auth/login (public). On success it BOTH returns the token in the body (API/CLI
+// back-compat) AND sets the httpOnly session cookies + a CSRF token cookie (browser, ADR-0007). A user with MFA
+// enabled who omits the code gets a distinct `mfa_required` 401 so the SPA can show the TOTP step.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email    string `json:"email"`
@@ -30,7 +38,48 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	h.issueSessionCookies(w, r, res.Principal, res.Token, res.AccessTTL)
 	httpx.JSON(w, http.StatusOK, res)
+}
+
+// issueSessionCookies mints a refresh-token family + CSRF token and sets all three cookies. Best-effort on the
+// refresh side: if refresh issuance fails the access cookie is still set (the user is logged in, just without
+// silent refresh — they re-login when the short access token expires).
+func (h *Handler) issueSessionCookies(w http.ResponseWriter, r *http.Request, p auth.Principal, access string, accessTTL time.Duration) {
+	var refreshRaw string
+	if raw, _, err := h.svc.IssueRefresh(r.Context(), p); err == nil {
+		refreshRaw = raw
+	}
+	csrf, _ := auth.NewCSRFToken()
+	h.cookies.SetSessionCookies(w, access, refreshRaw, csrf, accessTTL, refreshTokenTTL)
+}
+
+// Refresh handles POST /auth/refresh (public — authenticated by the refresh cookie). It rotates the refresh
+// token and re-issues the access cookie. Reuse of a rotated token revokes the whole family.
+func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	raw := auth.RefreshTokenFromCookie(r)
+	if raw == "" {
+		httpx.Error(w, httpx.ErrUnauthorized("no refresh token"))
+		return
+	}
+	access, newRefresh, accessTTL, err := h.svc.RedeemRefresh(r.Context(), raw)
+	if err != nil {
+		h.cookies.ClearSessionCookies(w) // a bad/reused/expired refresh clears the session
+		httpx.Error(w, httpx.ErrUnauthorized("invalid refresh token"))
+		return
+	}
+	// Rotate the refresh cookie; leave the CSRF cookie in place (the SPA still holds it).
+	h.cookies.SetSessionCookies(w, access, newRefresh, "", accessTTL, refreshTokenTTL)
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "refreshed"})
+}
+
+// Logout handles POST /auth/logout. Clears the cookies and revokes the presented refresh token (this session).
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if raw := auth.RefreshTokenFromCookie(r); raw != "" {
+		h.svc.RevokeRefreshToken(r.Context(), raw)
+	}
+	h.cookies.ClearSessionCookies(w)
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "logged_out"})
 }
 
 // Create handles POST /admin/users. A platform_admin may target any tenant via
