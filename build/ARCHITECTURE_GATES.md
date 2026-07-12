@@ -3037,3 +3037,86 @@ round: author BFLA / global-edit attempt, uncatalogued-action 400, condition-can
 skipped-destructive-not-run, control-flow authority-non-escalation, RLS isolation of authored playbooks. Built as
 focused sub-commits (A authoring → B control-flow → C executors), each green. Reviewer reviews at commit
 boundaries. Building against verified structure. Nothing pushed.**
+
+---
+
+## Gate — LAUNCH #5 HEAVY-1: AI-egress redaction (mask-by-default before third-party LLM) — #188 — DESIGN REVIEW (pre-code) — Jul 12 2026
+
+**Why this is HEAVY.** This is the ONE control that decides whether raw customer telemetry — usernames, emails,
+IPs, hostnames, tokens caught in alert/incident text — leaves the sovereign platform to a **third-party US LLM**
+(Anthropic / OpenAI-compatible). A gap here is a silent cross-border PII/secret disclosure (OWASP LLM sensitive-
+information-disclosure), directly against the Ghana-sovereign GTM. It touches the AI egress boundary and must be
+**safe-by-construction**, not opt-in.
+
+**Grounding (source-verified, Jul 12).**
+- **Exactly two egress points**, both in `internal/ai/service.go`: `SummariseAlert` (line 170) and `TriageIncident`
+  (line 270), each `prov.Complete(ctx, systemPrompt, userContent)`. `grep -n '\.Complete(' internal/ai/*.go`
+  (non-test) returns ONLY those two. This is the whole external surface.
+- `userContent = fenceBlock(lines) + "\n\n<trusted instruction>"`. `systemPrompt` + the instruction are trusted
+  constants. **Only `lines []string` carries customer data** — `SummariseAlert`'s `evidence` (title/severity/
+  source/actor/target/mitre/status) and `TriageIncident`'s `triageFacts` (title/severity/stage/sla/mitre/asset
+  refs). `fenceBlock` already sentinels + length-bounds but does NOT redact.
+- **The offline fallback does NOT egress** (`fallbackSummary`/`fallbackTriage` are shown to the tenant's OWN
+  analyst, same-tenant data) → redaction applies ONLY to the `prov.Complete` path, never to fallback text.
+- Config precedent to mirror exactly: `ai_provider` (mig 0067) — `tenant_id NULL = global default`, COALESCE
+  unique index, RLS ENABLE+FORCE, effective = own-row-else-global via the #117 `Resolver`. AI-call audit already
+  threads `withProviderMeta(auditMeta(model, output), res)` — I extend that metadata, never the request body.
+
+**In scope.**
+- **A. Single safe-by-construction egress chokepoint.** Replace the two inline `fenceBlock(...)+Complete(...)`
+  sequences with ONE unexported method — `s.completeExternal(ctx, tenantID, lines, instruction) (text, RedactionResult, error)` —
+  that is the ONLY code allowed to call `prov.Complete`. It: resolves the tenant's redaction policy → runs the
+  Redactor over `lines` → `fenceBlock(redacted)+instruction` → `prov.Complete`. **CI fence** (`scripts/
+  check-ai-egress-redaction.sh`, wired into ci.yml): `.Complete(` may appear only inside `completeExternal` — any
+  new AI feature that calls the provider without redaction fails CI. (Same discipline as the reporting serializer
+  being the only place cells become bytes.)
+- **B. The Redactor (field-aware, grounding-preserving).** Each line is `key=value`. An **allowlist of
+  structurally-safe keys** (severity, status, stage, sla, mitre, confidence, alerts-count, criticality label —
+  enumerated, low-PII) passes verbatim. Every OTHER value runs through a pattern masker that replaces detected
+  sensitive tokens — email, IPv4/IPv6, and long secret-like hex/base64 runs — with **stable per-call placeholders**
+  (`EMAIL_1`, `IP_1`, `TOKEN_1`): the same raw substring → the same placeholder **within one request only**, so the
+  model still correlates "actor X did A then X did B" (grounding preserved) while the raw identifier never egresses.
+  Redact **before** `fenceBlock` (masked lines are still sentinelled + length-bounded).
+- **C. Config (no-hardcoding; #117 pattern).** New `ai_redaction_policy` (tenant_id NULL=global default): `enabled`
+  bool default **true**, `mode` enum default **`balanced`** (mask detected PII/secret tokens, keep free-text titles
+  as analytic signal) with `strict` (also mask identifier-field free values) and `off` selectable per tenant; the
+  safe-key allowlist seeded as a global default row. Effective = own-else-global via a resolver mirroring #117.
+  **Fail-safe:** any config load/parse error → treat as `enabled=balanced` (mask) — a broken config NEVER egresses
+  cleartext.
+- **D. Audit.** Fold `redaction_applied` (bool), `redaction_mode`, and `masked_token_count` into the existing
+  AI-call audit metadata. **Never** record the cleartext, the masked values, or the value→placeholder map.
+
+**Invariants honoured.**
+- *Safe-by-construction, not opt-in:* the chokepoint + CI fence make it structurally impossible to egress without
+  running the Redactor; mask-by-default means the shipped default masks (owner "safe default, full capability").
+- *Fail-safe toward masking:* missing/broken policy ⇒ mask (balanced), never cleartext. `off` requires an explicit
+  tenant decision (e.g. a trusted in-tenant sovereign endpoint), and is audited as such.
+- *Grounding preserved:* stable per-call placeholders (not blanket `***`) keep entity correlation; the fallback and
+  the analyst-facing output are unaffected (redaction is an EGRESS control, not a display control).
+- *No new PII surface:* the placeholder map is per-request and in-memory only — never persisted, never cross-call,
+  so no durable pseudonym that is itself a re-identification key.
+- *Tenant isolation + audit:* `ai_redaction_policy` RLS ENABLE+FORCE; global default read-only to tenants; every
+  policy change audited. from-zero migration validated. No hardcoded thresholds — enable/mode/allowlist are config.
+
+### Open questions for the reviewer's pre-code pass
+1. **Default mode** — `balanced` (mask email/IP/secret tokens, keep free-text alert titles as signal) as the
+   shipped default, with `strict` configurable? Or ship `strict` by default and let tenants relax? (Leaning
+   `balanced` default: safe *and* preserves triage utility; `strict` one switch away.)
+2. **Placeholder stability scope** — per-call only (no durable pseudonym; safest) vs per-incident stable (better
+   cross-call grounding but a persistent pseudonym is itself quasi-PII). (Leaning per-call only.)
+3. **Sovereign/in-tenant `openai_compatible` endpoints** — apply redaction by default there too (mask-by-default,
+   tenant may set `off` for a trusted sovereign LLM), or auto-exempt in-tenant endpoints? (Leaning apply-by-default,
+   fail-safe on; exemption is an explicit audited `off`.)
+4. **Free-text masking depth** — in `balanced`, do we attempt username/hostname masking on the actor/target *ref*
+   fields (structured identifiers) while leaving the human-readable title free, or mask refs only under `strict`?
+   (Leaning: refs are identifiers → mask in balanced; title free-text → strict.)
+5. **Detection scope** — regex set for launch = email + IPv4/IPv6 + high-entropy secret-like token. Add
+   credit-card/NID patterns now or defer? (Leaning: launch set + secret-entropy; jurisdictional NID patterns =
+   config-extensible follow-on, not a launch blocker.)
+
+**→ HEAVY (AI external-egress boundary; sovereign-data control). Dedicated adversarial landing round: egress
+cannot bypass the Redactor (CI fence + a test that a raw email/IP/secret in alert text never appears in the
+provider-bound payload), fail-safe masks on broken config, stable-placeholder grounding holds, `off` is an explicit
+audited tenant choice, no cleartext in audit, RLS isolation of the policy table. Single focused commit (chokepoint +
+Redactor + config + audit + CI fence), green. Reviewer reviews at the commit boundary. Building against verified
+structure. Nothing pushed.**
