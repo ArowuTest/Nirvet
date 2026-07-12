@@ -216,3 +216,62 @@ func (h *Handler) decision(w http.ResponseWriter, r *http.Request, approve bool)
 	}
 	httpx.JSON(w, http.StatusOK, run)
 }
+
+// CreatePlaybook handles POST /soar/playbooks — author a tenant-owned playbook (#187 slice A, soc_manager+).
+func (h *Handler) CreatePlaybook(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in PlaybookInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	pb, err := h.svc.CreatePlaybook(r.Context(), p, p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, pb)
+}
+
+// UpdatePlaybook handles PUT /soar/playbooks/{id} — replace a tenant playbook's body (soc_manager+).
+func (h *Handler) UpdatePlaybook(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid playbook id"))
+		return
+	}
+	var in PlaybookInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	pb, err := h.svc.UpdatePlaybook(r.Context(), p, p.TenantID, id, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pb)
+}
+
+// SetPlaybookEnabled handles PATCH /soar/playbooks/{id}/enabled with {"enabled":bool} (soc_manager+).
+func (h *Handler) SetPlaybookEnabled(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid playbook id"))
+		return
+	}
+	var in struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.SetPlaybookEnabled(r.Context(), p, p.TenantID, id, in.Enabled); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"id": id, "enabled": in.Enabled})
+}

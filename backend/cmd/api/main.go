@@ -432,6 +432,12 @@ func main() {
 	// SOAR approvals gate destructive automation, so they are restricted to senior roles (four-eyes is
 	// additionally enforced in the service: requester != approver).
 	soarApprover := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager)
+	// Playbook AUTHORING (#187) is a privileged control-plane action — a playbook drives real containment — so it
+	// is gated to the same soc_manager+ floor as destructive approval. Authoring and approving are separate axes:
+	// run-approval four-eyes (requester != approver) still holds, and the author cannot set the approval
+	// requirement (catalog-governed), so a soc_manager who authors a playbook cannot self-approve its destructive
+	// run. The service enforces this floor again defensively (defense-in-depth).
+	soarAuthor := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager)
 	// senior = destructive/sensitive actions that a T1 (or a stolen T1 token) must not reach: connector
 	// create/delete (creds / blind detection), playbook run, incident close, alert promote, threat-intel writes,
 	// evidence-pack export (R2 H-D). T1 keeps reads + triage/assign/note + assistive AI.
@@ -688,6 +694,10 @@ func main() {
 	// SOAR (playbooks, runs, approvals, authority-to-act)
 	mux.Handle("GET /playbooks", provider(soarH.ListPlaybooks))
 	mux.Handle("POST /playbooks/{id}/run", senior(soarH.Run))
+	// Playbook authoring (#187 slice A) — tenant-owned only, soc_manager+.
+	mux.Handle("POST /soar/playbooks", soarAuthor(soarH.CreatePlaybook))
+	mux.Handle("PUT /soar/playbooks/{id}", soarAuthor(soarH.UpdatePlaybook))
+	mux.Handle("PATCH /soar/playbooks/{id}/enabled", soarAuthor(soarH.SetPlaybookEnabled))
 	mux.Handle("GET /soar/runs", provider(soarH.ListRuns))
 	mux.Handle("GET /soar/runs/{id}", provider(soarH.GetRun))
 	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))
