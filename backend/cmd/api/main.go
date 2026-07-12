@@ -384,7 +384,8 @@ func main() {
 	// the incident package — no import cycle; the reader runs under WithTenant so RLS confines it).
 	reportExportH := reporting.NewReportHandler(
 		reporting.NewReportService(reporting.NewReportRepository(db), blobs, reportingSvc).
-			WithBreachSource(breachIncidentAdapter{inc: incidentSvc}))
+			WithBreachSource(breachIncidentAdapter{inc: incidentSvc}).
+			WithSigner(evidenceSigner)) // #188: sign the regulatory breach report (same key as evidence packs)
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
 	// --- bootstrap first-run provider tenant + platform admin ---

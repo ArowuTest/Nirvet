@@ -13,6 +13,7 @@ package reporting
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -142,6 +143,7 @@ type ReportService struct {
 	blobs    blobstore.Store
 	content  *Service
 	breach   BreachIncidentReader // optional #188 incident reader for regulatory breach reports (nil ⇒ unavailable)
+	signer   ed25519.PrivateKey   // optional #188 Ed25519 key to sign the breach report (nil ⇒ unsigned)
 	capsOnce *Limits              // optional override of the DB-loaded caps (config/test seam)
 }
 
