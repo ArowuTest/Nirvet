@@ -42,6 +42,13 @@ func (s *Service) resolveScope(ctx context.Context, p auth.Principal) ([]uuid.UU
 	}
 }
 
+// TenantScope exports the fail-closed oversight scope resolution for other packages that need the SAME
+// principal-derived, grant-scoped, empty-by-default tenant set (readmodel's regulator rollups reuse it). It is a
+// thin wrapper over resolveScope so there is ONE scope authority, not a second copy that could drift.
+func (s *Service) TenantScope(ctx context.Context, p auth.Principal) ([]uuid.UUID, error) {
+	return s.resolveScope(ctx, p)
+}
+
 // orgScope returns the tenants belonging to the organisations this principal holds an org_admin_grant for. The
 // grant set is keyed on the AUTHENTICATED p.UserID (MA-OV-2) — never a client-supplied org id. Read under
 // WithSystem (grant + tenants registries are not per-tenant-RLS'd); a principal with no grant → empty.

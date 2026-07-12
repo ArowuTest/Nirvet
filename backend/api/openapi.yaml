@@ -1632,3 +1632,73 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+
+  # --- auto-added by cmd/openapigen (external-review OpenAPI parity); enrich schemas incrementally ---
+  /admin/tenants/{tenant_id}/disclosure-policy:
+    get:
+      tags: [admin]
+      summary: GET /admin/tenants/{tenant_id}/disclosure-policy
+      parameters:
+        - { name: tenant_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [admin]
+      summary: PUT /admin/tenants/{tenant_id}/disclosure-policy
+      parameters:
+        - { name: tenant_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /customer/alerts:
+    get:
+      tags: [customer]
+      summary: GET /customer/alerts
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /customer/incidents:
+    get:
+      tags: [customer]
+      summary: GET /customer/incidents
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /customer/incidents/{id}:
+    get:
+      tags: [customer]
+      summary: GET /customer/incidents/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /oversight/alerts-rollup:
+    get:
+      tags: [oversight]
+      summary: GET /oversight/alerts-rollup
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /oversight/incidents-rollup:
+    get:
+      tags: [oversight]
+      summary: GET /oversight/incidents-rollup
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }

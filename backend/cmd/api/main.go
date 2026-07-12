@@ -55,6 +55,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platformadmin"
 	"github.com/ArowuTest/nirvet/internal/posture"
 	"github.com/ArowuTest/nirvet/internal/postureproj"
+	"github.com/ArowuTest/nirvet/internal/readmodel"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
@@ -226,6 +227,9 @@ func main() {
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
 		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc).WithBlobStore(blobs)
 	incidentH := incident.NewHandler(incidentSvc)
+	// Customer read-side (Slice A): the audience-projection chokepoint. THE ONLY handler wired to the customer/
+	// oversight read chains — a raw entity never reaches a customer principal (check-audience-projection.sh).
+	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, db)
 	// High-risk correlation clusters auto-open an incident (§6.7); window/thresholds are the
 	// tenant's admin-configurable correlation policy (Phase 0-D no-hardcoding).
 	correlationSvc.WithIncidenter(incidentSvc).WithPolicy(tenantSvc)
@@ -433,6 +437,10 @@ func main() {
 	manager := interactive(apiLimit, managerRoles...)
 	// SSO connections are managed by the tenant's own admin or a platform admin.
 	ssoAdmin := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleCustomerAdmin)
+	// customerRead = the customer audience (customer_admin + customer_viewer). Only readmodel projection handlers
+	// may be wired to this chain (enforced by scripts/check-audience-projection.sh); a provider handler here would
+	// leak internal data to a customer principal.
+	customerRead := interactive(apiLimit, auth.RoleCustomerAdmin, auth.RoleCustomerViewer)
 
 	mux := http.NewServeMux()
 	// health
@@ -786,6 +794,18 @@ func main() {
 	mux.Handle("GET /knowledge-base", provider(incidentH.ListKB))
 	mux.Handle("POST /knowledge-base", provider(incidentH.CreateKB))
 	mux.Handle("POST /incidents/{id}/close", senior(incidentH.Close))
+
+	// --- Customer read-side (Slice A): audience-projected reads. THE ONLY handlers on customerRead/oversight
+	// read chains are custReadH.* (fenced by scripts/check-audience-projection.sh). Customer sees redacted
+	// projections of their own tenant; regulator sees grant-scoped metadata-only aggregates. ---
+	mux.Handle("GET /customer/incidents", customerRead(custReadH.ListIncidents))
+	mux.Handle("GET /customer/incidents/{id}", customerRead(custReadH.GetIncident))
+	mux.Handle("GET /customer/alerts", customerRead(custReadH.ListAlerts))
+	mux.Handle("GET /oversight/incidents-rollup", oversight(custReadH.IncidentRollup))
+	mux.Handle("GET /oversight/alerts-rollup", oversight(custReadH.AlertRollup))
+	// Provider-operator configures what each customer tenant sees (a customer cannot self-widen).
+	mux.Handle("GET /admin/tenants/{tenant_id}/disclosure-policy", padmin(custReadH.GetDisclosurePolicy))
+	mux.Handle("PUT /admin/tenants/{tenant_id}/disclosure-policy", padmin(custReadH.SetDisclosurePolicy))
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.Recover(log), httpx.CORS(cfg.CORSOrigin), tracing.Middleware(), metrics.Middleware(), httpx.AccessLog(log))
 

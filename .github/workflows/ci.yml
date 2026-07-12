@@ -58,6 +58,9 @@ jobs:
       - name: Guard — connector credential decrypts audited via Vault.Open (ADR-0004 §6 / GC-1)
         working-directory: backend
         run: bash scripts/check-connector-decrypt-audit.sh
+      - name: Guard — customer read chain serves only readmodel projections (audience over-disclosure)
+        working-directory: backend
+        run: bash scripts/check-audience-projection.sh
       - name: Apply migrations
         working-directory: backend
         env:

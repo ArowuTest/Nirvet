@@ -132,10 +132,27 @@ func ProjectAlertForCustomer(a alert.Alert) CustomerAlertView {
 
 // ---- Regulator audience (metadata-by-construction AGGREGATES; grant-scoped; NEVER content rows) ----
 
+// IncidentMeta is the ONLY incident data the regulator path ever loads: the low-cardinality metadata columns
+// the bounded SD function incident_meta_for_tenants returns. There is no Title/note/actor field here, so
+// incident CONTENT never enters the application on the regulator path — metadata-by-construction at the DB
+// boundary, not just at the response struct.
+type IncidentMeta struct {
+	Category        string
+	Severity        string
+	Stage           string
+	AckBreached     bool
+	ResolveBreached bool
+}
+
+// AlertMeta is the metadata-only alert row from alert_meta_for_tenants (severity + status; no title/actor).
+type AlertMeta struct {
+	Severity string
+	Status   string
+}
+
 // RegulatorIncidentRollup is the government/anchor oversight view of incidents across a grant-scoped set of
 // tenants. It is metadata-BY-CONSTRUCTION: there is NO field on this struct (or its maps' keys) that can hold
 // incident content, a title, or PII — only counts keyed by low-cardinality categorical labels + SLA tallies.
-// The regulator therefore physically cannot receive incident content, whatever the query returns.
 type RegulatorIncidentRollup struct {
 	TenantsInScope  int            `json:"tenants_in_scope"`
 	Total           int            `json:"total"`
@@ -147,28 +164,27 @@ type RegulatorIncidentRollup struct {
 	ResolveBreached int            `json:"resolve_breached"`
 }
 
-// BuildRegulatorIncidentRollup aggregates incidents (already fetched over the grant-scoped tenant set) into
-// counts. It reads only categorical/boolean fields; it never copies Title, notes, or any content into the
-// result. tenantsInScope is the size of the resolved grant scope (0 → an empty, fail-closed rollup).
-func BuildRegulatorIncidentRollup(incidents []incident.Incident, tenantsInScope int) RegulatorIncidentRollup {
+// BuildRegulatorIncidentRollup aggregates the metadata rows (from the bounded SD function, already scoped to the
+// grant's tenant set) into counts. tenantsInScope is the size of the resolved grant scope (0 → empty rollup).
+func BuildRegulatorIncidentRollup(metas []IncidentMeta, tenantsInScope int) RegulatorIncidentRollup {
 	r := RegulatorIncidentRollup{
 		TenantsInScope: tenantsInScope,
 		ByCategory:     map[string]int{},
 		BySeverity:     map[string]int{},
 	}
-	for _, inc := range incidents {
+	for _, m := range metas {
 		r.Total++
-		r.ByCategory[inc.Category]++
-		r.BySeverity[inc.Severity]++
-		if inc.Stage == incident.StageClosed || inc.Stage == incident.StagePostIncidentReview {
+		r.ByCategory[m.Category]++
+		r.BySeverity[m.Severity]++
+		if m.Stage == string(incident.StageClosed) || m.Stage == string(incident.StagePostIncidentReview) {
 			r.Closed++
 		} else {
 			r.Open++
 		}
-		if inc.AckBreached {
+		if m.AckBreached {
 			r.AckBreached++
 		}
-		if inc.ResolveBreached {
+		if m.ResolveBreached {
 			r.ResolveBreached++
 		}
 	}
@@ -183,17 +199,17 @@ type RegulatorAlertRollup struct {
 	ByStatus       map[string]int `json:"by_status"`
 }
 
-// BuildRegulatorAlertRollup aggregates alerts into counts only.
-func BuildRegulatorAlertRollup(alerts []alert.Alert, tenantsInScope int) RegulatorAlertRollup {
+// BuildRegulatorAlertRollup aggregates the metadata rows into counts only.
+func BuildRegulatorAlertRollup(metas []AlertMeta, tenantsInScope int) RegulatorAlertRollup {
 	r := RegulatorAlertRollup{
 		TenantsInScope: tenantsInScope,
 		BySeverity:     map[string]int{},
 		ByStatus:       map[string]int{},
 	}
-	for _, a := range alerts {
+	for _, m := range metas {
 		r.Total++
-		r.BySeverity[a.Severity]++
-		r.ByStatus[string(a.Status)]++
+		r.BySeverity[m.Severity]++
+		r.ByStatus[m.Status]++
 	}
 	return r
 }
