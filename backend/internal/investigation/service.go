@@ -12,7 +12,10 @@ import (
 )
 
 // Service owns the hunt-query flow.
-type Service struct{ repo *Repository }
+type Service struct {
+	repo    *Repository
+	journal CaseJournalReader // #188 optional: the incident journal, for the merged multi-lane case timeline
+}
 
 // NewService builds the service.
 func NewService(repo *Repository) *Service { return &Service{repo: repo} }

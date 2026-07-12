@@ -5,10 +5,12 @@ package investigation
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/google/uuid"
 )
 
 // Handler exposes the investigation query + entity + timeline + data-gap endpoints.
@@ -81,6 +83,39 @@ func (h *Handler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	res, err := h.svc.GetTimeline(r.Context(), p, r.URL.Query().Get("ref"), from, to)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
+// CaseTimeline handles GET /investigation/case-timeline?incident=&refs=&from=&to= (#188). refs is an optional
+// comma-separated list of entity refs for the forensic event lane; from/to are RFC3339 (default: last window).
+func (h *Handler) CaseTimeline(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	incID, err := uuid.Parse(r.URL.Query().Get("incident"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid or missing incident id"))
+		return
+	}
+	to := time.Now()
+	from := to.Add(-defaultTimelineWindow)
+	if v := r.URL.Query().Get("to"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			to = t
+		}
+	}
+	if v := r.URL.Query().Get("from"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			from = t
+		}
+	}
+	var refs []string
+	if v := strings.TrimSpace(r.URL.Query().Get("refs")); v != "" {
+		refs = strings.Split(v, ",")
+	}
+	res, err := h.svc.GetCaseTimeline(r.Context(), p, incID, refs, from, to)
 	if err != nil {
 		httpx.Error(w, err)
 		return

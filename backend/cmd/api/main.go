@@ -363,7 +363,9 @@ func main() {
 	// The entity profile+pivot (I-3) composes the existing entitygraph service (tenant-scoped) — no cross-tenant reach.
 	invRepo := investigation.NewRepository(db)
 	investigationH := investigation.NewHandler(
-		investigation.NewService(invRepo),
+		// #188 multi-lane case timeline: merge the forensic event lane with the incident journal (analyst/
+		// automation/comms/evidence) via a narrow adapter, keeping investigation decoupled from incident.
+		investigation.NewService(invRepo).WithCaseJournal(caseJournalAdapter{inc: incidentSvc}),
 		investigation.NewEntityService(egSvc, invRepo),
 		// I-5 data-gap panel: unify detection coverage gaps + host-source silence + normalization drift (all tenant-scoped).
 		investigation.NewDataGapService(detectionSvc, normQ, connector.NewRepository(db)),
@@ -658,6 +660,7 @@ func main() {
 	mux.Handle("GET /investigation/get-entity-graph", provider(investigationH.EntityGraph))
 	// §6.9 #124 I-4 structured forensic timeline (INV-002 / API-INV-004) + I-5 data-gap panel (INV-009).
 	mux.Handle("GET /investigation/get-timeline", provider(investigationH.GetTimeline))
+	mux.Handle("GET /investigation/case-timeline", provider(investigationH.CaseTimeline)) // #188 multi-lane case timeline
 	mux.Handle("GET /investigation/data-gaps", provider(investigationH.DataGaps))
 	// §6.18 #122 platform-admin surface. Feature-flag set/rollback runs the safety gate (immutable rejected; protected
 	// weakening needs senior+four-eyes+reason+HIGH-alert+time-box). Tenant lifecycle: legal-hold set is routine, CLEAR
@@ -949,4 +952,20 @@ func bootstrap(ctx context.Context, log *slog.Logger, tenantSvc *tenant.Service,
 		return
 	}
 	log.Info("bootstrap: provider tenant + platform admin created", "tenant_id", t.ID, "admin_email", email)
+}
+
+// caseJournalAdapter adapts incident.Service to investigation.CaseJournalReader for the #188 multi-lane case
+// timeline, mapping the incident journal into the investigation-owned shape so investigation stays decoupled.
+type caseJournalAdapter struct{ inc *incident.Service }
+
+func (a caseJournalAdapter) CaseJournal(ctx context.Context, tenantID, incidentID uuid.UUID) ([]investigation.CaseJournalEntry, error) {
+	entries, err := a.inc.Timeline(ctx, tenantID, incidentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]investigation.CaseJournalEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, investigation.CaseJournalEntry{At: e.At, Author: e.Author, Kind: e.Kind, Visibility: e.Visibility, Note: e.Note})
+	}
+	return out, nil
 }
