@@ -58,6 +58,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/postureproj"
 	"github.com/ArowuTest/nirvet/internal/readmodel"
 	"github.com/ArowuTest/nirvet/internal/reporting"
+	"github.com/ArowuTest/nirvet/internal/retention"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
 	"github.com/ArowuTest/nirvet/internal/sso"
@@ -389,6 +390,11 @@ func main() {
 		reporting.NewReportService(reporting.NewReportRepository(db), blobs, reportingSvc).
 			WithBreachSource(breachIncidentAdapter{inc: incidentSvc}).
 			WithSigner(evidenceSigner)) // #188: sign the regulatory breach report (same key as evidence packs)
+	// §6.14 #188 retention enforcement (the data-deleter). Safe default: policy DISABLED = dry-run/report-only
+	// until a tenant explicitly enables live deletion; legal-hold always preserves; deletes raw_events (+ payload
+	// blob) + events only; ClickHouse ages out via its own TTL.
+	retentionSvc := retention.NewService(db, blobs)
+	retentionH := retention.NewHandler(retentionSvc)
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
 	// --- bootstrap first-run provider tenant + platform admin ---
@@ -742,6 +748,10 @@ func main() {
 	mux.Handle("POST /soar/approve-link", httpx.Chain(http.HandlerFunc(soarH.ApproveViaLink), loginLimit))
 	mux.Handle("GET /soar/customer-approval", provider(soarH.GetCustomerApprovalPolicy))
 	mux.Handle("PUT /soar/customer-approval", soarApprover(soarH.SetCustomerApprovalPolicy))
+	// §6.14 #188 retention: view policy + sweep log (provider); enabling live deletion is a tenant-admin action.
+	mux.Handle("GET /retention", provider(retentionH.GetPolicy))
+	mux.Handle("PUT /retention", ssoAdmin(retentionH.SetPolicy))
+	mux.Handle("GET /retention/sweeps", provider(retentionH.ListSweeps))
 	mux.Handle("POST /soar/runs/{id}/reverse", soarApprover(soarH.Reverse)) // §6.11 slice B: undo containment (MUST-3)
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	mux.Handle("GET /soar/action-catalog", provider(soarH.ListActionCatalog))
@@ -918,6 +928,8 @@ func main() {
 		// Refresh-token reaper (ADR-0007 LOW #4): deletes un-redeemable refresh rows (expired / past absolute cap)
 		// so the table doesn't grow unbounded. Hourly is ample — rows are already dead before deletion.
 		go iamSvc.StartRefreshReaper(workerCtx, log, time.Hour)
+		// #188 retention enforcement: per-tenant telemetry sweep (dry-run until a tenant enables; legal-hold skips).
+		go retentionSvc.StartRetentionReaper(workerCtx, log, 6*time.Hour)
 		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper + notification dispatcher + refresh reaper started")
 	}
 
