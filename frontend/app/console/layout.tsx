@@ -1,9 +1,15 @@
 "use client";
 
+// Console shell + client-side route guard. Under ADR-0007 the session lives in HttpOnly cookies JS can't read,
+// so we can't gate on a token in localStorage — instead we probe GET /me (which the browser answers with the
+// access cookie, transparently refreshing it if expired via lib/api's single-flight refresh). 200 → render;
+// 401 → the session is truly gone → redirect to /login. This is defence-in-depth UX only; the BACKEND RLS +
+// auth middleware are the real access control on every API call.
+
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { getToken, clearToken } from "@/lib/api";
+import { getMe, logout, logoutAll, type Me } from "@/lib/api";
 
 const nav = [
   { href: "/console", label: "Dashboard" },
@@ -14,42 +20,110 @@ const nav = [
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [ready, setReady] = useState(false);
+  const pathname = usePathname();
+  const [me, setMe] = useState<Me | null>(null);
+  const [state, setState] = useState<"loading" | "ready">("loading");
 
   useEffect(() => {
-    if (!getToken()) router.replace("/login");
-    else setReady(true);
+    let alive = true;
+    getMe()
+      .then((u) => {
+        if (!alive) return;
+        setMe(u);
+        setState("ready");
+      })
+      .catch(() => {
+        if (alive) router.replace("/login");
+      });
+    return () => {
+      alive = false;
+    };
   }, [router]);
 
-  if (!ready) return null;
+  async function signOut(everywhere: boolean) {
+    try {
+      await (everywhere ? logoutAll() : logout());
+    } catch {
+      /* best-effort; clear the UI regardless */
+    }
+    router.replace("/login");
+  }
+
+  if (state === "loading") {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-sm" style={{ color: "var(--c-ink-3)" }}>
+        Verifying session…
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen">
-      <aside className="w-56 shrink-0 border-r border-slate-800 bg-[var(--nirvet-panel)] p-4">
-        <div className="mb-6">
-          <div className="text-lg font-bold text-white">Nirvet</div>
-          <div className="text-xs text-blue-300">SOC Console</div>
+      <aside
+        className="flex w-60 shrink-0 flex-col p-4"
+        style={{ background: "var(--c-surface)", borderRight: "1px solid var(--c-border)" }}
+      >
+        <div className="mb-6 flex items-center gap-2.5">
+          <svg width="28" height="28" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+            <path d="M18 3L33 8.5V18C33 26.5 18 33 18 33C18 33 3 26.5 3 18V8.5L18 3Z" fill="rgba(14,165,233,0.12)" stroke="#0EA5E9" strokeWidth="1.5" strokeLinejoin="round" />
+            <path d="M12 12L12 24L24 12L24 24" stroke="#0EA5E9" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            <circle cx="24" cy="24" r="2.5" fill="#06B6D4" />
+          </svg>
+          <div>
+            <div className="text-sm font-extrabold leading-none tracking-tight">
+              NIR<span style={{ color: "var(--c-primary)" }}>VET</span>
+            </div>
+            <div className="mt-1 text-[11px]" style={{ color: "var(--c-ink-3)" }}>
+              SOC Console
+            </div>
+          </div>
         </div>
+
         <nav className="space-y-1">
-          {nav.map((n) => (
-            <Link
-              key={n.href}
-              href={n.href}
-              className="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 hover:text-white"
-            >
-              {n.label}
-            </Link>
-          ))}
+          {nav.map((n) => {
+            const active = pathname === n.href;
+            return (
+              <Link
+                key={n.href}
+                href={n.href}
+                className="block rounded-lg px-3 py-2 text-sm transition"
+                style={
+                  active
+                    ? { background: "rgba(14,165,233,0.1)", color: "var(--c-ink)" }
+                    : { color: "var(--c-ink-2)" }
+                }
+              >
+                {n.label}
+              </Link>
+            );
+          })}
         </nav>
-        <button
-          onClick={() => {
-            clearToken();
-            router.replace("/login");
-          }}
-          className="mt-8 w-full rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
-        >
-          Sign out
-        </button>
+
+        <div className="mt-auto space-y-3 pt-8">
+          {me && (
+            <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "var(--c-surface-2)", color: "var(--c-ink-3)" }}>
+              <div className="truncate" style={{ color: "var(--c-ink-2)" }} title={me.email}>
+                {me.email}
+              </div>
+              <div className="mt-0.5 uppercase tracking-wide">{me.role.replace(/_/g, " ")}</div>
+            </div>
+          )}
+          <button
+            onClick={() => signOut(false)}
+            className="w-full rounded-lg px-3 py-2 text-sm transition"
+            style={{ border: "1px solid var(--c-border)", color: "var(--c-ink-2)" }}
+          >
+            Sign out
+          </button>
+          <button
+            onClick={() => signOut(true)}
+            className="w-full rounded-lg px-3 py-2 text-xs transition"
+            style={{ color: "var(--c-ink-3)" }}
+            title="Ends every active session on all your devices"
+          >
+            Sign out everywhere
+          </button>
+        </div>
       </aside>
       <main className="flex-1 p-8">{children}</main>
     </div>
