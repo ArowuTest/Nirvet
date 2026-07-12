@@ -46,7 +46,8 @@ func (r *Repository) getRuleForUpdate(ctx context.Context, tx pgx.Tx, id uuid.UU
 	err := tx.QueryRow(ctx, `SELECT `+ruleCols+` FROM detection_rules WHERE id=$1 AND tenant_id IS NOT NULL FOR UPDATE`, id).
 		Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Description, &rule.Severity, &rule.Confidence,
 			&rule.MITRE, &cond, &rule.Expression, &rule.Enabled, &rule.CreatedAt,
-			&rule.Stage, &rule.Version, &rule.OwnerID, &rule.SourceDependencies)
+			&rule.Stage, &rule.Version, &rule.OwnerID, &rule.SourceDependencies,
+			&rule.Kind, &rule.WindowSeconds, &rule.Threshold, &rule.EntityField, &rule.DistinctField)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}

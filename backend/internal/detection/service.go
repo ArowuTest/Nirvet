@@ -2,6 +2,7 @@ package detection
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 type Engine struct {
 	repo  *Repository
 	ttl   time.Duration
+	log   *slog.Logger // optional; set via WithLogger for stateful-eval + reaper diagnostics
 	mu    sync.Mutex
 	cache map[uuid.UUID]cacheEntry
 	progs map[string]cel.Program // compiled CEL programs, keyed by expression

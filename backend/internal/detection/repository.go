@@ -23,7 +23,8 @@ func scanRules(rows pgx.Rows) ([]Rule, error) {
 		var cond []byte
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Description, &r.Severity,
 			&r.Confidence, &r.MITRE, &cond, &r.Expression, &r.Enabled, &r.CreatedAt,
-			&r.Stage, &r.Version, &r.OwnerID, &r.SourceDependencies); err != nil {
+			&r.Stage, &r.Version, &r.OwnerID, &r.SourceDependencies,
+			&r.Kind, &r.WindowSeconds, &r.Threshold, &r.EntityField, &r.DistinctField); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(cond, &r.Condition)
@@ -32,7 +33,7 @@ func scanRules(rows pgx.Rows) ([]Rule, error) {
 	return out, rows.Err()
 }
 
-const ruleCols = `id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, created_at, stage, version, owner_id, source_dependencies`
+const ruleCols = `id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, created_at, stage, version, owner_id, source_dependencies, kind, window_seconds, threshold, entity_field, distinct_field`
 
 // activeStages are the lifecycle stages whose rules the engine evaluates (SRS §9.4): pilot, production,
 // and tuned. draft/peer_review/qa/retired do not fire.
@@ -74,14 +75,21 @@ func (r *Repository) Create(ctx context.Context, tenantID uuid.UUID, rule *Rule)
 	if rule.MITRE == nil {
 		rule.MITRE = []string{} // mitre is NOT NULL DEFAULT '{}'; never send SQL NULL
 	}
+	if rule.Kind == "" {
+		rule.Kind = KindSimple
+	}
+	if err := rule.ValidateStateful(); err != nil {
+		return err
+	}
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if rule.Stage == "" {
 			rule.Stage = StageProduction
 		}
 		return tx.QueryRow(ctx,
-			`INSERT INTO detection_rules (id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, stage)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING created_at, version`,
+			`INSERT INTO detection_rules (id, tenant_id, name, description, severity, confidence, mitre, condition, expression, enabled, stage, kind, window_seconds, threshold, entity_field, distinct_field)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING created_at, version`,
 			rule.ID, tenantID, rule.Name, rule.Description, rule.Severity, rule.Confidence, rule.MITRE, cond, rule.Expression, rule.Enabled, rule.Stage,
+			rule.Kind, rule.WindowSeconds, rule.Threshold, rule.EntityField, rule.DistinctField,
 		).Scan(&rule.CreatedAt, &rule.Version)
 	})
 }

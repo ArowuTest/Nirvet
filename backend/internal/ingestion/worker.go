@@ -281,6 +281,14 @@ func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) (er
 	if err != nil {
 		return err
 	}
+	// DET-002 stateful rules (threshold/distinct): advance the windowed state and pick up any rule that FIRES on
+	// this event. A stateful-eval error is logged, not fatal — it must not drop the single-event matches above,
+	// and the window state is durable so a later contributing event retries the threshold.
+	if stateful, serr := wk.detector.EvaluateStateful(ctx, ev.TenantID, ev); serr != nil {
+		wk.log.Warn("worker: stateful detection eval failed", "event", ev.ID, "err", serr)
+	} else {
+		matches = append(matches, stateful...)
+	}
 	span.SetAttributes(attribute.Int("nirvet.detection_matches", len(matches)))
 	// The deterministic content key; fall back to the event id only when an event carries no dedupe key.
 	alertKey := ev.ID.String()

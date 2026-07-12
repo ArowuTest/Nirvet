@@ -6,8 +6,10 @@
 package detection
 
 import (
+	"strconv"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 )
 
@@ -61,6 +63,48 @@ type Rule struct {
 	Version            int        `json:"version"`
 	OwnerID            *uuid.UUID `json:"owner_id,omitempty"`
 	SourceDependencies []string   `json:"source_dependencies"`
+
+	// Stateful mode (DET-002). Kind defaults to KindSimple (single-event, the original behaviour). For
+	// KindThreshold/KindDistinct the base Condition/Expression is the per-event CONTRIBUTION filter and the rule
+	// fires once per (entity, window) when the count/distinct-count crosses Threshold. EntityField is the grouping
+	// key (a normalized-event field, e.g. "actor_ref"); DistinctField (KindDistinct only) is the field whose
+	// distinct values are counted (e.g. "data.countryOrRegion").
+	Kind          string `json:"kind"`
+	WindowSeconds int    `json:"window_seconds"`
+	Threshold     int    `json:"threshold"`
+	EntityField   string `json:"entity_field"`
+	DistinctField string `json:"distinct_field"`
+}
+
+// Detection rule kinds (DET-002).
+const (
+	KindSimple    = "simple"    // single-event (default; original behaviour)
+	KindThreshold = "threshold" // fire when >= Threshold contributing events for one entity in the window
+	KindDistinct  = "distinct"  // fire when >= Threshold distinct DistinctField values for one entity in the window
+)
+
+// IsStateful reports whether the rule needs windowed state (threshold/distinct) rather than single-event eval.
+func (r Rule) IsStateful() bool { return r.Kind == KindThreshold || r.Kind == KindDistinct }
+
+// ValidateStateful checks a stateful rule's config is coherent + bounded (called at create). Simple rules pass.
+// Threshold is bounded below the member cap so the flood backstop can never prevent a legitimate fire.
+func (r Rule) ValidateStateful() error {
+	if !r.IsStateful() {
+		return nil
+	}
+	if r.WindowSeconds <= 0 || r.WindowSeconds > maxWindowSeconds {
+		return httpx.ErrBadRequest("stateful rule: window_seconds must be between 1 and " + strconv.Itoa(maxWindowSeconds))
+	}
+	if r.Threshold <= 0 || r.Threshold > maxDistinctPerWindow {
+		return httpx.ErrBadRequest("stateful rule: threshold must be between 1 and " + strconv.Itoa(maxDistinctPerWindow))
+	}
+	if r.EntityField == "" {
+		return httpx.ErrBadRequest("stateful rule: entity_field is required")
+	}
+	if r.Kind == KindDistinct && r.DistinctField == "" {
+		return httpx.ErrBadRequest("distinct rule: distinct_field is required")
+	}
+	return nil
 }
 
 // Detection lifecycle stages (SRS §9.4).

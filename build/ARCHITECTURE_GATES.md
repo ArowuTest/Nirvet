@@ -2834,3 +2834,65 @@ identity detections. Management-Activity-API = follow-on if the pilot contracts 
 
 **→ Reuses the cleared msgraph host-pin + netsafe + audited-Vault seam; additive normalizer mappers; no new
 table; back-compat default. Building against verified structure; landing round to re-verify. Nothing pushed.**
+
+## Gate — LAUNCH #2: Detection engine STATEFUL primitives (threshold / distinct / sequence) — DESIGN REVIEW (pre-code) — Jul 12 2026
+
+**Grounding (backlog, source-verified).** DET-002 (native threshold/sequence/anomaly rule types). **Current
+state (verified `detection/detection.go:14-27`, `evaluator.go:156`): the engine is SINGLE-EVENT ONLY** — every
+predicate op (`eq/neq/contains/gte/lte/exists/regex`) tests one event; `Condition.Matches(ev)` looks at exactly
+one event; the engine fires one alert per matching event. So the MVP identity detections **cannot be authored**:
+MFA-fatigue = "≥N failed sign-ins for ONE user within W"; impossible-travel = "sign-ins from ≥2 distinct
+countries for one user within W". These need state across events. This is an ENGINE build (not content), and it
+unblocks LAUNCH #3 content on top of the LAUNCH #1 telemetry.
+
+**In scope.**
+- **Rule gains a stateful mode** (additive; `Kind` defaults to the existing single-event behaviour — **fully
+  back-compat, every existing rule unchanged**): `Kind ∈ {simple, threshold, distinct}`; `WindowSeconds`,
+  `Threshold`, `EntityField` (the grouping key, e.g. `actor_ref`), and for distinct `DistinctField` (e.g.
+  `data.countryOrRegion`). The base `Condition` is the per-event contribution filter ("what counts").
+- **Windowed state store** (new table `detection_windows`, RLS ENABLE+FORCE, PK/unique
+  `(tenant_id, rule_id, entity_key, window_start)`): TUMBLING window (window_start = event time truncated to the
+  window boundary — deterministic so concurrent workers hit the SAME bucket; sliding = follow-on). `count`,
+  `fired_at`. For distinct, a bounded child set `detection_window_values(window_id, value)` unique on
+  `(window_id, value)` (capped per window via a seeded config to bound growth).
+- **Evaluate slots the stateful branch in** (worker unchanged — it already calls `Engine.Evaluate`): when a
+  stateful rule's base Condition matches an event, compute `entity_key = ev[EntityField]` (skip if empty) and
+  the window bucket, then **claim-then-act**: `INSERT … ON CONFLICT DO UPDATE SET count=count+1 RETURNING count,
+  fired_at`; if the threshold is now met AND `fired_at IS NULL`, fire the claim `UPDATE … SET fired_at=now()
+  WHERE id=$1 AND fired_at IS NULL` — `RowsAffected==1` wins and emits the single Match; the loser does nothing.
+  This is THE double-fire guard (reviewer checklist #4) — two workers crossing the threshold on the same tick
+  fire exactly one alert. Distinct is the same, keyed on distinct-count.
+- **Reaper** (panic-guarded background loop, like the refresh reaper): delete window rows past `window_start +
+  window + grace` so state can't grow unbounded (SECURITY DEFINER cross-tenant purge fn, REVOKE PUBLIC, CI-fenced).
+
+**Invariants honoured.** Tenant isolation (window rows RLS'd under `WithTenant`, entity keys never cross tenant).
+No-hardcoding: engine caps (max window seconds, max distinct values tracked per window, reaper grace) are seeded
+config rows, not constants; the per-rule window/threshold ARE the rule (detection-as-code, admin-authored).
+No-silent-loss: a stateful-eval DB error is logged + does not drop the event's single-event matches (they still
+fire); the event is already durably stored so a failed window-update is retryable, never a silent miss. Audit:
+the fired Match flows through the existing alert-raise audit. Concurrency: atomic UPSERT increment + conditional
+fire-claim; `-race` green (a race here = double-fire an alert). Migration from-zero validated.
+
+**Deferred (tracked, not TODO).** Ordered **sequence** (A-then-B state machine) + **anomaly/baseline** (DET-002
+statistical) = follow-on within this task's tail or #186 — threshold + distinct unblock the two priority MVP
+identity detections (MFA-fatigue, impossible-travel) first; sequence needs an ordered multi-step machine, anomaly
+needs a baseline model. Sliding windows (vs tumbling) = later.
+
+### Open questions for the reviewer's pre-code pass
+1. **Tumbling vs sliding window** for launch — tumbling (truncate-to-boundary) is deterministic + idempotent +
+   concurrency-trivial; sliding is more precise but needs per-event bucket ranges. (Leaning tumbling for launch,
+   sliding as a follow-on.)
+2. **Fire-once semantics** — one alert per (entity, window) once the threshold is met (fired_at latch), NOT one
+   per subsequent matching event in the same window. Confirm that's the desired UX (avoids alert storms).
+   (Leaning yes.)
+3. **Distinct-set growth bound** — cap tracked distinct values per window at a seeded config (e.g. 1000) and
+   stop counting beyond it (the threshold is small, so the cap only bounds a pathological flood). Confirm a
+   silent cap is acceptable here or should it emit a "distinct-cap-hit" signal (no-silent-loss). (Leaning: emit
+   a signal — consistent with the no-silent-blinding theme.)
+4. **Where the window write lives** — inside `Engine.Evaluate` (makes Evaluate stateful/DB-writing) vs a
+   separate `EvaluateStateful` the worker calls after. (Leaning: a distinct method so the pure single-event
+   `Evaluate` stays read-only + unit-testable; the worker calls both.)
+
+**→ Awaiting reviewer pre-code pass. HEAVY-ish (new eval path + concurrency) → dedicated adversarial landing
+round (concurrent-threshold double-fire, cross-tenant entity isolation, back-compat of simple rules, reaper
+never deletes a live window). Building against verified structure. Nothing pushed.**

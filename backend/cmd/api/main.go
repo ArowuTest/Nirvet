@@ -204,7 +204,7 @@ func main() {
 	correlationH := correlation.NewHandler(correlationSvc)
 
 	detectionRepo := detection.NewRepository(db)
-	detEngine := detection.NewEngine(detectionRepo)
+	detEngine := detection.NewEngine(detectionRepo).WithLogger(log)
 	detectionSvc := detection.NewService(detectionRepo, detEngine)
 	detectionH := detection.NewHandler(detectionSvc)
 	// Close the DET-007 loop: an alert disposition feeds detection tuning (alert stays decoupled).
@@ -850,6 +850,8 @@ func main() {
 		go poller.Start(workerCtx, time.Minute)
 		// Re-enqueue raw events orphaned between StoreRaw and Enqueue (SEC Critical #4).
 		go ingestSvc.StartReconciler(workerCtx, log, 30*time.Second, 60*time.Second, 100)
+		// DET-002 stateful-detection window reaper: purge expired (entity,window) state so it can't grow unbounded.
+		go detEngine.StartWindowReaper(workerCtx, log)
 		// Vendor posture projection (MA-4): periodically recompute each tenant's metadata-only posture from
 		// incident metadata (slice-A population driver; on-transition triggering is a documented follow-on).
 		go postureProjector.StartRefreshLoop(workerCtx, log, time.Minute)

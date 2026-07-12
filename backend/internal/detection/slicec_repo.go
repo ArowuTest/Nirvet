@@ -22,7 +22,8 @@ func (r *Repository) GetRule(ctx context.Context, tenantID, id uuid.UUID) (*Rule
 		e := tx.QueryRow(ctx, `SELECT `+ruleCols+` FROM detection_rules WHERE id=$1`, id).
 			Scan(&rr.ID, &rr.TenantID, &rr.Name, &rr.Description, &rr.Severity, &rr.Confidence,
 				&rr.MITRE, &cond, &rr.Expression, &rr.Enabled, &rr.CreatedAt,
-				&rr.Stage, &rr.Version, &rr.OwnerID, &rr.SourceDependencies)
+				&rr.Stage, &rr.Version, &rr.OwnerID, &rr.SourceDependencies,
+				&rr.Kind, &rr.WindowSeconds, &rr.Threshold, &rr.EntityField, &rr.DistinctField)
 		if e == pgx.ErrNoRows {
 			return nil
 		}
