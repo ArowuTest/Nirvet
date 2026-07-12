@@ -3,9 +3,19 @@
 // The access JWT and refresh secret live in HttpOnly cookies the browser attaches automatically; JS never sees
 // them (so XSS can't exfiltrate a token). Every request therefore sends `credentials: "include"` and NO
 // Authorization header. On unsafe methods we echo the double-submit CSRF token — the one cookie that IS readable
-// by JS — in the X-CSRF-Token header. A 401 on a normal request triggers a SINGLE, shared silent refresh
-// (rotating the access cookie) and one retry; concurrent 401s coalesce onto that one refresh so a multi-tab SPA
-// never fires overlapping /auth/refresh calls (which reuse-detection would treat as theft — reviewer LOW #5).
+// by JS — in the X-CSRF-Token header. A 401 on a normal request triggers a silent refresh (rotating the access
+// cookie) and one retry.
+//
+// Refresh coordination is TWO layers, because a naive per-tab guard is not enough (reviewer MEDIUM): the refresh
+// token is ONE-TIME-USE, so two tabs that both 401 and each POST /auth/refresh with the same pre-rotation cookie
+// would collide — one rotates, the other trips the backend's reuse-detection and the whole family is revoked,
+// logging BOTH tabs out. So:
+//   1. within a tab, `refreshInFlight` coalesces concurrent 401s onto one call; and
+//   2. across tabs, the Web Locks API serialises refreshes browser-wide, and a shared `localStorage` timestamp
+//      lets a tab that wakes just after another tab refreshed skip its own call (the cookies are already fresh in
+//      the shared jar). Serialisation guarantees each refresh presents the CURRENT token — never a stale one — so
+//      legitimate multi-tab use never looks like theft. The backend stays strict; the fix is purely client-side.
+// Where Web Locks is unavailable we degrade to per-tab single-flight (the pre-fix behaviour).
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8081";
 
@@ -56,26 +66,65 @@ function isAuthEndpoint(path: string): boolean {
   return path.startsWith("/auth/");
 }
 
-// Single-flight refresh: at most one /auth/refresh in flight; concurrent callers await the same promise.
+// Cross-tab freshness hint: after any tab successfully refreshes, it stamps `now` here. A tab that acquires the
+// refresh lock and sees a stamp newer than this window skips its own /auth/refresh — the shared cookie jar
+// already holds the rotated access cookie. Purely an optimisation; correctness comes from the lock serialisation.
+const LAST_REFRESH_KEY = "nirvet_last_refresh_ms";
+const REFRESH_FRESH_MS = 5_000;
+
+function refreshedRecently(): boolean {
+  try {
+    const t = Number(window.localStorage.getItem(LAST_REFRESH_KEY) || 0);
+    return t > 0 && Date.now() - t < REFRESH_FRESH_MS;
+  } catch {
+    return false;
+  }
+}
+function markRefreshed(): void {
+  try {
+    window.localStorage.setItem(LAST_REFRESH_KEY, String(Date.now()));
+  } catch {
+    /* storage disabled — the lock alone still serialises correctly */
+  }
+}
+
+// refreshOnce performs the actual rotation. It must run under the cross-tab lock (or the per-tab degrade path).
+async function refreshOnce(): Promise<boolean> {
+  // Another tab refreshed a moment ago → our cookies are already fresh; don't rotate again.
+  if (refreshedRecently()) return true;
+  try {
+    // /auth/refresh is a cookie-authenticated POST, so it is CSRF-protected like any other write — echo the
+    // double-submit token. (Missing this → 403 and a spurious logout.)
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const csrf = readCookie(CSRF_COOKIE_NAMES);
+    if (csrf) headers[CSRF_HEADER] = csrf;
+    const res = await fetch(`${API_BASE}/auth/refresh`, { method: "POST", credentials: "include", headers });
+    if (res.ok) markRefreshed();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Within-tab single-flight: concurrent 401s in THIS tab await one shared promise.
 let refreshInFlight: Promise<boolean> | null = null;
+
+// hasWebLocks narrows navigator.locks without pulling in a hard type dependency on the (recent) lib.dom entry.
+function hasWebLocks(): boolean {
+  return typeof navigator !== "undefined" && typeof (navigator as Navigator).locks?.request === "function";
+}
 
 function doRefresh(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
-        // /auth/refresh is a cookie-authenticated POST, so it is CSRF-protected like any other write — echo the
-        // double-submit token. (Missing this → 403 and a spurious logout.)
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        const csrf = readCookie(CSRF_COOKIE_NAMES);
-        if (csrf) headers[CSRF_HEADER] = csrf;
-        const res = await fetch(`${API_BASE}/auth/refresh`, {
-          method: "POST",
-          credentials: "include",
-          headers,
-        });
-        return res.ok;
-      } catch {
-        return false;
+        // Cross-tab serialisation: only one tab in the whole browser refreshes at a time; the rest queue on the
+        // lock and then short-circuit via refreshedRecently(). This is what prevents two tabs presenting the same
+        // one-time refresh token and tripping backend reuse-detection (→ family revoke → both tabs logged out).
+        if (hasWebLocks()) {
+          return await navigator.locks.request("nirvet-refresh", () => refreshOnce());
+        }
+        return await refreshOnce(); // no Web Locks → per-tab single-flight (pre-fix behaviour)
       } finally {
         // Clear AFTER settling so late arrivals during this tick still share it, but the next 401 re-refreshes.
         setTimeout(() => {

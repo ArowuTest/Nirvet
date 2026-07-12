@@ -114,6 +114,63 @@ func TestRefresh_AbsoluteFamilyCap(t *testing.T) {
 	}
 }
 
+func TestRefresh_RotationPreservesFamilyAnchor(t *testing.T) {
+	// Pins the exact invariant behind the absolute cap (refresh.go: successor carries the parent's
+	// family_started_at UNCHANGED). Without this, a future regression to time.Now() on the successor insert would
+	// silently make the 90-day cap slide forever and every other test would still pass.
+	s, db := resetSvc(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	uid, email := seedUser(t, db, tenantID, auth.RoleAnalystT1, "pw12345678", UserActive)
+	p := auth.Principal{UserID: uid, TenantID: tenantID, Role: auth.RoleAnalystT1, Email: email}
+
+	raw1, _, err := s.IssueRefresh(ctx, p)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	// Age the family to JUST under the cap (cap - 1h) so the original can still rotate, but is unmistakably old.
+	if e := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, ex := tx.Exec(ctx, `UPDATE refresh_tokens SET family_started_at = now() - ($1::interval - interval '1 hour') WHERE user_id=$2`,
+			absoluteRefreshFamilyTTL, uid)
+		return ex
+	}); e != nil {
+		t.Fatalf("age: %v", e)
+	}
+
+	// Rotate. The successor MUST inherit the aged anchor, not reset it to now().
+	_, raw2, _, err := s.RedeemRefresh(ctx, raw1)
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	// Directly read the successor's anchor (the unused row): its age must be ~cap (a now()-reset bug → age ~0).
+	var successorAgeSeconds float64
+	if e := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT EXTRACT(EPOCH FROM (now() - family_started_at)) FROM refresh_tokens WHERE user_id=$1 AND used_at IS NULL`, uid).
+			Scan(&successorAgeSeconds)
+	}); e != nil {
+		t.Fatalf("read successor anchor: %v", e)
+	}
+	// Expect ~ cap - 1h; anything below (cap - 2h) means the anchor was reset on rotation.
+	if successorAgeSeconds < absoluteRefreshFamilyTTL.Seconds()-2*3600 {
+		t.Fatalf("successor family_started_at was RESET on rotation (age=%.0fs, want ~%.0fs): the absolute cap would slide and never fire",
+			successorAgeSeconds, absoluteRefreshFamilyTTL.Seconds()-3600)
+	}
+
+	// Behavioural check (reviewer's suggestion): tip the successor's family past the cap → its redeem is rejected.
+	if e := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, ex := tx.Exec(ctx, `UPDATE refresh_tokens SET family_started_at = now() - ($1::interval + interval '1 day') WHERE user_id=$2`,
+			absoluteRefreshFamilyTTL, uid)
+		return ex
+	}); e != nil {
+		t.Fatalf("age successor past cap: %v", e)
+	}
+	if _, _, _, err := s.RedeemRefresh(ctx, raw2); err == nil {
+		t.Fatal("a rotated successor past the absolute cap must be rejected")
+	}
+}
+
 func TestRefresh_LogoutAllRevokesEveryFamily(t *testing.T) {
 	s, db := resetSvc(t)
 	ctx := context.Background()
