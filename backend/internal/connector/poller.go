@@ -9,6 +9,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/ArowuTest/nirvet/internal/platform/safe"
+	"github.com/google/uuid"
 )
 
 // Poller pulls telemetry from enabled Microsoft pull connectors on a schedule and
@@ -60,7 +61,38 @@ func (p *Poller) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// RunOnce polls every enabled pull connector once and returns the alerts ingested.
+// knownStreams maps a configured stream name → (canonical source key, its own checkpoint config key). LAUNCH #1:
+// a Microsoft connector can pull several independent Graph streams; each advances its own cursor. Code-owned
+// allowlist — an unknown stream name in config is ignored (never a raw source string reaching ingest).
+var knownStreams = map[string]struct{ source, checkpointKey string }{
+	"alerts":  {"microsoft-defender", "checkpoint"}, // legacy default; keeps the original `checkpoint` key
+	"signins": {"microsoft-entra-signin", "checkpoint_signins"},
+	"audit":   {"microsoft-entra-audit", "checkpoint_directory_audits"},
+	"risky":   {"microsoft-entra-risky", "checkpoint_risky"},
+}
+
+// connectorStreams reads the per-connector `streams` allowlist from config, defaulting to ["alerts"] so existing
+// Defender connectors are unchanged. Unknown names are dropped.
+func connectorStreams(cfg map[string]any) []string {
+	raw, ok := cfg["streams"].([]any)
+	if !ok || len(raw) == 0 {
+		return []string{"alerts"}
+	}
+	var out []string
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			if _, known := knownStreams[s]; known {
+				out = append(out, s)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return []string{"alerts"}
+	}
+	return out
+}
+
+// RunOnce polls every enabled pull connector once (all its configured streams) and returns the total ingested.
 func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 	pullers, err := p.repo.ListPullers(ctx)
 	if err != nil {
@@ -78,7 +110,6 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 		}
 		clientID, _ := pc.Config["client_id"].(string)
 		azTenant, _ := pc.Config["azure_tenant"].(string)
-		checkpoint, _ := pc.Config["checkpoint"].(string)
 
 		tokenURL := p.tokenURL
 		if tokenURL == "" {
@@ -88,41 +119,131 @@ func (p *Poller) RunOnce(ctx context.Context) (int, error) {
 		if graphURL == "" {
 			graphURL = "https://graph.microsoft.com/v1.0"
 		}
-
 		gc := newGraphClient(tokenURL, graphURL, clientID, string(secret), p.http)
-		alerts, err := gc.fetchAlerts(ctx, checkpoint)
-		if err != nil {
-			p.log.Warn("poller: fetch failed", "connector", pc.ID, "err", err)
-			_ = p.repo.UpdateCheckpoint(ctx, pc.TenantID, pc.ID, checkpoint, "degraded")
-			continue
-		}
-		newCheckpoint := checkpoint
-		for _, a := range alerts {
-			in := ingestion.IngestInput{
-				Source:   "microsoft-defender",
-				NativeID: a.ID,
-				Severity: a.Severity,
-				Data: map[string]any{
-					"title":           a.Title,
-					"category":        a.Category,
-					"deviceName":      a.DeviceName,
-					"accountName":     a.AccountName,
-					"mitreTechniques": a.MitreTechniques,
-					"createdDateTime": a.CreatedDateTime,
-				},
-			}
-			if _, err := p.ingest.Ingest(ctx, pc.TenantID, in); err != nil {
-				p.log.Warn("poller: ingest failed", "connector", pc.ID, "err", err)
+
+		for _, stream := range connectorStreams(pc.Config) {
+			meta := knownStreams[stream]
+			cp, _ := pc.Config[meta.checkpointKey].(string)
+			n, newCP, err := p.pollStream(ctx, pc.TenantID, gc, stream, meta.source, cp)
+			if err != nil {
+				// Degraded-not-dropped: record the per-stream degraded health at the unchanged cursor, so the
+				// next tick retries from the same watermark (no silent loss, no double-ingest).
+				p.log.Warn("poller: stream fetch failed", "connector", pc.ID, "stream", stream, "err", err)
+				_ = p.repo.UpdateStreamCheckpoint(ctx, pc.TenantID, pc.ID, meta.checkpointKey, cp, "degraded")
 				continue
 			}
-			if checkpointAfter(a.CreatedDateTime, newCheckpoint) {
-				newCheckpoint = a.CreatedDateTime
-			}
-			total++
+			_ = p.repo.UpdateStreamCheckpoint(ctx, pc.TenantID, pc.ID, meta.checkpointKey, newCP, "healthy")
+			total += n
 		}
-		_ = p.repo.UpdateCheckpoint(ctx, pc.TenantID, pc.ID, newCheckpoint, "healthy")
 	}
 	return total, nil
+}
+
+// pollStream fetches one stream since its checkpoint, ingests each item under the stream's canonical source, and
+// returns the count + advanced checkpoint. Each item's canonical fields are set by the registered source mapper
+// (Defender / Entra sign-in / audit / risky) — the poller only supplies the raw fields as Data.
+func (p *Poller) pollStream(ctx context.Context, tenantID uuid.UUID, gc *graphClient, stream, source, checkpoint string) (int, string, error) {
+	switch stream {
+	case "alerts":
+		alerts, err := gc.fetchAlerts(ctx, checkpoint)
+		if err != nil {
+			return 0, checkpoint, err
+		}
+		newCP, n := checkpoint, 0
+		for _, a := range alerts {
+			in := ingestion.IngestInput{Source: source, NativeID: a.ID, Severity: a.Severity, Data: map[string]any{
+				"title": a.Title, "category": a.Category, "deviceName": a.DeviceName,
+				"accountName": a.AccountName, "mitreTechniques": a.MitreTechniques, "createdDateTime": a.CreatedDateTime,
+			}}
+			if p.ingestOne(ctx, tenantID, in) {
+				n++
+				if checkpointAfter(a.CreatedDateTime, newCP) {
+					newCP = a.CreatedDateTime
+				}
+			}
+		}
+		return n, newCP, nil
+	case "signins":
+		items, err := gc.fetchSignIns(ctx, checkpoint)
+		if err != nil {
+			return 0, checkpoint, err
+		}
+		newCP, n := checkpoint, 0
+		for _, s := range items {
+			outcome := "success"
+			if s.Status.ErrorCode != 0 {
+				outcome = "failure"
+			}
+			in := ingestion.IngestInput{Source: source, NativeID: s.ID, Data: map[string]any{
+				"userPrincipalName": s.UserPrincipalName, "userId": s.UserID, "ipAddress": s.IPAddress,
+				"appDisplayName": s.AppDisplayName, "clientAppUsed": s.ClientAppUsed, "isInteractive": s.IsInteractive,
+				"outcome_raw": outcome, "failureReason": s.Status.FailureReason, "mfaAuthMethod": s.MfaDetail.AuthMethod,
+				"city": s.Location.City, "countryOrRegion": s.Location.CountryOrRegion,
+				"riskState": s.RiskState, "riskLevelDuringSignIn": s.RiskLevelDuringSignIn, "createdDateTime": s.CreatedDateTime,
+			}}
+			if p.ingestOne(ctx, tenantID, in) {
+				n++
+				if checkpointAfter(s.CreatedDateTime, newCP) {
+					newCP = s.CreatedDateTime
+				}
+			}
+		}
+		return n, newCP, nil
+	case "audit":
+		items, err := gc.fetchDirectoryAudits(ctx, checkpoint)
+		if err != nil {
+			return 0, checkpoint, err
+		}
+		newCP, n := checkpoint, 0
+		for _, a := range items {
+			targetUpn, targetName := "", ""
+			if len(a.TargetResources) > 0 {
+				targetUpn, targetName = a.TargetResources[0].UserPrincipalName, a.TargetResources[0].DisplayName
+			}
+			in := ingestion.IngestInput{Source: source, NativeID: a.ID, Data: map[string]any{
+				"activityDisplayName": a.ActivityDisplayName, "category": a.Category, "result": a.Result,
+				"initiatedByUpn": a.InitiatedBy.User.UserPrincipalName, "targetUpn": targetUpn,
+				"targetDisplayName": targetName, "activityDateTime": a.ActivityDateTime,
+			}}
+			if p.ingestOne(ctx, tenantID, in) {
+				n++
+				if checkpointAfter(a.ActivityDateTime, newCP) {
+					newCP = a.ActivityDateTime
+				}
+			}
+		}
+		return n, newCP, nil
+	case "risky":
+		items, err := gc.fetchRiskyUsers(ctx, checkpoint)
+		if err != nil {
+			return 0, checkpoint, err
+		}
+		newCP, n := checkpoint, 0
+		for _, u := range items {
+			in := ingestion.IngestInput{Source: source, NativeID: u.ID, Data: map[string]any{
+				"userPrincipalName": u.UserPrincipalName, "riskLevel": u.RiskLevel, "riskState": u.RiskState,
+				"riskDetail": u.RiskDetail, "riskLastUpdatedDateTime": u.RiskLastUpdatedDateTime,
+			}}
+			if p.ingestOne(ctx, tenantID, in) {
+				n++
+				if checkpointAfter(u.RiskLastUpdatedDateTime, newCP) {
+					newCP = u.RiskLastUpdatedDateTime
+				}
+			}
+		}
+		return n, newCP, nil
+	}
+	return 0, checkpoint, nil
+}
+
+// ingestOne ingests a single item; a per-item ingest error is logged and skipped (does not fail the stream or
+// advance its cursor past the failed item). Returns true on success.
+func (p *Poller) ingestOne(ctx context.Context, tenantID uuid.UUID, in ingestion.IngestInput) bool {
+	if _, err := p.ingest.Ingest(ctx, tenantID, in); err != nil {
+		p.log.Warn("poller: ingest failed", "source", in.Source, "err", err)
+		return false
+	}
+	return true
 }
 
 // checkpointAfter reports whether candidate is chronologically after current. R6: the

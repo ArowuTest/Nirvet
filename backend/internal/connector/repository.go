@@ -244,15 +244,23 @@ func (r *Repository) ListPullers(ctx context.Context) ([]PullerConfig, error) {
 	return out, err
 }
 
-// UpdateCheckpoint stores the poll checkpoint + health for a connector (tenant-scoped).
+// UpdateCheckpoint stores the (alerts) poll checkpoint + health for a connector (tenant-scoped).
 func (r *Repository) UpdateCheckpoint(ctx context.Context, tenantID, id uuid.UUID, checkpoint, health string) error {
+	return r.UpdateStreamCheckpoint(ctx, tenantID, id, "checkpoint", checkpoint, health)
+}
+
+// UpdateStreamCheckpoint stores a per-STREAM poll checkpoint + connector health (LAUNCH #1: one Microsoft
+// connector pulls several independent streams — alerts / signins / directory-audit / risky-users — each with its
+// own cursor). checkpointKey is code-controlled (a fixed stream→key allowlist in poller.go), passed as a bound
+// jsonb path element ($2) so it can never be injected even though it's not user input.
+func (r *Repository) UpdateStreamCheckpoint(ctx context.Context, tenantID, id uuid.UUID, checkpointKey, checkpoint, health string) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE connector_configs
-			    SET config = jsonb_set(config, '{checkpoint}', to_jsonb($2::text), true),
-			        health = $3, last_success = now()
+			    SET config = jsonb_set(config, ARRAY[$2::text], to_jsonb($3::text), true),
+			        health = $4, last_success = now()
 			  WHERE id = $1`,
-			id, checkpoint, health)
+			id, checkpointKey, checkpoint, health)
 		return err
 	})
 }

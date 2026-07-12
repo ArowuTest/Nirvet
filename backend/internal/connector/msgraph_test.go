@@ -80,3 +80,52 @@ func TestGraphClient_NextLinkHostPin(t *testing.T) {
 		}
 	})
 }
+
+// LAUNCH #1: the three new identity streams fetch + parse via the shared fetchPaged primitive (host-pin already
+// covered above via alerts). Each asserts the endpoint is hit and the typed fields land.
+func TestGraphClient_IdentityStreams(t *testing.T) {
+	tokenHandler := func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"access_token":"graph-token","expires_in":3600}`)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", tokenHandler)
+	mux.HandleFunc("/auditLogs/signIns", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"value":[{"id":"si-1","userPrincipalName":"alice@x","ipAddress":"203.0.113.9","status":{"errorCode":50126,"failureReason":"bad password"},"location":{"countryOrRegion":"RU"}}]}`)
+	})
+	mux.HandleFunc("/auditLogs/directoryAudits", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"value":[{"id":"da-1","activityDisplayName":"Add member to role","category":"RoleManagement","result":"success","initiatedBy":{"user":{"userPrincipalName":"admin@x"}},"targetResources":[{"userPrincipalName":"victim@x"}]}]}`)
+	})
+	mux.HandleFunc("/identityProtection/riskyUsers", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"value":[{"id":"ru-1","userPrincipalName":"carol@x","riskLevel":"high","riskState":"atRisk"}]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := newGraphClient(srv.URL+"/token", srv.URL, "cid", "secret", srv.Client())
+	ctx := context.Background()
+
+	sis, err := c.fetchSignIns(ctx, "")
+	if err != nil || len(sis) != 1 || sis[0].UserPrincipalName != "alice@x" || sis[0].Status.ErrorCode != 50126 {
+		t.Fatalf("fetchSignIns: err=%v out=%+v", err, sis)
+	}
+	das, err := c.fetchDirectoryAudits(ctx, "")
+	if err != nil || len(das) != 1 || das[0].InitiatedBy.User.UserPrincipalName != "admin@x" || len(das[0].TargetResources) != 1 {
+		t.Fatalf("fetchDirectoryAudits: err=%v out=%+v", err, das)
+	}
+	rus, err := c.fetchRiskyUsers(ctx, "")
+	if err != nil || len(rus) != 1 || rus[0].RiskLevel != "high" {
+		t.Fatalf("fetchRiskyUsers: err=%v out=%+v", err, rus)
+	}
+}
+
+// connectorStreams: default is alerts-only (back-compat); unknown names dropped; valid names kept.
+func TestConnectorStreams(t *testing.T) {
+	if got := connectorStreams(nil); len(got) != 1 || got[0] != "alerts" {
+		t.Errorf("nil config: got %v want [alerts]", got)
+	}
+	if got := connectorStreams(map[string]any{"streams": []any{"signins", "audit", "bogus"}}); len(got) != 2 || got[0] != "signins" || got[1] != "audit" {
+		t.Errorf("allowlist: got %v want [signins audit]", got)
+	}
+	if got := connectorStreams(map[string]any{"streams": []any{"bogus"}}); len(got) != 1 || got[0] != "alerts" {
+		t.Errorf("all-unknown falls back to [alerts]: got %v", got)
+	}
+}
