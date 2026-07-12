@@ -3120,3 +3120,86 @@ provider-bound payload), fail-safe masks on broken config, stable-placeholder gr
 audited tenant choice, no cleartext in audit, RLS isolation of the policy table. Single focused commit (chokepoint +
 Redactor + config + audit + CI fence), green. Reviewer reviews at the commit boundary. Building against verified
 structure. Nothing pushed.**
+
+*(LANDED 5715fea — awaiting reviewer landing round.)*
+
+---
+
+## Gate — LAUNCH #5 HEAVY-2: Customer-approval for destructive SOAR actions — #188 — DESIGN REVIEW (pre-code) — Jul 12 2026
+
+**Why this is HEAVY.** This lets a party OUTSIDE the platform authorize a destructive containment (isolate host,
+disable user). Get the authorization model wrong and either a replayed link double-fires containment, or a customer
+approves a business-critical action alone. Owner intent (verbatim earlier): route destructive-approval flexibly —
+to a **customer/agency-appointed approver OR the assigned platform analyst, switchable per customer** — but BOTH
+must flow through the SAME catalog-risk + four-eyes + approver-rank gate; neither is a bypass. Owner confirmed
+**launch** (Jul 12).
+
+**Grounding (source-verified, Jul 12).**
+- Approval today (`soar/service.go` `approveFor`): (1) run must be `pending_approval`; (2) `canApprove(run, userID)`
+  enforces four-eyes — `run.RequestedBy != nil && *RequestedBy == approver` is rejected (service.go:318); (3)
+  per-step `requiredApproverRank(risk, configuredApproverRole)` — base analyst_t3 (high) / soc_manager (higher),
+  raised by the tenant floor; (4) `claimPendingTx` elects exactly one approver (concurrent-safe). **A step whose
+  catalog risk is `business_critical` is added `block:true` and NEVER executes** (catalog.go:42) — the "always
+  skipped" state customer-approval lifts to "customer-authorizable".
+- **The reviewer's must-add is confirmed:** `notify/links.go` signs `tenant|resource|exp` with HMAC-SHA256 and
+  `VerifyLink` only checks signature + expiry — it is **stateless, NOT single-use**. A valid approval link is
+  REPLAYABLE until expiry ⇒ a replayable authorization (approve the same containment twice). This MUST be fixed
+  before a customer link can approve containment.
+- Migrations at 0113; next = 0114.
+
+**In scope.**
+- **A. Per-customer authority config (no-hardcoding).** `customer_approval_policy` (tenant NULL=global default):
+  `authority` ∈ {`platform_analyst` (default — current behavior), `customer_approver`, `both_required`};
+  `customer_approver` contact (verified email / provisioned read-model portal user); `bc_customer_authorizable`
+  bool (default FALSE). Seeded global default = `platform_analyst` ⇒ **existing behavior byte-for-byte until a
+  tenant opts in**. Platform-admin/tenant-admin set; tenant may only tighten (same as SOAR/detection config).
+- **B. Single-use, run-bound approval link (the must-add).** New `approval_link` table: token HASH (never the raw
+  token), `run_id` (bound to the SPECIFIC run — not a coarse resource), `tenant_id`, `expires_at`, `consumed_at`.
+  Verify = signature valid + not expired + **`consumed_at IS NULL`** + tenant match + run match; consumption is an
+  atomic `UPDATE … SET consumed_at=now() WHERE token_hash=$1 AND consumed_at IS NULL` (RowsAffected==1 ⇒ the one
+  winner) in the SAME tx as the approval. A replay after consume, a foreign-tenant, or a wrong-run token is
+  rejected. Short TTL; regenerating supersedes (old link consumed/void). The generic stateless `GenerateLink`
+  stays for READ-only uses; destructive approval uses ONLY this path.
+- **C. One gate, two approver identities.** Whether the approver is the assigned **platform analyst** (a platform
+  user with a role rank → the existing `approveFor` path, unchanged) OR the **customer approver** (authenticates
+  via the single-use run-bound link or a provisioned portal session), BOTH clear the SAME checks: run
+  `pending_approval` + four-eyes + catalog-risk authorization + claim-then-act. The customer approver's authority
+  to clear a non-business-critical step comes from the tenant designating them in the policy.
+- **D. business_critical → customer-authorizable, but NEVER customer-alone.** When `authority=both_required` (or a
+  `business_critical` step under `customer_approver` with `bc_customer_authorizable=true`), execution requires BOTH
+  a customer approval AND an internal approver of ≥ max(configured floor, soc_manager) — two DISTINCT principals.
+  The customer approval does NOT fill the internal four-eyes slot; the internal approver must still differ from the
+  requester. A run with `RequestedBy IS NULL` cannot be customer-approved (fail-closed — no nil-requester hole).
+
+**Invariants honoured.**
+- *No replay:* single-use consumed-state + run-bound + tenant-match; consumption atomic in the approval tx.
+- *Never customer-alone for business_critical:* both-principal requirement structurally enforced; customer path
+  cannot satisfy the internal floor; four-eyes preserved on the internal principal (requester≠approver); nil
+  requester ⇒ reject.
+- *One gate, no bypass:* customer and analyst paths converge on the same catalog-risk + rank + claim-then-act
+  checks; a customer can never approve above the risk their policy authorizes.
+- *Default preserves behavior:* seeded `platform_analyst` global ⇒ no tenant sees any change until opt-in.
+- *Reject halts:* a customer (or analyst) rejection marks destructive steps skipped and the run rejected (mirrors
+  #187 denied-approval-halts) — audited.
+- *Audit + isolation:* both approvals audited (who, path, link id, customer identity); new tables RLS ENABLE+FORCE;
+  from-zero migration validated. No hardcoding — authority + floor are config.
+
+### Open questions for the reviewer's pre-code pass
+1. **Customer approver identity** — support BOTH a single-use signed link (email, lightweight) AND a provisioned
+   read-model portal session (customer user), or link-only for launch? (Leaning both; portal session reuses the
+   #166 session-auth + read-model audience.)
+2. **`both_required` ordering** — order-independent (run executes only once BOTH approvals are recorded, each
+   four-eyes-clean) vs a fixed internal-then-customer order? (Leaning order-independent.)
+3. **Internal floor for BC** — always max(configured floor, soc_manager), never below the Class-4 base? (Leaning
+   yes — a tenant floor may raise but never lower it.)
+4. **Link TTL + regeneration** — short TTL (e.g. 24h) and regeneration supersedes any prior live link for that run?
+   (Leaning yes.)
+5. **Assigned-analyst source** — reuse an existing per-tenant assignment, or add an `assigned_analyst` field? (Need
+   to confirm where "the assigned platform analyst" is recorded; may reuse the oversight/read-model assignment.)
+
+**→ HEAVY (external party authorizes destructive action + replay-safe link + two-principal BC gate). Dedicated
+adversarial landing round: replayed/after-consumed/foreign-tenant/wrong-run link rejected; customer-alone cannot
+fire business_critical; nil-requester rejected; four-eyes holds on the internal principal; default policy preserves
+current behavior; reject halts + skips destructive; RLS isolation. Sub-commits (link-hardening → authority config +
+gate → BC two-principal), each green. Reviewer reviews at boundaries. Building against verified structure. Awaiting
+reviewer pre-code pass before building. Nothing pushed.**
