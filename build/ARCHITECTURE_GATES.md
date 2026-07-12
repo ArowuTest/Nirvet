@@ -3203,3 +3203,71 @@ fire business_critical; nil-requester rejected; four-eyes holds on the internal 
 current behavior; reject halts + skips destructive; RLS isolation. Sub-commits (link-hardening → authority config +
 gate → BC two-principal), each green. Reviewer reviews at boundaries. Building against verified structure. Awaiting
 reviewer pre-code pass before building. Nothing pushed.**
+
+*(LANDED a7c9db0 sub1 + c6a0a89 sub2/3 — reviewer GREENLIT pre-code; awaiting landing round. BC-execution-lifting deferred.)*
+
+---
+
+## Gate — LAUNCH #5 HEAVY-3: Retention enforcement (telemetry deletion) — #188 — DESIGN REVIEW (pre-code) — Jul 12 2026
+
+**Why this is HEAVY — and LAST.** This is the ONLY launch item that DELETES customer telemetry. A bug here is
+unrecoverable data loss (or, inversely, a compliance failure by keeping data past its retention). The reviewer has
+the deepest criteria loaded for exactly this. Owner clarification stands: build FULLY, ship with the safe default
+(dry-run/report-only until a tenant explicitly enables live deletion).
+
+**Grounding (source-verified, Jul 12).**
+- `entitlements.retention_days` (mig 0005, DEFAULT 90) — the per-tenant retention window.
+- `tenants.legal_hold` boolean (mig 0073, DEFAULT false) + tenant status `legal_hold` (mig 0028). The offboard
+  purge SD function (0073) already REFUSES when `legal_hold` — the exact preservation pattern to reuse.
+- Telemetry stores: Postgres `raw_events` + `events` (mig 0001, `created_at`/`received_at`); the ClickHouse
+  EventStore already has PARTITION BY + TTL tiered retention (#160) — so CH ages out by its own TTL, and the
+  Postgres sweeper is the new piece. Evidence blobs live in blobstore (referenced by evidence packs — NOT swept
+  by retention; evidence is preserved, only raw/normalized telemetry ages out).
+- offboard purge (0073/0075) dynamically enumerates tenant tables — a DIFFERENT operation (whole-tenant, from
+  `exported` state). Retention is per-tenant, ongoing, telemetry-only. They must NOT collide (see invariants).
+
+**In scope.**
+- **A. Config (no-hardcoding; safe default).** New `retention_policy` (tenant NULL=global default): `enabled` bool
+  DEFAULT **false** (dry-run/report-only until explicitly enabled), plus the window comes from
+  `entitlements.retention_days`. Seeded global default = disabled. A `retention_sweep_log` (append-only: tenant,
+  store, cutoff, candidate_count, deleted_count, dry_run, at) records EVERY sweep — including dry-runs — so a
+  tenant can see what WOULD be deleted before enabling.
+- **B. The sweeper (fail-safe toward KEEPING).** A panic-guarded reaper (like `StartSLASweeper`) that, per tenant:
+  (1) SKIP entirely if `legal_hold` OR status `legal_hold` (preservation wins — never delete under hold); (2)
+  resolve `retention_days` — if NULL/≤0/unreadable → **KEEP** (never delete on a missing/broken window); (3)
+  compute `cutoff = now - retention_days`; (4) if policy disabled → COUNT candidates and write a dry-run log row
+  (no delete); (5) if enabled → delete `raw_events`/`events` older than cutoff **in bounded batches** under
+  `WithTenant` (RLS confines to the tenant), audited, with the deleted count logged. Under-delete-never-over: a
+  batch error aborts that tenant's sweep (partial keep) rather than risking over-deletion.
+- **C. Ordering + isolation.** Retention deletes ONLY `raw_events`/`events` (telemetry). It does NOT touch alerts,
+  incidents, evidence, audit, or any derived record (those have their own lifecycle). ClickHouse ages out via its
+  existing TTL (no double-drive). Per-tenant, RLS-confined, so one tenant's sweep can never reach another's rows.
+
+**Invariants honoured.**
+- *Legal-hold FIRST:* a held tenant is skipped before any cutoff math — preservation always wins.
+- *Fail-safe KEEPS:* missing/broken/zero retention window ⇒ keep, never delete. Disabled policy ⇒ dry-run only.
+- *No over-deletion:* bounded batches; a batch error aborts (keeps the rest); only telemetry tables in scope;
+  cutoff is `< created_at` strictly.
+- *No offboard collision:* retention is telemetry-only + ongoing; it shares NO code path with the whole-tenant
+  offboard purge (which is gated on `exported` state + its own retention). Both independently honour legal_hold.
+- *Tenant isolation + audit + evidence-preservation:* RLS FORCE on new tables; every sweep (incl. dry-run) logged;
+  evidence blobs never swept. from-zero migration validated. No hardcoding — enable + window are config.
+
+### Open questions for the reviewer's DEEPEST pre-code pass
+1. **Window source** — read `retention_days` straight from `entitlements`, or mirror into `retention_policy` so a
+   tenant can set a SHORTER retention than their entitlement (data-minimization)? (Leaning: entitlement is the
+   ceiling; policy may only set a SHORTER window, never longer — tighten-only, same as SOAR/AI config.)
+2. **Deletion timestamp** — age by `created_at`/`received_at` (ingest time) — confirm that's the retention clock,
+   not event `occurred_at`. (Leaning ingest time — deterministic, monotonic.)
+3. **Dry-run visibility** — a per-tenant "what would be deleted" endpoint/log is enough for launch, or do we need a
+   preview API returning sample rows? (Leaning: counts + log for launch; sample preview = follow-on.)
+4. **Batch size + cadence** — bounded batch (e.g. 10k) on a daily-ish cadence; confirm the reaper interval and that
+   a long sweep yields between batches (doesn't hold a long tx). (Leaning: small batches, frequent ticks.)
+5. **ClickHouse** — confirm we rely ENTIRELY on the existing CH TTL (#160) and the Postgres sweeper does NOT touch
+   CH (no cross-store delete), so there's one owner per store. (Leaning yes — no double-drive.)
+
+**→ HEAVY (the ONLY data-DELETING launch item; deepest adversarial round). Landing round: legal-hold skips deletion;
+missing/zero window keeps; disabled policy only dry-runs (no delete); enabled deletes only telemetry past cutoff in
+bounded batches; never touches alerts/incidents/evidence/audit; per-tenant RLS isolation; every sweep logged. Built
+as focused sub-commits (config + dry-run log → enabled sweeper), each green. Reviewer runs the deepest pass.
+Awaiting reviewer pre-code pass before building. Nothing pushed.**
