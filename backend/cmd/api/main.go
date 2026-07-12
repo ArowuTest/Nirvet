@@ -374,7 +374,11 @@ func main() {
 	reportingH := reporting.NewHandler(reportingSvc)
 	// §6.13 #125 report export (JSON/CSV/XLSX). Generation under WithTenant + hard caps; formula-injection neutralized
 	// at the serializer; download is a session-authorized GET (not a bearer link); every generate/download audited.
-	reportExportH := reporting.NewReportHandler(reporting.NewReportService(reporting.NewReportRepository(db), blobs, reportingSvc))
+	// #188 regulatory breach report reads incident content through a narrow adapter (reporting stays decoupled from
+	// the incident package — no import cycle; the reader runs under WithTenant so RLS confines it).
+	reportExportH := reporting.NewReportHandler(
+		reporting.NewReportService(reporting.NewReportRepository(db), blobs, reportingSvc).
+			WithBreachSource(breachIncidentAdapter{inc: incidentSvc}))
 	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
 
 	// --- bootstrap first-run provider tenant + platform admin ---
@@ -747,6 +751,8 @@ func main() {
 	// §6.13 #125 report export (REP-007 JSON/CSV/XLSX). Generate under tenant scope + caps; download is a
 	// session-authorized GET (RLS-confined), response hardened; every generate/download audited (REP-008).
 	mux.Handle("POST /reports", provider(reportExportH.Create))
+	// #188 regulatory breach-notification report — a compliance-sensitive per-incident artifact, gated at manager.
+	mux.Handle("POST /reports/breach", manager(reportExportH.Breach))
 	mux.Handle("GET /reports/{id}", provider(reportExportH.Get))
 	mux.Handle("GET /reports/{id}/download", provider(reportExportH.Download))
 	// compliance (§6.14): config-driven frameworks + real per-tenant assessment; manual override is senior.
@@ -968,4 +974,32 @@ func (a caseJournalAdapter) CaseJournal(ctx context.Context, tenantID, incidentI
 		out = append(out, investigation.CaseJournalEntry{At: e.At, Author: e.Author, Kind: e.Kind, Visibility: e.Visibility, Note: e.Note})
 	}
 	return out, nil
+}
+
+// breachIncidentAdapter adapts incident.Service to reporting.BreachIncidentReader for the #188 regulatory breach
+// report, projecting the incident (read tenant-scoped under RLS) into the reporting-owned shape so reporting stays
+// free of an incident import.
+type breachIncidentAdapter struct{ inc *incident.Service }
+
+func (a breachIncidentAdapter) BreachIncident(ctx context.Context, tenantID, incidentID uuid.UUID) (reporting.BreachIncident, error) {
+	i, err := a.inc.Get(ctx, tenantID, incidentID)
+	if err != nil {
+		return reporting.BreachIncident{}, err // not-found on foreign/absent id
+	}
+	return reporting.BreachIncident{
+		ID:             i.ID,
+		Title:          i.Title,
+		Severity:       i.Severity,
+		Category:       i.Category,
+		Stage:          string(i.Stage),
+		CreatedAt:      i.CreatedAt,
+		AcknowledgedAt: i.AcknowledgedAt,
+		ClosedAt:       i.ClosedAt,
+		Disposition:    i.Disposition,
+		RootCause:      i.RootCause,
+		Impact:         i.Impact,
+		ActionsTaken:   i.ActionsTaken,
+		LessonsLearned: i.LessonsLearned,
+		CustomerAck:    i.CustomerAck,
+	}, nil
 }

@@ -40,6 +40,34 @@ func (h *ReportHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, rep)
 }
 
+type breachReq struct {
+	Incident string `json:"incident"`
+	Format   string `json:"format"`
+}
+
+// Breach handles POST /reports/breach — generate a regulatory breach-notification report for one incident in the
+// caller's tenant. The incident id comes from the JSON body; the service reads it under WithTenant so RLS confines
+// the lookup (a foreign-tenant id resolves to not-found).
+func (h *ReportHandler) Breach(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in breachReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	incidentID, err := uuid.Parse(in.Incident)
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	rep, err := h.svc.GenerateBreachReport(r.Context(), p, incidentID, Format(in.Format))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, rep)
+}
+
 func reportID(r *http.Request) (uuid.UUID, error) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {

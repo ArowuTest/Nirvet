@@ -1477,6 +1477,26 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /reports/breach:
+    post:
+      tags: [reports]
+      summary: Generate a regulatory breach-notification report for one incident (manager+)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [incident, format]
+              properties:
+                incident: { type: string, format: uuid, description: incident id in the caller's tenant }
+                format: { type: string, enum: [json, csv, xlsx, pdf] }
+      responses:
+        '201': { description: report record created }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '404': { description: incident not found in tenant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /reports/{id}:
     get:
       tags: [reports]

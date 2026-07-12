@@ -141,7 +141,8 @@ type ReportService struct {
 	repo     *ReportRepository
 	blobs    blobstore.Store
 	content  *Service
-	capsOnce *Limits // optional override of the DB-loaded caps (config/test seam)
+	breach   BreachIncidentReader // optional #188 incident reader for regulatory breach reports (nil ⇒ unavailable)
+	capsOnce *Limits              // optional override of the DB-loaded caps (config/test seam)
 }
 
 // NewReportService builds the service.
@@ -179,14 +180,19 @@ func (rs *ReportService) Generate(ctx context.Context, p auth.Principal, typ str
 		_ = rs.repo.MarkFailed(ctx, p.TenantID, id, err.Error())
 		return nil, httpx.ErrInternal("report assembly failed")
 	}
-	// Hard caps BEFORE serialize/store (refinement #5).
+	return rs.finalizeReport(ctx, p, id, ds, format, lim)
+}
+
+// finalizeReport caps → serialize/render → byte-cap → store → mark-ready → audit → return, the shared tail for
+// every report type. PDF goes through the fenced pdfrender sub-package; all other formats through the serializer
+// choke point (both bounded by the row/cell caps above and the byte cap here).
+func (rs *ReportService) finalizeReport(ctx context.Context, p auth.Principal, id uuid.UUID, ds Dataset, format Format, lim Limits) (*Report, error) {
 	if len(ds.Rows) > lim.MaxRows || len(ds.Rows)*len(ds.Columns) > lim.MaxCells {
 		_ = rs.repo.MarkFailed(ctx, p.TenantID, id, "report exceeds row/cell ceiling")
 		return nil, httpx.ErrBadRequest("report exceeds the configured row/cell ceiling")
 	}
-	// PDF is rendered by the fenced pdfrender sub-package (deterministic, zero-egress); all other formats go
-	// through the serializer choke point. Both are bounded by the caps above (rows/cells) and the byte cap below.
 	var data []byte
+	var err error
 	if format == FormatPDF {
 		data, err = renderReportPDF(ds)
 	} else {
