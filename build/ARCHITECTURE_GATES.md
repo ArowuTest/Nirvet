@@ -2663,3 +2663,174 @@ hierarchies.
 
 **→ Awaiting reviewer pre-code pass. No code until greenlit. Builds on the cleared MA-4 posture primitive +
 existing organisation/billing_account registries. Nothing pushed; HEAD 2ac33b0 local.**
+
+## Gate — customer read-model SLICE B: exec / evidence / SOAR / compliance / asset projections — DESIGN REVIEW (pre-code) — Jul 12 2026
+
+**SRS grounding.** Extends the audience read-model (Slice A: incidents+alerts+regulator rollups, migs 0101-0103,
+CI fence `check-audience-projection.sh`) to the remaining customer-facing surfaces the SRS entitles: UI-002/004
+(customer + executive portals), REP-001/005 (customer + executive reports), REP-006 (regulatory evidence packs),
+COMP-008 (audit-readiness posture the customer/regulator may see), CASE-008 (chain-of-custody evidence), and the
+SOAR "what was done to protect me" transparency implied by SOAR-006 audit + COMM-003 customer-facing response
+records. Same enforcement pattern as Slice A; this is depth, not a new mechanism.
+
+**The four invariants from the Slice A review (`NIRVET_CUSTOMER_READ_MODEL_REVIEW.md`) bind EVERY new projection —
+restated so this slice cannot regress them:**
+1. **Positive-allowlist projection structs only** — each new view is a DISTINCT type naming only exposed fields,
+   never the domain entity with json-omit. A test asserts each is its own type, not the entity aliased.
+2. **Mandatory CI-fenced audience chokepoint** — every new customer/exec/regulator route is served ONLY by the
+   readmodel handler and rides the `customerRead(...)` / (new) `execRead(...)` / `regulatorRead(...)` chains;
+   `check-audience-projection.sh` is EXTENDED to the new route prefixes so a raw-entity handler on them fails the
+   build. Can't-not-project.
+3. **Net-widening is the danger zone** — every endpoint this slice opens to a non-provider audience gets an
+   exhaustive per-resource×audience adversarial matrix, called via the API as each principal (customer_viewer,
+   customer_admin, exec-mode, org_sub_admin, payer, and a wrong-tenant/other-account principal → zero rows).
+4. **Regulator = metadata-by-construction, grant-scoped, counts-only** — any regulator-facing addition is a
+   struct that PHYSICALLY cannot hold content/PII, fed by a bounded SECURITY DEFINER fn (fail-closed to zero
+   rows on empty scope), account/org-scoped from the authenticated principal — never a client-supplied id.
+
+**In scope (Slice B).**
+- **Executive rollup [E — view-mode on `customer_admin`, ZERO added authority].** A pure read projection:
+  tenant-level open/closed incident counts, SLA adherence %, top categories, and the compliance-posture headline
+  (framework score + met/partial/gap counts). Composed from EXISTING aggregates (`reporting.Summary`,
+  `incident` SLA tallies, `compliance.Assess`) — no new authority, no new write. **Composite/forward risk
+  scoring + sector benchmark = V2** (deferred; the SRS's REP-005 exec depth needs a scoring model we don't have).
+- **Customer evidence-pack access [C] — 🔴 REVISED per reviewer pre-code MUST-FIX (do NOT reuse the provider
+  pack).** The existing `GET /incidents/{id}/evidence-pack` is the PROVIDER/REGULATOR artifact and is **NOT
+  customer-safe** — verified at source it bundles the FULL internal timeline (`evidence/service.go:91` calls
+  `incidents.Timeline`, not a customer-timeline), full `alert.Alert` entities (confidence/MITRE/actor_ref/
+  detection ids — the exact fields `CustomerAlertView` strips), raw `NormalizedEvent`s, and the audit trail with
+  internal analyst identities (`GeneratedBy: p.Email`, `pack.go:31-37`). A double access-gate controls WHETHER a
+  customer gets it, not WHAT'S IN IT — exposing it would leak internal notes, detection internals, raw telemetry,
+  and analyst identities, undoing Slice A. So Slice B builds a **SEPARATE, audience-PROJECTED customer evidence
+  pack, then Ed25519-signs THAT** (safety is per-field, not per-artifact — same class as RM-1):
+    - Timeline → customer-visible entries only (Slice A's `ProjectIncidentForCustomer` / customer-timeline
+      filter), NEVER the full timeline.
+    - Alerts → the `CustomerAlertView` projection, never `alert.Alert`.
+    - Events → **OMIT raw events** (Slice A's ratified decision: raw telemetry = default-NEVER to customers); a
+      policy-gated redacted subset only if ever, never the raw row.
+    - Audit → strip / pseudonymise internal analyst identities (no `analyst@…`).
+    - Assets → the customer asset summary projection.
+  Built in the readmodel package from the projection funcs (stays inside the audience chokepoint), row-gated by
+  `IncidentCustomerVisible` AND `disclose_evidence_pack` (default off), download session-authorized + RLS-confined
+  (reuse Reporting slice A's download-authz; NOT a bearer link), audited (REP-008 class).
+- **SOAR response read-view [C/E].** Positive-allowlist projection of SOAR runs whose target is the customer's
+  own tenant: action LABEL (from the §9.5-classed catalog), status, at-time, and a **GENERIC outcome only
+  (`success`/`failed`/`reversed`) — never internal failure detail** (e.g. "failed: connector auth expired" leaks
+  infra). ABSENT by construction: executor internals, vendor/connector identity + creds, approver identities,
+  playbook graph, risk-class internals, raw target refs beyond the customer's own asset. **READ ONLY — the
+  customer approve/authorize loop is invariant 7 (OUT of this slice; it is a separate authority gate).**
+- **Compliance posture projection [C/O].** Customer view = their framework score + control-status rollup
+  (met/partial/gap counts + last-assessed), NOT the internal signal-resolver detail. Regulator view = the
+  metadata-by-construction rollup across grant-scoped tenants (score distributions + counts only), via a bounded
+  SD fn mirroring the incident/alert regulator rollups.
+- **Asset summary projection [C].** The customer's own inventory summary: counts by criticality, crown-jewel
+  count, open-vuln counts by severity. ABSENT: per-asset enrichment internals, confidence-source detail,
+  cross-tenant anything.
+
+**Data-model additions (minimal — Slice B mostly PROJECTS existing rows).**
+- Extend `disclosure_policy` with fail-closed (default FALSE) flags: `disclose_soar_actions`,
+  `disclose_compliance_detail`, `disclose_evidence_pack`. Backfill INTERNAL (invariant 4). These only WIDEN
+  WITHIN THE SAFE ENVELOPE (invariant 6 — the projection structs physically lack internal fields regardless).
+- One new bounded SD fn `compliance_rollup_for_tenants(uuid[])` (metadata-only: framework_key, score, status
+  counts) — REVOKE PUBLIC + GRANT nirvet_app + `SET search_path=public`, fail-closed to zero rows, CI-guarded by
+  `check-security-definer-revoke.sh`. No new content table.
+
+**Invariants honoured.** Tenant isolation (customer/exec paths ride per-tenant RLS under `WithTenant`; regulator
+path via the bounded SD fn only). Authority-to-act: NONE added — exec/SOAR views are read-only, approve-loop
+excluded. Audit: evidence-pack + regulator reads audited (reuse REP-008 / `posture.fleet_read` classes). DoD:
+unit tests (allowlist-type assertions, disclosure fail-closed), DB-gated integration (adversarial audience
+matrix), OpenAPI + fence extension.
+
+**Deferred (tracked, not code TODOs).** Composite/forward executive risk scoring + sector benchmark (V2, needs a
+scoring model); per-policy raw-telemetry opt-in to customers (reviewer decision #2 = default NEVER; not built);
+the customer action-approval authority loop (invariant 7 — separate gate, intersects SOAR authority + the STUB
+signed-URL loop).
+
+### Open questions for the reviewer's pre-code pass
+1. **Exec audience gate** — reviewer answer #1 was "view-mode on `customer_admin`, zero added authority." Confirm
+   a thin `execRead(...)` chain (role floor `customer_admin`, projection-only) vs a distinct read-only
+   `customer_exec` role (cleaner separation-of-duties for accreditation, but net-new role). Leaning: `execRead`
+   on `customer_admin` for launch, flag `customer_exec` for the accreditation conversation.
+2. **Evidence-pack customer exposure** — confirm the row-gate is exactly Slice A's `IncidentCustomerVisible`
+   (customer sees the pack iff they can see the incident) AND behind `disclose_evidence_pack` (default off), so
+   an operator opt-in is required even for a visible incident? (Leaning yes — double gate, fail-closed.)
+3. **SOAR read-view scope** — project ALL runs targeting the tenant, or only those whose action class is
+   customer-relevant (e.g. contain/notify/disable-user) and status terminal? (Leaning: terminal-status +
+   customer-safe action labels only, to avoid exposing in-flight internal response choreography.)
+4. **Regulator compliance rollup** — counts + score distribution only, no per-control rows even in aggregate,
+   confirmed metadata-by-construction? (Leaning yes — mirror the incident/alert rollup exactly.)
+
+### 🟢 REVIEWER PRE-CODE VERDICT (Fable-5, Jul 12) — GREENLIT with 1 MUST-FIX + 3 refinements (folded above)
+- **MUST-FIX (folded):** customer evidence pack = a SEPARATE audience-projected + Ed25519-signed pack, NOT the
+  provider pack (source-verified over-disclosure: full timeline / raw alerts / raw events / analyst identities).
+- **Refinements (folded):** SOAR outcome generic (`success/failed/reversed`, no internal failure detail); each
+  Exec/SOAR/Compliance/Asset view is a DISTINCT allowlist struct verified by Slice A's `assertExactFields`
+  regression guard (not a denylist).
+- **Adversarial landing matrix MUST additionally assert (called via API as `customer_viewer`):** (a) an
+  internal-visibility timeline entry NEVER appears in the customer pack; (b) a raw event NEVER appears in the
+  customer pack. These two are the specific leaks the MUST-FIX closes — test them, don't just review them.
+- **Sequencing:** Slice B is net-new customer AND regulator read surface = highest over-disclosure risk on the
+  platform → it does NOT skip its own adversarial security LANDING pass (same as Slice A) before it is "done",
+  even though it builds now. My 4 default answers to the open questions all AGREED by the reviewer.
+
+**→ GREENLIT with the must-fix folded. Build inside the cleared Slice A audience chokepoint + CI fence; customer
+pack projected-then-signed in the readmodel package; no new content store. Landing pass required. Nothing pushed.**
+
+## Gate — LAUNCH #1: Microsoft ingestion breadth (Entra sign-in + M365 directory audit + risky-users) — DESIGN REVIEW (pre-code) — Jul 12 2026
+
+**Grounding (backlog, source-verified).** MVP "Microsoft Integrations" epic — US-030 (Entra sign-in logs),
+US-029 (M365 audit log), ING-001/004. **Current state (verified `msgraph.go:104`): the poller fetches ONLY
+`/security/alerts_v2`** — pre-formed Defender alerts. There is NO raw identity/audit telemetry, which **starves
+the MVP identity detections** (MFA-fatigue, impossible-travel, risky-sign-in) — they have no source events to
+evaluate. This is the #1 launch build; it also feeds LAUNCH #2 (stateful detection) + #3 (content).
+
+**In scope.**
+- Extend `graphClient` with per-stream fetchers, generalising the existing paged, **host-pinned** (C-3),
+  bearer-auth, 429-backoff fetch loop of `fetchAlerts`: `fetchSignIns` (`/auditLogs/signIns`, `$filter` on
+  `createdDateTime gt <cp>`), `fetchDirectoryAudits` (`/auditLogs/directoryAudits`, `activityDateTime`),
+  `fetchRiskyUsers` (`/identityProtection/riskyUsers`, delta on `riskLastUpdatedDateTime`). Same host-pin +
+  bounded-pages + $top caps.
+- **Normalise each stream to CANONICAL EVENTS, not alerts** (the key difference from `alerts_v2`, which yields
+  finished alerts): sign-in → OCSF **Authentication (3002)** (actor=user, target, `src_endpoint`.ip,
+  result, MFA detail, `conditionalAccessStatus`); directory-audit → account/config-change class; risky-user →
+  a risk-signal event. New source-normalizer mappers via `ingestion.RegisterMapper` (the ADR-0006 schema
+  registry), stamping `schema_version` + `parser`/`parser_version`. They then flow StoreRaw → Normalize →
+  detect, feeding the #185 stateful engine.
+- **Config-driven stream selection per connector:** a `streams` allowlist in the connector `Config` JSON
+  (default `["alerts"]` → **back-compat, existing connectors unchanged**). Each stream carries its OWN
+  checkpoint (`checkpoint_signins`, `checkpoint_directory_audits`, `checkpoint_risky`) so streams advance
+  independently; per-stream `degraded` status on error (reuse the existing degraded+log pattern — **no silent
+  loss**).
+
+**Invariants honoured.** netsafe `SafeClient` egress (existing) + per-page host-pin (C-3, reuse — bearer token
+never follows an off-host `@odata.nextLink`); credential decrypt via the audited `Vault.Open` chokepoint (the
+poller already routes through it — confirm at build); tenant-scoped (per-connector config under `WithTenant`);
+idempotent dedupe (ingestion key = source + native id: signIn `id` / audit `id` / risky `id`); checkpoint
+monotonic per stream; bounded pages (20) + `$top`; degraded-not-dropped on fetch error.
+
+**Data model.** NO new table — per-stream checkpoints + the `streams` allowlist live in the existing connector
+`Config` JSON. New canonical-event mappers registered in the normalizer registry (no schema break — additive,
+ADR-0006 minor version). Onboarding note (not code): these Graph streams need `AuditLog.Read.All` /
+`IdentityRiskyUser.Read.All` app-permission consent from the tenant — document as a connector prerequisite.
+
+**Deferred (tracked, not TODO).** The full **O365 Management Activity API** (mailbox-audit / message-trace for
+email/phishing *content* detections) is a SEPARATE API from Graph (different subscription/auth model) — heavier;
+scope THIS task to the Graph-available identity streams (signIns/directoryAudits/riskyUsers), which unblock the
+identity detections. Management-Activity-API = follow-on if the pilot contracts email-content detection. Graph
+`delta` query optimisation (vs `$filter` time-cursor) = later.
+
+### Open questions for the reviewer's pre-code pass
+1. **Stream config shape** — `streams []string` allowlist (default `["alerts"]`) vs per-stream booleans?
+   (Leaning allowlist — one field, back-compat default.)
+2. **riskyUsers is state, not events** — ingest as periodic risk-signal events on `riskLastUpdatedDateTime`
+   delta (so detection/correlation consume it) or as an enrichment source only? (Leaning risk-signal events;
+   also feeds NORM enrichment later.)
+3. **"M365 audit" = Graph `directoryAudits` for launch, O365 Management Activity API deferred?** (Leaning yes —
+   directoryAudits is Graph, same connector/auth, covers directory/identity admin changes; message-trace is the
+   heavier follow-on.)
+4. **Canonical mapping targets** — confirm sign-in → OCSF Authentication 3002 + which class for directory-audit
+   (Account Change 3001 vs a config class); nail the entity-ref shapes (`user:`/`ip:`) so #185 detections can
+   predicate on them.
+
+**→ Reuses the cleared msgraph host-pin + netsafe + audited-Vault seam; additive normalizer mappers; no new
+table; back-compat default. Building against verified structure; landing round to re-verify. Nothing pushed.**
