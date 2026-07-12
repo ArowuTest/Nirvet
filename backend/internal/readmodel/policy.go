@@ -29,7 +29,7 @@ func DefaultDisclosurePolicy() DisclosurePolicy {
 	for _, s := range DefaultCustomerVisibleStages {
 		m[s] = true
 	}
-	return DisclosurePolicy{CustomerVisibleStages: m, DiscloseRootCause: false}
+	return DisclosurePolicy{CustomerVisibleStages: m, DiscloseClosureNarrative: false}
 }
 
 // validStages is the closed set of lifecycle stages an admin may name in a disclosure policy. Anything else is
@@ -53,12 +53,12 @@ func NewPolicyStore(db *database.DB) *PolicyStore { return &PolicyStore{db: db} 
 // returns the default (so a transient read failure fails CLOSED — least disclosure — never open).
 func (s *PolicyStore) Resolve(ctx context.Context, tenantID uuid.UUID) (DisclosurePolicy, error) {
 	var stages []string
-	var discloseRC bool
+	var discloseNarr bool
 	found := false
 	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		row := tx.QueryRow(ctx,
-			`SELECT customer_visible_stages, disclose_root_cause FROM disclosure_policy WHERE tenant_id=$1`, tenantID)
-		if e := row.Scan(&stages, &discloseRC); e != nil {
+			`SELECT customer_visible_stages, disclose_closure_narrative FROM disclosure_policy WHERE tenant_id=$1`, tenantID)
+		if e := row.Scan(&stages, &discloseNarr); e != nil {
 			if errors.Is(e, pgx.ErrNoRows) {
 				return nil // no row → caller uses the default
 			}
@@ -74,13 +74,13 @@ func (s *PolicyStore) Resolve(ctx context.Context, tenantID uuid.UUID) (Disclosu
 	for _, st := range stages {
 		m[incident.Stage(st)] = true
 	}
-	return DisclosurePolicy{CustomerVisibleStages: m, DiscloseRootCause: discloseRC}, nil
+	return DisclosurePolicy{CustomerVisibleStages: m, DiscloseClosureNarrative: discloseNarr}, nil
 }
 
 // SetPolicy upserts the tenant's disclosure policy (admin-config) and audits the change. Stages are validated
 // against the closed lifecycle set. This only moves WITHIN the safe envelope: choosing which customer-safe
 // stages/fields appear — it can never expose a provider-internal field (the projection struct has none).
-func (s *PolicyStore) SetPolicy(ctx context.Context, p auth.Principal, tenantID uuid.UUID, stages []string, discloseRootCause bool) error {
+func (s *PolicyStore) SetPolicy(ctx context.Context, p auth.Principal, tenantID uuid.UUID, stages []string, discloseClosureNarrative bool) error {
 	seen := map[string]bool{}
 	clean := make([]string, 0, len(stages))
 	for _, st := range stages {
@@ -94,20 +94,20 @@ func (s *PolicyStore) SetPolicy(ctx context.Context, p auth.Principal, tenantID 
 	}
 	return s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO disclosure_policy (id, tenant_id, customer_visible_stages, disclose_root_cause, updated_by)
+			`INSERT INTO disclosure_policy (id, tenant_id, customer_visible_stages, disclose_closure_narrative, updated_by)
 			 VALUES ($1,$2,$3,$4,$5)
 			 ON CONFLICT (tenant_id) DO UPDATE
 			   SET customer_visible_stages = EXCLUDED.customer_visible_stages,
-			       disclose_root_cause     = EXCLUDED.disclose_root_cause,
+			       disclose_closure_narrative = EXCLUDED.disclose_closure_narrative,
 			       updated_at              = now(),
 			       updated_by              = EXCLUDED.updated_by`,
-			uuid.New(), tenantID, clean, discloseRootCause, p.UserID); err != nil {
+			uuid.New(), tenantID, clean, discloseClosureNarrative, p.UserID); err != nil {
 			return err
 		}
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "disclosure_policy.set",
 			Target:   "tenant:" + tenantID.String(),
-			Metadata: map[string]any{"customer_visible_stages": clean, "disclose_root_cause": discloseRootCause},
+			Metadata: map[string]any{"customer_visible_stages": clean, "disclose_closure_narrative": discloseClosureNarrative},
 		})
 	})
 }

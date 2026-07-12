@@ -123,7 +123,10 @@ func TestAudienceGate_Refusals(t *testing.T) {
 func TestCustomerGetIncident_RedactsInternal(t *testing.T) {
 	inc := &incident.Incident{
 		ID: uuid.New(), Title: "Phishing", Severity: "high", Category: "phishing",
-		Stage: incident.StageContained, RootCause: "pivoted via internal jump host",
+		Stage: incident.StageContained,
+		// All four free-text closure fields carry internal detail (RM-1).
+		RootCause: "pivoted via internal jump host", Impact: "SECRET-impact-detail",
+		ActionsTaken: "SECRET-actions-vendorX", LessonsLearned: "SECRET-our-rule-gap",
 	}
 	tl := []incident.TimelineEntry{
 		{Kind: "note", Visibility: incident.VisibilityInternal, Note: "SECRET-internal-hypothesis", At: time.Unix(1, 0)},
@@ -139,8 +142,11 @@ func TestCustomerGetIncident_RedactsInternal(t *testing.T) {
 	if strings.Contains(body, "SECRET-internal-hypothesis") {
 		t.Fatal("internal timeline note leaked to customer")
 	}
-	if strings.Contains(body, "pivoted via internal jump host") {
-		t.Fatal("root cause leaked to customer under the default (non-disclosing) policy")
+	// RM-1: none of the four free-text closure/PIR fields may leak under the default (narrative-withheld) policy.
+	for _, secret := range []string{"pivoted via internal jump host", "SECRET-impact-detail", "SECRET-actions-vendorX", "SECRET-our-rule-gap"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("closure narrative %q leaked to customer under the default (non-disclosing) policy", secret)
+		}
 	}
 	for _, forbidden := range []string{"owner_id", "tenant_id", "parent_id"} {
 		if strings.Contains(body, forbidden) {

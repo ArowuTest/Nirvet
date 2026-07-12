@@ -17,9 +17,13 @@ type DisclosurePolicy struct {
 	// CustomerVisibleStages is the row-gate allowlist: a customer sees an incident only once it has reached one
 	// of these lifecycle stages (never while in raw internal triage). Fail-closed default in policy.go.
 	CustomerVisibleStages map[incident.Stage]bool
-	// DiscloseRootCause toggles the one closure field that can name internal detail. Default false (fail-closed);
-	// operators opt in per tenant/tier. Everything else in CustomerIncidentView is customer-facing by design.
-	DiscloseRootCause bool
+	// DiscloseClosureNarrative gates the free-text, analyst-authored CASE-009 closure/PIR fields — root_cause,
+	// impact, actions_taken, lessons_learned. All four are required at closure (incident/transitions.go) and
+	// written for the INTERNAL post-incident review; they can name internal detail (tooling, vendors, our own
+	// detection gaps), so they are withheld from the customer by default (fail-closed) and disclosed only on
+	// operator opt-in (RM-1). Disposition (a bounded enum), the SLA fields, status, customer_ack, and the
+	// visibility='customer' timeline are genuinely customer-safe and stay unconditional.
+	DiscloseClosureNarrative bool
 }
 
 // IncidentCustomerVisible reports whether an incident is at a stage the policy exposes to the customer audience.
@@ -87,15 +91,17 @@ func ProjectIncidentForCustomer(inc incident.Incident, timeline []incident.Timel
 		ResolveDueAt:    inc.ResolveDueAt,
 		AckBreached:     inc.AckBreached,
 		ResolveBreached: inc.ResolveBreached,
-		Disposition:     inc.Disposition,
-		Impact:          inc.Impact,
-		ActionsTaken:    inc.ActionsTaken,
-		LessonsLearned:  inc.LessonsLearned,
+		Disposition:     inc.Disposition, // bounded enum — customer-safe
 		CustomerAck:     inc.CustomerAck,
 		Timeline:        []CustomerTimelineEntryView{},
 	}
-	if pol.DiscloseRootCause {
+	// RM-1: the four free-text closure/PIR fields are internal by default and disclosed together, only on the
+	// operator's opt-in — they are the same class of analyst-authored narrative, not a customer-safe summary.
+	if pol.DiscloseClosureNarrative {
 		v.RootCause = inc.RootCause
+		v.Impact = inc.Impact
+		v.ActionsTaken = inc.ActionsTaken
+		v.LessonsLearned = inc.LessonsLearned
 	}
 	for _, e := range timeline {
 		if e.Visibility != incident.VisibilityCustomer {

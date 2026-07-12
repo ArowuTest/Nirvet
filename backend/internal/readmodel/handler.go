@@ -31,7 +31,7 @@ type AlertReader interface {
 // handler tests can inject a fixed policy without a DB.
 type PolicyAPI interface {
 	Resolve(ctx context.Context, tenantID uuid.UUID) (DisclosurePolicy, error)
-	SetPolicy(ctx context.Context, p auth.Principal, tenantID uuid.UUID, stages []string, discloseRootCause bool) error
+	SetPolicy(ctx context.Context, p auth.Principal, tenantID uuid.UUID, stages []string, discloseClosureNarrative bool) error
 }
 
 // RegulatorMetaReader is the metadata-only regulator read surface (satisfied by *RegulatorRepo).
@@ -203,13 +203,13 @@ func (h *Handler) GetDisclosurePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(stages)
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"customer_visible_stages": stages, "disclose_root_cause": pol.DiscloseRootCause,
+		"customer_visible_stages": stages, "disclose_closure_narrative": pol.DiscloseClosureNarrative,
 	})
 }
 
 type setDisclosureReq struct {
-	CustomerVisibleStages []string `json:"customer_visible_stages"`
-	DiscloseRootCause     bool     `json:"disclose_root_cause"`
+	CustomerVisibleStages    []string `json:"customer_visible_stages"`
+	DiscloseClosureNarrative bool     `json:"disclose_closure_narrative"`
 }
 
 // SetDisclosurePolicy serves PUT /admin/tenants/{tenant_id}/disclosure-policy — the PROVIDER operator configures
@@ -225,7 +225,7 @@ func (h *Handler) SetDisclosurePolicy(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.policy.SetPolicy(r.Context(), p, tenantID, req.CustomerVisibleStages, req.DiscloseRootCause); err != nil {
+	if err := h.policy.SetPolicy(r.Context(), p, tenantID, req.CustomerVisibleStages, req.DiscloseClosureNarrative); err != nil {
 		httpx.Error(w, err)
 		return
 	}

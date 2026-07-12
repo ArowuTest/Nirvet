@@ -41,33 +41,43 @@ func TestResolve_Classification(t *testing.T) {
 	}
 }
 
-// inv.1: projections are distinct types, and NO provider-internal field name appears in a customer projection.
-// A denylist would fail open when the entity grows; this asserts the allowlist stays an allowlist.
-func TestProjections_AreAllowlists(t *testing.T) {
+// inv.1 (RM-2): the customer projections are POSITIVE allowlists — assert the EXACT field set. Any field added
+// to (or removed from) a projection fails the build until it is DELIBERATELY reviewed and added to the expected
+// list. A name-denylist (the previous version) fails OPEN: a newly-added internal field would sail through. This
+// mirrors the type-allowlist guard on the regulator rollups below.
+func TestCustomerProjections_ExactAllowlist(t *testing.T) {
 	if reflect.TypeOf(CustomerIncidentView{}) == reflect.TypeOf(incident.Incident{}) {
 		t.Fatal("CustomerIncidentView must be a distinct type, not the incident entity")
 	}
 	if reflect.TypeOf(CustomerAlertView{}) == reflect.TypeOf(alert.Alert{}) {
 		t.Fatal("CustomerAlertView must be a distinct type, not the alert entity")
 	}
-
-	forbiddenIncident := map[string]bool{"TenantID": true, "OwnerID": true, "ParentID": true, "IsMajor": true}
-	assertNoFields(t, reflect.TypeOf(CustomerIncidentView{}), forbiddenIncident)
-
-	// Detection internals + attacker actor must be absent from the customer alert view by construction.
-	forbiddenAlert := map[string]bool{
-		"TenantID": true, "EventID": true, "DetectionID": true, "DedupeKey": true,
-		"Confidence": true, "Source": true, "AssigneeID": true, "ActorRef": true, "MITRE": true, "IncidentID": true,
-	}
-	assertNoFields(t, reflect.TypeOf(CustomerAlertView{}), forbiddenAlert)
+	assertExactFields(t, reflect.TypeOf(CustomerIncidentView{}), []string{
+		"IncidentID", "Title", "Severity", "Category", "Status", "CreatedAt", "ClosedAt",
+		"AcknowledgedAt", "AckDueAt", "ResolveDueAt", "AckBreached", "ResolveBreached",
+		"Disposition", "Impact", "ActionsTaken", "LessonsLearned", "RootCause", "CustomerAck", "Timeline",
+	})
+	assertExactFields(t, reflect.TypeOf(CustomerAlertView{}), []string{
+		"AlertID", "Title", "Severity", "Status", "AffectedAsset", "CreatedAt",
+	})
 }
 
-func assertNoFields(t *testing.T, typ reflect.Type, forbidden map[string]bool) {
+// assertExactFields fails unless the struct's field names are EXACTLY `want` — no more, no fewer.
+func assertExactFields(t *testing.T, typ reflect.Type, want []string) {
 	t.Helper()
+	got := map[string]bool{}
 	for i := 0; i < typ.NumField(); i++ {
-		if forbidden[typ.Field(i).Name] {
-			t.Errorf("%s must not expose internal field %q", typ.Name(), typ.Field(i).Name)
+		got[typ.Field(i).Name] = true
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("%s: expected allowlisted field %q is missing", typ.Name(), w)
 		}
+		delete(got, w)
+	}
+	for extra := range got {
+		t.Errorf("%s: UNEXPECTED field %q — a new projection field must be added to the allowlist DELIBERATELY "+
+			"(confirm it is customer-safe), never appear implicitly", typ.Name(), extra)
 	}
 }
 
@@ -94,29 +104,36 @@ func TestRegulatorRollups_AreMetadataByConstruction(t *testing.T) {
 	}
 }
 
-func TestProjectIncidentForCustomer_DropsInternalAndGatesRootCause(t *testing.T) {
+func TestProjectIncidentForCustomer_DropsInternalAndGatesNarrative(t *testing.T) {
 	inc := incident.Incident{
 		ID: uuid.New(), Title: "Phishing", Severity: "high", Category: "phishing",
-		Stage: incident.StageContained, RootCause: "analyst pivoted via internal jump host",
+		Stage: incident.StageContained, Disposition: "true_positive",
+		// RM-1: all four are free-text CASE-009 closure fields (the internal PIR) — must be gated together.
+		RootCause: "analyst pivoted via internal jump host", Impact: "3 mailboxes exposed",
+		ActionsTaken: "isolated via Defender; our rule R missed this", LessonsLearned: "tune rule R coverage",
 	}
 	full := []incident.TimelineEntry{
 		{At: time.Unix(1, 0), Kind: "note", Visibility: incident.VisibilityInternal, Note: "SECRET internal hypothesis"},
 		{At: time.Unix(2, 0), Kind: "status", Visibility: incident.VisibilityCustomer, Note: "We contained the affected host."},
 	}
 
-	// Policy WITHOUT root-cause disclosure.
-	v := ProjectIncidentForCustomer(inc, full, DisclosurePolicy{DiscloseRootCause: false})
+	// Policy WITHHOLDING the closure narrative (default): all four free-text fields blank; internal timeline dropped.
+	v := ProjectIncidentForCustomer(inc, full, DisclosurePolicy{DiscloseClosureNarrative: false})
 	if len(v.Timeline) != 1 || v.Timeline[0].Note != "We contained the affected host." {
 		t.Fatalf("internal timeline entry leaked or customer entry missing: %+v", v.Timeline)
 	}
-	if v.RootCause != "" {
-		t.Fatalf("RootCause must be blank when policy does not disclose it, got %q", v.RootCause)
+	if v.RootCause != "" || v.Impact != "" || v.ActionsTaken != "" || v.LessonsLearned != "" {
+		t.Fatalf("closure narrative must be blank when policy withholds it: root=%q impact=%q actions=%q lessons=%q",
+			v.RootCause, v.Impact, v.ActionsTaken, v.LessonsLearned)
+	}
+	if v.Disposition != "true_positive" { // bounded enum — customer-safe, unconditional
+		t.Fatalf("Disposition (bounded enum) must stay unconditional, got %q", v.Disposition)
 	}
 
-	// Policy WITH root-cause disclosure (still inside the safe envelope).
-	v2 := ProjectIncidentForCustomer(inc, full, DisclosurePolicy{DiscloseRootCause: true})
-	if v2.RootCause != inc.RootCause {
-		t.Fatalf("RootCause should be disclosed when policy opts in")
+	// Policy DISCLOSING the narrative (operator opt-in, still inside the safe envelope): all four appear.
+	v2 := ProjectIncidentForCustomer(inc, full, DisclosurePolicy{DiscloseClosureNarrative: true})
+	if v2.RootCause != inc.RootCause || v2.Impact != inc.Impact || v2.ActionsTaken != inc.ActionsTaken || v2.LessonsLearned != inc.LessonsLearned {
+		t.Fatalf("closure narrative should be disclosed when policy opts in: %+v", v2)
 	}
 }
 
