@@ -1788,3 +1788,23 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+
+  # --- auto-added by cmd/openapigen (external-review OpenAPI parity); enrich schemas incrementally ---
+  /assets/bulk:
+    post:
+      tags: [assets]
+      summary: POST /assets/bulk
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /vulnerabilities/bulk:
+    post:
+      tags: [vulnerabilities]
+      summary: POST /vulnerabilities/bulk
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }

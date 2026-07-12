@@ -796,10 +796,12 @@ func main() {
 	mux.Handle("GET /evidence/public-key", provider(evidenceH.PublicKey)) // publish for out-of-band verification
 	// Asset inventory (§6.15)
 	mux.Handle("POST /assets", manager(assetH.Create))
+	mux.Handle("POST /assets/bulk", manager(assetH.BulkCreate)) // #188 bulk import
 	mux.Handle("GET /assets", provider(assetH.List))
 	mux.Handle("GET /assets/{id}", provider(assetH.Get))
 	// Vulnerability & exposure (§6.15). Writes drive exposure/priority → manager-gated.
 	mux.Handle("POST /vulnerabilities", manager(vulnH.Create))
+	mux.Handle("POST /vulnerabilities/bulk", manager(vulnH.BulkCreate)) // #188 bulk import
 	mux.Handle("GET /vulnerabilities", provider(vulnH.List))
 	mux.Handle("GET /vulnerabilities/{id}", provider(vulnH.Get))
 	mux.Handle("GET /exposure/summary", provider(vulnH.Exposure))

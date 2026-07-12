@@ -30,6 +30,24 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, a)
 }
 
+// BulkCreate handles POST /assets/bulk with {"items":[...]} — import many assets at once (#188).
+func (h *Handler) BulkCreate(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in struct {
+		Items []CreateInput `json:"items"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	res, err := h.svc.BulkCreate(r.Context(), p, in.Items)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, res)
+}
+
 // List handles GET /assets.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
