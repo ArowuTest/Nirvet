@@ -2968,3 +2968,72 @@ waits on the anomaly primitive. This slice ships the built-in launch catalogue v
 
 **→ LIGHT–MEDIUM (data migrations + safe-by-construction; no new eval path or auth surface). Reviewer reviews
 at the commit boundary (continuous-review model). Building against verified structure. Nothing pushed.**
+
+## Gate — LAUNCH #4: SOAR playbook authoring API + control-flow + real executors — #187
+
+**Grounding (source-verified, Jul 12).** Verified current SOAR surface:
+- **No playbook write path exists at ANY layer** — `internal/soar` has only `ListPlaybooks`/`GetPlaybook`
+  (repo + service + handler). Playbooks come ONLY from seed migrations (0004, 0108). Tenants cannot author or
+  edit playbooks through the product. This is the launch gap.
+- `playbooks` (0004): id, tenant_id (NULL=global), name, description, trigger_category, steps jsonb
+  (`{name, connector_key, action, risk, requires_approval}`), enabled, created_at. RLS: read global+own, write
+  own only (`WITH CHECK tenant_id = app_current_tenant()`).
+- **Run path already validates + gates** (`service.go:202` runFor): each step's risk class comes from
+  `soar_action_catalog` (uncatalogued ⇒ fail-closed business_critical); `resolveDecision` fail-closes to
+  `observe`; destructive steps → pending_approval → senior Approve; vendor actioners engage only under
+  `destructive_enabled` + supervisor. **Nothing here weakens** — authoring feeds this same gate.
+- Executors (`main.go:296`): only `notify_analyst`/`notify_customer` are real-internal (outbox); all other
+  actions simulate (slice-A truthful) or route to the Defender/Entra vendor Actioner registry.
+
+**In scope.**
+- **A. Playbook authoring API (the gap).** POST /soar/playbooks (create), PUT /soar/playbooks/{id} (update),
+  PATCH enabled (enable/disable), on TENANT-owned playbooks only. **Author-time step validation moves the
+  fail-closed trap left:** every step.action MUST resolve to a catalog action_key → 400 naming the offending
+  action (not a silently-un-runnable business_critical step); step shape validated (name non-empty + length cap,
+  connector_key consistent with the catalog executor, requires_approval boolean); step count bounded (≤50);
+  description/name length-capped (injection surface). **Authz:** authoring is a privileged control-plane action
+  (a playbook drives containment) — restricted to a senior role floor (soc_manager+ / automation-engineer),
+  same seniority family as destructive approval; a junior analyst cannot author/alter (BFLA guard). **Audit:**
+  every create/update/delete writes an append-only record (who, diff). **Thin versioning:** snapshot prior steps
+  to an append-only `playbook_versions` on each update (mirrors detection-rule history; rollback API = #181).
+- **B. Control-flow (MINIMAL, launch-bounded — no Turing-complete DSL).** Two per-step primitives only:
+  `continue_on_failure` (bool, default false = today's stop-on-failure) so a best-effort step (enrich) doesn't
+  abort a run; and an optional `condition` that GATES a step on a PRIOR step's outcome (e.g. isolate only if
+  enrich outcome=malicious), evaluated by the existing `detection.Condition` primitive over recorded step
+  results — never arbitrary code. A gated-out step is recorded `skipped` (truthful, not silent). Branch / wait /
+  loop / rollback DSL → #181 depth.
+- **C. Real internal executors (make the seeded non-destructive steps DO something).** Wire the internal,
+  non-destructive actions to real tenant-scoped services instead of simulate: `create_note` → incident/case
+  note; `create_ticket` → internal ticket record (external ServiceNow/Jira sync = depth); `add_watchlist` → TI
+  watchlist/STIX IOC; `collect_evidence` → evidence record/section; `enrich` → lightweight internal context
+  attach. Destructive/vendor actions (isolate_endpoint, disable_user, block_ip…) stay on the vendor Actioner
+  registry + destructive_enabled + approval — unchanged.
+
+**Invariants honoured.**
+- *No global tampering:* authoring is tenant-owned only — RLS `WITH CHECK` + an explicit guard reject any attempt
+  to create/edit a global (tenant_id NULL) playbook or set tenant_id NULL.
+- *Fail-closed validation at BOTH ends:* CI fence guards SEED content; the authoring API 400s an uncatalogued
+  action at author time. A playbook can never persist a step that would fail-closed to un-runnable.
+- *Control-flow cannot escalate authority:* a step's risk class + approval requirement ALWAYS come from the
+  catalog regardless of `condition`/`continue_on_failure`; a condition may only SKIP a step, never elevate,
+  bypass approval, or auto-run a destructive step. A skipped destructive step is skipped — not run.
+- *Executors stay safe:* internal executors run inside the existing per-step tx + `safeExecute` panic-guard,
+  are non-destructive by definition, tenant-scoped (RLS); no new outbound surface without netsafe SafeClient.
+- *Audit + isolation:* every author mutation audited; new tables RLS ENABLE+FORCE; authored playbooks
+  tenant-isolated. No-hardcoding: control-flow is per-step config. from-zero migration validated.
+
+### Open questions for the reviewer's pre-code pass
+1. **Authoring authz floor** — soc_manager+ (reuse existing role rank, matches destructive-approval seniority)
+   vs a dedicated automation-engineer role. (Leaning soc_manager+ for launch; dedicated role = depth.)
+2. **Versioning** — snapshot-on-update to `playbook_versions` (cheap, mirrors detection, gives a containment
+   audit trail) vs overwrite + audit-only. (Leaning snapshot.)
+3. **Control-flow surface** — exactly {continue_on_failure, prior-outcome condition-gate} for launch; branch/
+   wait/loop/rollback deferred to #181. Confirm we do NOT ship the full DSL now. (Leaning minimal.)
+4. **create_ticket executor** — internal ticket record for launch (no external dep) vs reuse the existing
+   ServiceNow/Jira outbound sync. (Leaning internal record; external sync = depth.)
+
+**→ HEAVY (new tenant-facing WRITE surface + real action execution + control-flow). Dedicated adversarial landing
+round: author BFLA / global-edit attempt, uncatalogued-action 400, condition-cannot-bypass-approval,
+skipped-destructive-not-run, control-flow authority-non-escalation, RLS isolation of authored playbooks. Built as
+focused sub-commits (A authoring → B control-flow → C executors), each green. Reviewer reviews at commit
+boundaries. Building against verified structure. Nothing pushed.**
