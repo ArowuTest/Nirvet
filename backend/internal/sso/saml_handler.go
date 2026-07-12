@@ -10,10 +10,16 @@ import (
 
 // SAMLHandler exposes SAML endpoints: public SP-initiated start + ACS, and admin
 // connection management.
-type SAMLHandler struct{ svc *SAMLService }
+type SAMLHandler struct {
+	svc     *SAMLService
+	cookies auth.CookieOpts // ADR-0007 session cookies
+	appURL  string          // SPA URL to redirect to after a successful login
+}
 
 // NewSAMLHandler builds the handler.
-func NewSAMLHandler(svc *SAMLService) *SAMLHandler { return &SAMLHandler{svc: svc} }
+func NewSAMLHandler(svc *SAMLService, cookies auth.CookieOpts, appURL string) *SAMLHandler {
+	return &SAMLHandler{svc: svc, cookies: cookies, appURL: appURL}
+}
 
 // Start handles GET /auth/sso/saml/start?connection=<id>|domain=<domain> (public).
 // It 302-redirects the browser to the IdP with a SAML AuthnRequest.
@@ -39,7 +45,8 @@ func (h *SAMLHandler) ACS(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, res)
+	// Cookie-based browser login (ADR-0007): set httpOnly session cookies + redirect to the SPA.
+	writeSSOSession(w, r, h.svc, h.cookies, h.appURL, res)
 }
 
 // CreateConnection handles POST /admin/sso/saml (tenant/platform admin).

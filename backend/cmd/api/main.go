@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -160,15 +161,17 @@ func main() {
 
 	iamSvc := iam.NewService(iam.NewRepository(db), db, tokens, cipher)
 	cookieOpts := auth.DefaultCookieOpts(cfg.IsProduction()) // ADR-0007 session cookies (Secure in prod)
+	// Where a completed SSO login lands the browser (the SPA console). Derived from the configured SPA origin.
+	appConsoleURL := strings.TrimRight(cfg.CORSOrigin, "/") + "/console"
 	iamH := iam.NewHandler(iamSvc, cookieOpts)
 
 	// SSO (OIDC): per-tenant IdP connections + JIT provisioning (§6.2 IAM-001).
 	ssoSvc := sso.NewService(sso.NewRepository(db), sso.NewClient(), cipher, iamSvc, tokens, db, string(auth.DeriveKey(cfg.JWTSecret, "sso-state")))
-	ssoH := sso.NewHandler(ssoSvc)
+	ssoH := sso.NewHandler(ssoSvc, cookieOpts, appConsoleURL)
 
 	// SAML 2.0 SSO (§6.2 IAM-001). Signed-assertion validation via gosaml2.
 	samlSvc := sso.NewSAMLService(sso.NewSAMLRepository(db), iamSvc, tokens, db, string(auth.DeriveKey(cfg.JWTSecret, "saml-state")))
-	samlH := sso.NewSAMLHandler(samlSvc)
+	samlH := sso.NewSAMLHandler(samlSvc, cookieOpts, appConsoleURL)
 
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	alertH := alert.NewHandler(alertSvc)

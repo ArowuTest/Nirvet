@@ -8,6 +8,7 @@ package sso
 import (
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/google/uuid"
 )
 
@@ -39,8 +40,10 @@ type CreateInput struct {
 
 // LoginResult is returned to the caller after a successful SSO callback.
 type LoginResult struct {
-	Token    string    `json:"token"`
-	Email    string    `json:"email"`
-	TenantID uuid.UUID `json:"tenant_id"`
-	Created  bool      `json:"created"` // true if the user was JIT-provisioned
+	Token     string         `json:"token"`
+	Email     string         `json:"email"`
+	TenantID  uuid.UUID      `json:"tenant_id"`
+	Created   bool           `json:"created"` // true if the user was JIT-provisioned
+	Principal auth.Principal `json:"-"`       // for cookie-based session issuance (ADR-0007)
+	AccessTTL time.Duration  `json:"-"`       // access-cookie lifetime
 }

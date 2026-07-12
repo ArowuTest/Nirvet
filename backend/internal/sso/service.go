@@ -30,6 +30,14 @@ type Directory interface {
 	// carries the current session generation just like a password login. It stamps the passed principal (pointer)
 	// with the gen/tgen the token carries. SSO must NOT mint tokens directly.
 	MintSession(ctx context.Context, p *auth.Principal, ttl time.Duration) (string, error)
+	// IssueRefresh mints a rotating refresh-token family (ADR-0007) so an SSO login gets the same httpOnly cookie
+	// session as a password login. Returns the raw secret + its expiry. Implemented by iam.Service.
+	IssueRefresh(ctx context.Context, p auth.Principal) (raw string, expiresAt time.Time, err error)
+}
+
+// IssueRefresh delegates to the directory (iam) so the SSO handler can set the refresh cookie.
+func (s *Service) IssueRefresh(ctx context.Context, p auth.Principal) (string, time.Time, error) {
+	return s.dir.IssueRefresh(ctx, p)
 }
 
 // Service orchestrates the OIDC login flow and connection management.

@@ -36,6 +36,11 @@ type SAMLService struct {
 
 // NewSAMLService builds the SAML service. stateSecret signs the RelayState that
 // binds the ACS response to the AuthnRequest we issued (replay/CSRF defense).
+// IssueRefresh delegates to the directory (iam) so the SAML ACS handler can set the refresh cookie (ADR-0007).
+func (s *SAMLService) IssueRefresh(ctx context.Context, p auth.Principal) (string, time.Time, error) {
+	return s.dir.IssueRefresh(ctx, p)
+}
+
 func NewSAMLService(repo *SAMLRepository, dir Directory, tokens *auth.Manager, db *database.DB, stateSecret string) *SAMLService {
 	return &SAMLService{repo: repo, dir: dir, tokens: tokens, db: db, stateSecret: []byte(stateSecret)}
 }
