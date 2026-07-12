@@ -89,6 +89,93 @@ func TestRefresh_UnknownTokenRejected(t *testing.T) {
 	}
 }
 
+func TestRefresh_AbsoluteFamilyCap(t *testing.T) {
+	s, db := resetSvc(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	uid, email := seedUser(t, db, tenantID, auth.RoleAnalystT1, "pw12345678", UserActive)
+	p := auth.Principal{UserID: uid, TenantID: tenantID, Role: auth.RoleAnalystT1, Email: email}
+
+	raw, _, err := s.IssueRefresh(ctx, p)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	// Age the family PAST the absolute cap (but leave the sliding expiry in the future) — the token would still
+	// pass the per-row expiry check, so only the absolute cap can reject it.
+	if e := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, ex := tx.Exec(ctx, `UPDATE refresh_tokens SET family_started_at = now() - ($1::interval + interval '1 day') WHERE user_id=$2`,
+			absoluteRefreshFamilyTTL, uid)
+		return ex
+	}); e != nil {
+		t.Fatalf("age family: %v", e)
+	}
+	if _, _, _, err := s.RedeemRefresh(ctx, raw); err == nil {
+		t.Fatal("a refresh past the absolute family cap must be rejected")
+	}
+}
+
+func TestRefresh_LogoutAllRevokesEveryFamily(t *testing.T) {
+	s, db := resetSvc(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	uid, email := seedUser(t, db, tenantID, auth.RoleAnalystT1, "pw12345678", UserActive)
+	p := auth.Principal{UserID: uid, TenantID: tenantID, Role: auth.RoleAnalystT1, Email: email}
+
+	// Two independent login families (e.g. two devices).
+	raw1, _, err := s.IssueRefresh(ctx, p)
+	if err != nil {
+		t.Fatalf("issue1: %v", err)
+	}
+	raw2, _, err := s.IssueRefresh(ctx, p)
+	if err != nil {
+		t.Fatalf("issue2: %v", err)
+	}
+	if err := s.RevokeAllUserRefreshTokens(ctx, tenantID, uid); err != nil {
+		t.Fatalf("revoke-all: %v", err)
+	}
+	if _, _, _, err := s.RedeemRefresh(ctx, raw1); err == nil {
+		t.Fatal("family 1 must be dead after logout-all")
+	}
+	if _, _, _, err := s.RedeemRefresh(ctx, raw2); err == nil {
+		t.Fatal("family 2 must be dead after logout-all")
+	}
+}
+
+func TestRefresh_ReaperPurgesDeadRows(t *testing.T) {
+	s, db := resetSvc(t)
+	ctx := context.Background()
+	tenantID := uuid.New()
+	uid, email := seedUser(t, db, tenantID, auth.RoleAnalystT1, "pw12345678", UserActive)
+	p := auth.Principal{UserID: uid, TenantID: tenantID, Role: auth.RoleAnalystT1, Email: email}
+
+	if _, _, err := s.IssueRefresh(ctx, p); err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	// Expire the row so the reaper considers it dead.
+	if e := db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, ex := tx.Exec(ctx, `UPDATE refresh_tokens SET expires_at = now() - interval '1 hour' WHERE user_id=$1`, uid)
+		return ex
+	}); e != nil {
+		t.Fatalf("expire: %v", e)
+	}
+	n, err := s.PurgeDeadRefreshTokens(ctx)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("expected at least one dead row purged, got %d", n)
+	}
+	// A live (freshly-issued) row must survive a subsequent sweep.
+	if _, _, err := s.IssueRefresh(ctx, p); err != nil {
+		t.Fatalf("issue2: %v", err)
+	}
+	if n2, err := s.PurgeDeadRefreshTokens(ctx); err != nil {
+		t.Fatalf("purge2: %v", err)
+	} else if n2 != 0 {
+		t.Fatalf("live row must NOT be purged, got %d deleted", n2)
+	}
+}
+
 func TestRefresh_DisabledUserCannotRefresh(t *testing.T) {
 	s, db := resetSvc(t)
 	ctx := context.Background()

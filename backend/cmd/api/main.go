@@ -485,6 +485,9 @@ func main() {
 	// the refresh cookie (no bearer), so they sit outside the authed chain, rate-limited like login.
 	mux.Handle("POST /auth/refresh", httpx.Chain(http.HandlerFunc(iamH.Refresh), loginLimit))
 	mux.Handle("POST /auth/logout", httpx.Chain(http.HandlerFunc(iamH.Logout), loginLimit))
+	// Logout-everywhere (LOW #3): authenticated — bumps the user's session generation (kills live JWTs on all
+	// devices) + revokes all refresh families. Needs a principal, so it sits on the authed chain.
+	mux.Handle("POST /auth/logout-all", authed(iamH.LogoutAll))
 	// Invitation acceptance (public, §6.2 IAM-001/008): the invitee sets a password. Rate-
 	// limited like login since it provisions a user.
 	mux.Handle("POST /auth/invitations/accept", httpx.Chain(http.HandlerFunc(iamH.AcceptInvitation), loginLimit))
@@ -854,7 +857,10 @@ func main() {
 		go incidentSvc.StartSLASweeper(workerCtx, log, time.Minute, 200)
 		// Notification dispatcher: drains the outbox and delivers with retry (§6.16, R3 §6.5).
 		go notifySvc.StartDispatcher(workerCtx, log, 15*time.Second, 200)
-		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper + notification dispatcher started")
+		// Refresh-token reaper (ADR-0007 LOW #4): deletes un-redeemable refresh rows (expired / past absolute cap)
+		// so the table doesn't grow unbounded. Hourly is ample — rows are already dead before deletion.
+		go iamSvc.StartRefreshReaper(workerCtx, log, time.Hour)
+		log.Info("inline ingest worker + connector poller + reconciler + sla sweeper + notification dispatcher + refresh reaper started")
 	}
 
 	// M-4 (DoS): full server timeouts + a bounded header + a concurrent-connection cap, so a slow-loris /

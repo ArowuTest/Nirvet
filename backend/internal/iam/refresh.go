@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -19,9 +20,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// refreshTokenTTL is how long a refresh chain may live before forcing a full re-login. Kept modest for a SOC
-// console; tenant-configurable later (ADR-0007).
+// refreshTokenTTL is the SLIDING inactivity window: each rotation resets a token's expiry, so a chain dies this
+// long after its LAST use. Kept modest for a SOC console; tenant-configurable later (ADR-0007).
 const refreshTokenTTL = 30 * 24 * time.Hour
+
+// absoluteRefreshFamilyTTL is the ABSOLUTE ceiling on a refresh FAMILY's life, measured from the login that
+// minted it and unaffected by rotation (reviewer landing LOW #2). Even a continuously-active chain — including
+// one a thief keeps alive by out-rotating the victim — is forced into a full re-login once the family is this
+// old. Must exceed refreshTokenTTL to have any effect beyond the sliding window.
+const absoluteRefreshFamilyTTL = 90 * 24 * time.Hour
 
 var (
 	errRefreshInvalid = errors.New("invalid refresh token")
@@ -49,9 +56,10 @@ func (s *Service) IssueRefresh(ctx context.Context, p auth.Principal) (raw strin
 		return "", time.Time{}, err
 	}
 	family := uuid.New()
-	exp := time.Now().Add(refreshTokenTTL)
+	now := time.Now()
+	exp := now.Add(refreshTokenTTL)
 	err = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		raw, err = s.insertRefreshTx(ctx, tx, p.TenantID, p.UserID, family, ugen, tgen, exp)
+		raw, err = s.insertRefreshTx(ctx, tx, p.TenantID, p.UserID, family, ugen, tgen, exp, now)
 		return err
 	})
 	if err != nil {
@@ -61,15 +69,17 @@ func (s *Service) IssueRefresh(ctx context.Context, p auth.Principal) (raw strin
 }
 
 // insertRefreshTx inserts one refresh row (new secret) and returns the raw secret. Runs inside a WithTenant tx.
-func (s *Service) insertRefreshTx(ctx context.Context, tx pgx.Tx, tenantID, userID, family uuid.UUID, ugen, tgen int64, exp time.Time) (string, error) {
+// familyStartedAt is the absolute family birth time: for a NEW family it is now; for a successor it is carried
+// UNCHANGED from the redeemed token so the absolute cap is anchored to the original login (LOW #2).
+func (s *Service) insertRefreshTx(ctx context.Context, tx pgx.Tx, tenantID, userID, family uuid.UUID, ugen, tgen int64, exp, familyStartedAt time.Time) (string, error) {
 	raw, err := newRefreshRaw()
 	if err != nil {
 		return "", err
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO refresh_tokens (tenant_id, user_id, token_hash, family_id, user_gen, tenant_gen, expires_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		tenantID, userID, sha256hex(raw), family, ugen, tgen, exp)
+		`INSERT INTO refresh_tokens (tenant_id, user_id, token_hash, family_id, user_gen, tenant_gen, expires_at, family_started_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		tenantID, userID, sha256hex(raw), family, ugen, tgen, exp, familyStartedAt)
 	if err != nil {
 		return "", err
 	}
@@ -81,6 +91,7 @@ type refreshRow struct {
 	userGen, tenantGen           int64
 	usedAt, revokedAt            *time.Time
 	expiresAt                    time.Time
+	familyStartedAt              time.Time
 }
 
 // lookupRefresh reads a refresh row by raw secret via the pre-auth SD function (no tenant context).
@@ -88,9 +99,9 @@ func (s *Service) lookupRefresh(ctx context.Context, raw string) (refreshRow, er
 	var r refreshRow
 	err := s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT id, tenant_id, user_id, family_id, user_gen, tenant_gen, used_at, revoked_at, expires_at
+			`SELECT id, tenant_id, user_id, family_id, user_gen, tenant_gen, used_at, revoked_at, expires_at, family_started_at
 			   FROM auth_find_refresh_by_hash($1)`, sha256hex(raw)).
-			Scan(&r.id, &r.tenantID, &r.userID, &r.family, &r.userGen, &r.tenantGen, &r.usedAt, &r.revokedAt, &r.expiresAt)
+			Scan(&r.id, &r.tenantID, &r.userID, &r.family, &r.userGen, &r.tenantGen, &r.usedAt, &r.revokedAt, &r.expiresAt, &r.familyStartedAt)
 	})
 	return r, err
 }
@@ -112,6 +123,12 @@ func (s *Service) RedeemRefresh(ctx context.Context, raw string) (accessToken, n
 		return "", "", 0, errRefreshInvalid
 	}
 	if r.revokedAt != nil || time.Now().After(r.expiresAt) {
+		return "", "", 0, errRefreshInvalid
+	}
+	// Absolute family cap (LOW #2): once the family is older than the ceiling, no rotation can extend it — force a
+	// full re-login. Revoke the chain so a lingering successor can't be redeemed either.
+	if time.Now().After(r.familyStartedAt.Add(absoluteRefreshFamilyTTL)) {
+		s.revokeFamily(ctx, r.tenantID, r.family)
 		return "", "", 0, errRefreshInvalid
 	}
 	// Reuse of an already-rotated token = theft: revoke the whole chain.
@@ -161,8 +178,9 @@ func (s *Service) RedeemRefresh(ctx context.Context, raw string) (accessToken, n
 			return errRefreshInvalid
 		}
 		p = auth.Principal{UserID: r.userID, TenantID: r.tenantID, Role: auth.Role(role), Email: email}
-		// Successor refresh in the SAME family.
-		nr, e := s.insertRefreshTx(ctx, tx, r.tenantID, r.userID, r.family, curUgen, curTgen, time.Now().Add(refreshTokenTTL))
+		// Successor refresh in the SAME family. Sliding expiry resets; familyStartedAt is carried UNCHANGED so the
+		// absolute cap stays anchored to the original login (LOW #2).
+		nr, e := s.insertRefreshTx(ctx, tx, r.tenantID, r.userID, r.family, curUgen, curTgen, time.Now().Add(refreshTokenTTL), r.familyStartedAt)
 		if e != nil {
 			return e
 		}
@@ -195,4 +213,50 @@ func (s *Service) RevokeRefreshToken(ctx context.Context, raw string) {
 		_, e := tx.Exec(ctx, `UPDATE refresh_tokens SET used_at=now() WHERE id=$1 AND used_at IS NULL`, r.id)
 		return e
 	})
+}
+
+// RevokeAllUserRefreshTokens revokes every live refresh family for a user (logout-all, LOW #3). Paired with a
+// BumpUserGeneration by the caller: the generation bump immediately invalidates the still-valid access JWTs and
+// any outstanding refresh on next use, while this revoke makes the refresh rows dead right now.
+func (s *Service) RevokeAllUserRefreshTokens(ctx context.Context, tenantID, userID uuid.UUID) error {
+	return s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID)
+		return e
+	})
+}
+
+// PurgeDeadRefreshTokens deletes un-redeemable refresh rows (expired or past the absolute family cap) across all
+// tenants via the SECURITY DEFINER reaper. Returns the number deleted. Best-effort maintenance (LOW #4).
+func (s *Service) PurgeDeadRefreshTokens(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT auth_purge_dead_refresh_tokens($1)`, absoluteRefreshFamilyTTL).Scan(&n)
+	})
+	return n, err
+}
+
+// StartRefreshReaper runs PurgeDeadRefreshTokens on a ticker until ctx is cancelled. Panic-guarded so a single
+// bad sweep can never take down the process (matches the other background loops).
+func (s *Service) StartRefreshReaper(ctx context.Context, log *slog.Logger, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						log.Error("refresh reaper panic", "recovered", rec)
+					}
+				}()
+				if n, err := s.PurgeDeadRefreshTokens(ctx); err != nil {
+					log.Error("refresh reaper sweep failed", "err", err)
+				} else if n > 0 {
+					log.Info("refresh reaper purged dead tokens", "count", n)
+				}
+			}()
+		}
+	}
 }

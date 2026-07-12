@@ -82,6 +82,28 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"status": "logged_out"})
 }
 
+// LogoutAll handles POST /auth/logout-all (authenticated). "Log out everywhere": bumps the user's session
+// generation — which immediately invalidates every live access JWT for the user (not just this browser, and
+// unlike plain logout it kills the ≤access-TTL window on other devices) — and revokes all their refresh
+// families. Clears this browser's cookies too (LOW #3).
+func (h *Handler) LogoutAll(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.PrincipalFrom(r.Context())
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized("not authenticated"))
+		return
+	}
+	if err := h.svc.BumpUserGeneration(r.Context(), p.TenantID, p.UserID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.RevokeAllUserRefreshTokens(r.Context(), p.TenantID, p.UserID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	h.cookies.ClearSessionCookies(w)
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "logged_out_all"})
+}
+
 // Create handles POST /admin/users. A platform_admin may target any tenant via
 // tenant_id; otherwise the user is created in the caller's tenant.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {

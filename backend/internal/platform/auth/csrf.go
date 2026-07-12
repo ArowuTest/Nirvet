@@ -20,10 +20,10 @@ func CSRF() httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if csrfRequired(r) {
-				cookie, err := r.Cookie(CSRFCookie)
+				cookieVal := csrfTokenFromCookie(r)
 				hdr := r.Header.Get(CSRFHeader)
-				if err != nil || cookie.Value == "" || hdr == "" ||
-					subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(hdr)) != 1 {
+				if cookieVal == "" || hdr == "" ||
+					subtle.ConstantTimeCompare([]byte(cookieVal), []byte(hdr)) != 1 {
 					httpx.Error(w, httpx.ErrForbidden("CSRF token missing or invalid"))
 					return
 				}
@@ -40,11 +40,7 @@ func csrfRequired(r *http.Request) bool {
 	default:
 		return false // safe methods never need CSRF
 	}
-	if _, err := r.Cookie(AccessCookie); err == nil {
-		return true
-	}
-	if _, err := r.Cookie(RefreshCookie); err == nil {
-		return true
-	}
-	return false // no auth cookie → Bearer/API-key/pre-login request → not CSRF-exposed
+	// hasAuthCookie is prefix-aware (matches __Host-/__Secure- and plain names). No auth cookie →
+	// Bearer/API-key/pre-login request → not CSRF-exposed.
+	return hasAuthCookie(r)
 }
