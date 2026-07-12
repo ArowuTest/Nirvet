@@ -82,6 +82,7 @@ type EscalationContact struct {
 	OrderIndex  int       `json:"order_index"`
 	Channel     string    `json:"channel"`
 	Address     string    `json:"address"`
+	Category    string    `json:"category"` // #188 routing scope ('' = all categories)
 	Active      bool      `json:"active"`
 }
 
@@ -331,11 +332,20 @@ func (s *Service) ListEscalationContacts(ctx context.Context, tenantID uuid.UUID
 	return s.repo.listEscalationContacts(ctx, tenantID)
 }
 
-// ResolveEscalation returns the active escalation contacts that fire at or above the given
-// severity, in escalation (order_index) order — the routing seam §6.16/incident consumes to
-// deliver breach notifications to the on-call matrix (implements incident.EscalationResolver).
-// Severity ordering is the canonical §10.2 scale (internal/platform/severity).
+// ResolveEscalation returns the active escalation contacts that fire at or above the given severity, in escalation
+// (order_index) order — the routing seam §6.16/incident consumes (implements incident.EscalationResolver). This is
+// the category-AGNOSTIC form: it broadcasts to ALL matching contacts regardless of their category scope, so
+// existing callers (and category-less notifications like cred-expiry reminders) are unchanged.
 func (s *Service) ResolveEscalation(ctx context.Context, tenantID uuid.UUID, sevLevel string) ([]incident.EscalationTarget, error) {
+	return s.ResolveEscalationFor(ctx, tenantID, sevLevel, "")
+}
+
+// ResolveEscalationFor is the category-scoped router (#188). A contact fires when its min_severity is at/below the
+// notification severity AND its category scope matches: an empty `category` argument broadcasts to ALL contacts
+// (category-agnostic notification); a non-empty `category` routes to GENERAL contacts (category='') PLUS contacts
+// scoped to exactly that category — so a "network" incident never pages the identity-only on-call. Severity
+// ordering is the canonical §10.2 scale.
+func (s *Service) ResolveEscalationFor(ctx context.Context, tenantID uuid.UUID, sevLevel, category string) ([]incident.EscalationTarget, error) {
 	contacts, err := s.repo.listEscalationContacts(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -343,9 +353,14 @@ func (s *Service) ResolveEscalation(ctx context.Context, tenantID uuid.UUID, sev
 	want := severity.Rank(sevLevel)
 	var out []incident.EscalationTarget
 	for _, c := range contacts {
-		if c.Active && severity.Rank(c.MinSeverity) <= want {
-			out = append(out, incident.EscalationTarget{Channel: c.Channel, Address: c.Address})
+		if !c.Active || severity.Rank(c.MinSeverity) > want {
+			continue
 		}
+		// Category gate: broadcast when the notification has no category; otherwise general + same-category only.
+		if category != "" && c.Category != "" && c.Category != category {
+			continue
+		}
+		out = append(out, incident.EscalationTarget{Channel: c.Channel, Address: c.Address})
 	}
 	return out, nil
 }
@@ -358,6 +373,7 @@ type EscalationInput struct {
 	OrderIndex  int    `json:"order_index"`
 	Channel     string `json:"channel"`
 	Address     string `json:"address"`
+	Category    string `json:"category"` // #188 optional routing scope ('' = all categories)
 }
 
 func (s *Service) AddEscalationContact(ctx context.Context, p auth.Principal, tenantID uuid.UUID, in EscalationInput) (*EscalationContact, error) {
@@ -382,13 +398,17 @@ func (s *Service) AddEscalationContact(ctx context.Context, p auth.Principal, te
 	if err := validateEscalationAddress(in.Channel, in.Address); err != nil {
 		return nil, err
 	}
+	in.Category = strings.TrimSpace(in.Category)
+	if len(in.Category) > 64 {
+		return nil, httpx.ErrBadRequest("category too long (max 64)")
+	}
 	c := &EscalationContact{ID: uuid.New(), TenantID: tenantID, Name: in.Name, Role: in.Role,
-		MinSeverity: in.MinSeverity, OrderIndex: in.OrderIndex, Channel: in.Channel, Address: in.Address, Active: true}
+		MinSeverity: in.MinSeverity, OrderIndex: in.OrderIndex, Channel: in.Channel, Address: in.Address, Category: in.Category, Active: true}
 	err := s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if _, e := tx.Exec(ctx,
-			`INSERT INTO escalation_contacts (id, tenant_id, name, role, min_severity, order_index, channel, address, active)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)`,
-			c.ID, tenantID, c.Name, c.Role, c.MinSeverity, c.OrderIndex, c.Channel, c.Address); e != nil {
+			`INSERT INTO escalation_contacts (id, tenant_id, name, role, min_severity, order_index, channel, address, category, active)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)`,
+			c.ID, tenantID, c.Name, c.Role, c.MinSeverity, c.OrderIndex, c.Channel, c.Address, c.Category); e != nil {
 			return e
 		}
 		if e := recordChange(ctx, tx, tenantID, p, "escalation", "add", "", c.Name+"/"+c.Channel); e != nil {
@@ -554,7 +574,7 @@ func (r *Repository) listEscalationContacts(ctx context.Context, tenantID uuid.U
 	var out []EscalationContact
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, tenant_id, name, role, min_severity, order_index, channel, address, active
+			`SELECT id, tenant_id, name, role, min_severity, order_index, channel, address, category, active
 			   FROM escalation_contacts ORDER BY order_index, created_at`)
 		if err != nil {
 			return err
@@ -562,7 +582,7 @@ func (r *Repository) listEscalationContacts(ctx context.Context, tenantID uuid.U
 		defer rows.Close()
 		for rows.Next() {
 			var c EscalationContact
-			if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &c.Role, &c.MinSeverity, &c.OrderIndex, &c.Channel, &c.Address, &c.Active); err != nil {
+			if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &c.Role, &c.MinSeverity, &c.OrderIndex, &c.Channel, &c.Address, &c.Category, &c.Active); err != nil {
 				return err
 			}
 			out = append(out, c)

@@ -271,6 +271,7 @@ type SLABreach struct {
 	TenantID uuid.UUID
 	Title    string
 	Severity string
+	Category string // #188 incident category, for category-scoped escalation routing
 	Kind     string // "ack" | "resolve"
 }
 
@@ -284,14 +285,14 @@ func (r *Repository) FindSLABreaches(ctx context.Context, now time.Time, limit i
 	var out []SLABreach
 	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, tenant_id, title, severity, breach_kind FROM incidents_sla_breaches($1, $2)`, now, limit)
+			`SELECT id, tenant_id, title, severity, category, breach_kind FROM incidents_sla_breaches($1, $2)`, now, limit)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var b SLABreach
-			if err := rows.Scan(&b.ID, &b.TenantID, &b.Title, &b.Severity, &b.Kind); err != nil {
+			if err := rows.Scan(&b.ID, &b.TenantID, &b.Title, &b.Severity, &b.Category, &b.Kind); err != nil {
 				return err
 			}
 			out = append(out, b)

@@ -43,6 +43,9 @@ type EscalationTarget struct {
 // → fall back to the log channel. Keeps incident decoupled from tenant governance internals.
 type EscalationResolver interface {
 	ResolveEscalation(ctx context.Context, tenantID uuid.UUID, severity string) ([]EscalationTarget, error)
+	// ResolveEscalationFor is the #188 category-scoped router: an empty category broadcasts to all matching
+	// contacts; a non-empty category routes to general + same-category contacts only.
+	ResolveEscalationFor(ctx context.Context, tenantID uuid.UUID, severity, category string) ([]EscalationTarget, error)
 }
 
 // SLAResolver returns a tenant's admin-configured ack/resolve deadlines for a severity
@@ -138,11 +141,11 @@ func (s *Service) resolveSLA(ctx context.Context, tenantID uuid.UUID, severity s
 
 // resolveTargets returns the escalation-matrix destinations for a severity (best-effort — a
 // resolver error or missing resolver yields no targets, and the caller falls back to log).
-func (s *Service) resolveTargets(ctx context.Context, tenantID uuid.UUID, severity string) []EscalationTarget {
+func (s *Service) resolveTargets(ctx context.Context, tenantID uuid.UUID, severity, category string) []EscalationTarget {
 	if s.escalation == nil {
 		return nil
 	}
-	t, err := s.escalation.ResolveEscalation(ctx, tenantID, severity)
+	t, err := s.escalation.ResolveEscalationFor(ctx, tenantID, severity, category)
 	if err != nil {
 		return nil
 	}
@@ -312,14 +315,14 @@ func (s *Service) SweepSLABreaches(ctx context.Context, now time.Time, limit int
 			ID: uuid.New(), IncidentID: b.ID, Author: "system", Kind: "status",
 			Note: fmt.Sprintf("SLA %s deadline breached", b.Kind),
 		}
-		tenantID, kind, severity := b.TenantID, b.Kind, b.Severity
+		tenantID, kind, severity, category := b.TenantID, b.Kind, b.Severity, b.Category
 		var onClaim func(ctx context.Context, tx pgx.Tx) error
 		if s.enqueuer != nil {
 			// Route to the tenant's escalation matrix: one durable outbox row per contact
 			// whose min_severity <= the incident severity, in escalation order. When no matrix
 			// is configured (or no resolver wired), fall back to a single log-channel row so a
 			// breach is never silently unnotified.
-			targets := s.resolveTargets(ctx, tenantID, severity)
+			targets := s.resolveTargets(ctx, tenantID, severity, category)
 			onClaim = func(ctx context.Context, tx pgx.Tx) error {
 				if len(targets) == 0 {
 					return s.enqueuer.EnqueueTx(ctx, tx, tenantID, "log", "", subject, body)
