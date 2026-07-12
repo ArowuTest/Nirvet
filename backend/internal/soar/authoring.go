@@ -59,25 +59,63 @@ func (s *Service) validateAndNormalizeSteps(ctx context.Context, tenantID uuid.U
 	if len(steps) > maxPlaybookSteps {
 		return nil, httpx.ErrBadRequest("too many steps (max 50)")
 	}
+	// Pass 1: resolve every action (catalog-govern risk + validate existence), and learn whether the playbook
+	// contains ANY connector step. A single connector step routes the WHOLE run through the two-phase supervised
+	// path (supervisedNeeded), which does NOT evaluate conditions — so an inline-step condition in such a playbook
+	// would be SILENTLY IGNORED at run time. A silently-dropped gating condition on a destructive action is an
+	// unintended-containment footgun, strictly worse than none. So the fail-closed boundary (reviewer must-add)
+	// is: NO conditions in any playbook that contains a connector action. Supervised-step conditions are #181.
 	out := make([]Step, 0, len(steps))
+	acts := make([]ActionCatalog, len(steps))
+	seenName := map[string]bool{}
+	hasConnector := false
 	for i := range steps {
-		st := steps[i]
-		st.Name = strings.TrimSpace(st.Name)
-		if st.Name == "" || len(st.Name) > maxStepNameLen {
+		steps[i].Name = strings.TrimSpace(steps[i].Name)
+		if steps[i].Name == "" || len(steps[i].Name) > maxStepNameLen {
 			return nil, httpx.ErrBadRequest("each step needs a name (<=200 chars)")
 		}
-		st.Action = strings.TrimSpace(st.Action)
-		act, found := s.repo.resolveAction(ctx, tenantID, st.Action)
-		if !found {
-			return nil, httpx.ErrBadRequest("unknown action '" + st.Action + "' — not in the SOAR action catalog")
+		if seenName[steps[i].Name] {
+			return nil, httpx.ErrBadRequest("duplicate step name '" + steps[i].Name + "' — step names must be unique (conditions reference them)")
 		}
+		seenName[steps[i].Name] = true
+		steps[i].Action = strings.TrimSpace(steps[i].Action)
+		act, found := s.repo.resolveAction(ctx, tenantID, steps[i].Action)
+		if !found {
+			return nil, httpx.ErrBadRequest("unknown action '" + steps[i].Action + "' — not in the SOAR action catalog")
+		}
+		acts[i] = act
+		if act.Executor == ExecutorConnector {
+			hasConnector = true
+		}
+	}
+
+	// Pass 2: normalize + validate control-flow against the fail-closed boundary.
+	priorNames := map[string]bool{}
+	for i := range steps {
+		st := steps[i]
+		act := acts[i]
 		// Condition 1: risk is ALWAYS catalog-derived, never author-authoritative. Overwrite to a display mirror.
 		st.Risk = act.RiskClass
 		if st.ConnectorKey == "" {
 			st.ConnectorKey = act.ConnectorKey
 		}
+		if st.Condition != nil {
+			if hasConnector {
+				return nil, httpx.ErrBadRequest("conditions are not supported in a playbook that contains a connector action (#181): step '" + st.Name + "'")
+			}
+			c := st.Condition
+			c.WhenStep = strings.TrimSpace(c.WhenStep)
+			c.EqualsStatus = strings.TrimSpace(c.EqualsStatus)
+			if c.WhenStep == "" || c.EqualsStatus == "" {
+				return nil, httpx.ErrBadRequest("a condition needs when_step + equals_status: step '" + st.Name + "'")
+			}
+			if !priorNames[c.WhenStep] {
+				return nil, httpx.ErrBadRequest("condition when_step '" + c.WhenStep + "' must name a PRIOR step in this playbook")
+			}
+		}
 		// requires_approval stays as authored — it can only ADD approval friction (tighten-only ratchet); the run
 		// path ANDs it with the catalog-governed gate, so it can never REMOVE approval.
+		priorNames[st.Name] = true
 		out = append(out, st)
 	}
 	return out, nil

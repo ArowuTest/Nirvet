@@ -75,6 +75,40 @@ type Step struct {
 	// Target is the entity a connector containment step acts on (host:/user:/ip:) — passed to the
 	// Actioner in slice B. Optional; empty for internal/notify steps (§6.11 slice B).
 	Target string `json:"target,omitempty"`
+
+	// Control-flow (#187 slice B, MINIMAL — inline path only). ContinueOnFailure: if this step's EXECUTION
+	// fails, keep running the rest of the run instead of halting (default false = halt-on-failure). It governs
+	// EXECUTION failures ONLY — never an approval denial (a denied destructive step always halts). Condition
+	// gates whether this step runs at all, based on a PRIOR step's recorded outcome — it may only SKIP a step,
+	// never elevate/bypass approval or auto-run a destructive step. Conditions are honored on the INLINE path
+	// only; the authoring API 400s a condition on/referencing a connector (supervised) step so a gating
+	// condition is NEVER silently ignored at run time (supervised-step conditions → #181).
+	ContinueOnFailure bool           `json:"continue_on_failure,omitempty"`
+	Condition         *StepCondition `json:"condition,omitempty"`
+}
+
+// StepCondition gates a step on a PRIOR step's recorded outcome (skip-only). WhenStep names an earlier step in
+// the same playbook; the step runs only if that prior step's recorded StepResult.Status equals EqualsStatus
+// (e.g. "executed"). A minimal, unambiguous prior-outcome gate; richer field-level outcomes are #181.
+type StepCondition struct {
+	WhenStep     string `json:"when_step"`
+	EqualsStatus string `json:"equals_status"`
+}
+
+// conditionMet reports whether a step's condition is satisfied given the results of prior steps ALREADY produced
+// in this execution pass. Fail-closed: if the referenced prior step has not been resolved earlier in this pass
+// (not found / still pending), the condition is UNMET — a gated step never runs unless its named precondition
+// actually reached the asserted status. A nil condition is always met.
+func conditionMet(prior []StepResult, c *StepCondition) bool {
+	if c == nil {
+		return true
+	}
+	for i := range prior {
+		if prior[i].Name == c.WhenStep {
+			return prior[i].Status == c.EqualsStatus
+		}
+	}
+	return false
 }
 
 // Playbook is a response workflow (global or tenant-owned).

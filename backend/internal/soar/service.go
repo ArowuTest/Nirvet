@@ -159,10 +159,12 @@ func (s *Service) GetRun(ctx context.Context, tenantID, id uuid.UUID) (*Playbook
 
 // stepPlan is a resolved step decided in Run's read phase (no side effects yet).
 type stepPlan struct {
-	act    ActionCatalog
-	auto   bool   // may auto-execute now (permitted by authority, no approval, in-hours)
-	target string // entity a connector step acts on (slice B)
-	sr     StepResult
+	act            ActionCatalog
+	auto           bool   // may auto-execute now (permitted by authority, no approval, in-hours)
+	target         string // entity a connector step acts on (slice B)
+	sr             StepResult
+	cond           *StepCondition // #187 slice B: prior-outcome gate (inline path only; skip-only)
+	continueOnFail bool           // #187 slice B: keep running after THIS step's execution failure
 }
 
 // Run starts a playbook against an incident for the caller's OWN tenant (the standard single-tenant path).
@@ -223,7 +225,8 @@ func (s *Service) runFor(ctx context.Context, p auth.Principal, tenantID, playbo
 			sr.Status = StatusAwaitingApproval
 			sr.Note = fmt.Sprintf("business-hours-only: deferred to approval (class %s, authority '%s')", act.RiskClass, mode)
 		}
-		plans = append(plans, stepPlan{act: act, auto: autoEligible && !businessHours, target: st.Target, sr: sr})
+		plans = append(plans, stepPlan{act: act, auto: autoEligible && !businessHours, target: st.Target, sr: sr,
+			cond: st.Condition, continueOnFail: st.ContinueOnFailure})
 	}
 
 	// §6.11 slice B: if any step is a real connector containment action (registered Actioner), the
@@ -250,19 +253,32 @@ func (s *Service) runFor(ctx context.Context, p auth.Principal, tenantID, playbo
 			existing = ex // M3: a retried run returns the existing active run, no re-dispatch
 			return nil
 		}
-		needsApproval, anyFailed := false, false
+		needsApproval, anyFailed, halted := false, false, false
 		for i := range plans {
 			pl := &plans[i]
-			if pl.auto {
+			switch {
+			case halted:
+				// #187 slice B: a prior step failed and did not continue-on-failure → the run halted; every later
+				// step is recorded skipped (not run). A skipped destructive step is skipped, never executed.
+				pl.sr.Status = StatusSkipped
+				pl.sr.Note = "run halted: a prior step failed"
+			case !conditionMet(run.Steps, pl.cond):
+				// #187 slice B: prior-outcome gate unmet → skip this step (skip-only; never escalates).
+				pl.sr.Status = StatusSkipped
+				pl.sr.Note = "skipped: condition not met"
+			case pl.auto:
 				pl.sr.Status, pl.sr.Note = s.execs.dispatch(ctx, tx, tenantID, pl.act, stepParams(incidentID, pb.Name, pl.sr.Name))
 				if pl.sr.Status == StatusFailed {
 					anyFailed = true
+					if !pl.continueOnFail {
+						halted = true // default stop-on-failure (EXECUTION failure only — never an approval denial)
+					}
 				}
 				if e := audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
 					Target: "action:" + pl.sr.Action, Metadata: map[string]any{"status": pl.sr.Status, "risk": pl.sr.Risk}}); e != nil {
 					return e
 				}
-			} else {
+			default:
 				needsApproval = true
 			}
 			run.Steps = append(run.Steps, pl.sr)
@@ -307,9 +323,11 @@ func canApprove(run *PlaybookRun, approver uuid.UUID) error {
 
 // approvedStep is a pending step cleared for dispatch in Approve's authorization phase.
 type approvedStep struct {
-	idx   int
-	act   ActionCatalog
-	block bool // business_critical — never executed by standard approval (§9.5)
+	idx            int
+	act            ActionCatalog
+	block          bool           // business_critical — never executed by standard approval (§9.5)
+	cond           *StepCondition // #187 slice B: prior-outcome gate (inline path only)
+	continueOnFail bool           // #187 slice B
 }
 
 // Approve executes the awaiting steps of a pending run. It RE-RESOLVES risk + authority per step and
@@ -352,6 +370,16 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 		return nil, err
 	}
 
+	// #187 slice B: control-flow (condition/continue_on_failure) lives on the playbook step, not the recorded
+	// StepResult — map it by name so the approve execution loop can honor it. Conditions only exist in all-inline
+	// playbooks (the authoring boundary forbids them alongside a connector step), so this path always honors them.
+	cf := map[string]Step{}
+	if pb, perr := s.repo.GetPlaybook(ctx, tenantID, run.PlaybookID); perr == nil {
+		for _, st := range pb.Steps {
+			cf[st.Name] = st
+		}
+	}
+
 	// Authorization phase (no side effects): re-resolve each pending step and check the approver floor
 	// BEFORE executing any step, so a too-junior approver is rejected without partial execution.
 	var steps []approvedStep
@@ -363,8 +391,9 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = run.Steps[i].ConnectorKey
 		}
+		cfStep := cf[run.Steps[i].Name]
 		if act.RiskClass == RiskBusinessCritical {
-			steps = append(steps, approvedStep{idx: i, act: act, block: true})
+			steps = append(steps, approvedStep{idx: i, act: act, block: true, cond: cfStep.Condition, continueOnFail: cfStep.ContinueOnFailure})
 			continue
 		}
 		_, approverRole, _, derr := s.resolveDecision(ctx, tenantID, run.Steps[i].Action)
@@ -374,7 +403,7 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 		if auth.RoleRank(p.Role) < requiredApproverRank(act.RiskClass, approverRole) {
 			return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", p.Role, act.RiskClass))
 		}
-		steps = append(steps, approvedStep{idx: i, act: act})
+		steps = append(steps, approvedStep{idx: i, act: act, cond: cfStep.Condition, continueOnFail: cfStep.ContinueOnFailure})
 	}
 
 	// §6.11 slice B: a supervised run (any registered connector Actioner) resumes through the two-phase
@@ -421,11 +450,22 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 			return nil // another approver claimed it first — nothing dispatched
 		}
 		claimed = true
-		anyFailed := false
+		anyFailed, halted := false, false
 		for _, st := range steps {
+			if halted {
+				run.Steps[st.idx].Status = StatusSkipped
+				run.Steps[st.idx].Note = "run halted: a prior step failed"
+				continue
+			}
 			if st.block {
 				run.Steps[st.idx].Status = StatusSkipped
 				run.Steps[st.idx].Note = "business_critical requires incident-commander + customer authorization (not available in this flow)"
+				continue
+			}
+			// #187 slice B: prior-outcome gate against results produced so far (incl. steps already run in phase 2).
+			if !conditionMet(run.Steps, st.cond) {
+				run.Steps[st.idx].Status = StatusSkipped
+				run.Steps[st.idx].Note = "skipped: condition not met"
 				continue
 			}
 			status, note := s.execs.dispatch(ctx, tx, tenantID, st.act, stepParams(run.IncidentID, "", run.Steps[st.idx].Name))
@@ -433,6 +473,9 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 			run.Steps[st.idx].Note = note + " (approved by " + p.Email + ")"
 			if status == StatusFailed {
 				anyFailed = true
+				if !st.continueOnFail {
+					halted = true // stop-on-failure (EXECUTION failure only — a denied approval already halts via Reject)
+				}
 			}
 			if e := audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
 				Target: "action:" + run.Steps[st.idx].Action, Metadata: map[string]any{"status": status, "risk": st.act.RiskClass, "approved": true}}); e != nil {
