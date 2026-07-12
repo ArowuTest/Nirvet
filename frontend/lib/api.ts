@@ -71,6 +71,10 @@ function isAuthEndpoint(path: string): boolean {
 // already holds the rotated access cookie. Purely an optimisation; correctness comes from the lock serialisation.
 const LAST_REFRESH_KEY = "nirvet_last_refresh_ms";
 const REFRESH_FRESH_MS = 5_000;
+// Hard bound on the /auth/refresh request. The cross-tab Web Lock is held for the duration of this fetch, so a
+// HUNG (not errored) server must not pin the lock until the browser's TCP timeout — that would block every tab's
+// refresh. On abort the fetch rejects → we fail closed and the lock releases promptly.
+const REFRESH_TIMEOUT_MS = 10_000;
 
 function refreshedRecently(): boolean {
   try {
@@ -92,17 +96,26 @@ function markRefreshed(): void {
 async function refreshOnce(): Promise<boolean> {
   // Another tab refreshed a moment ago → our cookies are already fresh; don't rotate again.
   if (refreshedRecently()) return true;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), REFRESH_TIMEOUT_MS);
   try {
     // /auth/refresh is a cookie-authenticated POST, so it is CSRF-protected like any other write — echo the
     // double-submit token. (Missing this → 403 and a spurious logout.)
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const csrf = readCookie(CSRF_COOKIE_NAMES);
     if (csrf) headers[CSRF_HEADER] = csrf;
-    const res = await fetch(`${API_BASE}/auth/refresh`, { method: "POST", credentials: "include", headers });
+    const res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      signal: ctl.signal,
+    });
     if (res.ok) markRefreshed();
     return res.ok;
   } catch {
-    return false;
+    return false; // network error OR abort (timeout) → fail closed; caller clears the session
+  } finally {
+    clearTimeout(timer);
   }
 }
 
