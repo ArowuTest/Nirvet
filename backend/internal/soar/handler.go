@@ -217,6 +217,17 @@ func (h *Handler) decision(w http.ResponseWriter, r *http.Request, approve bool)
 	httpx.JSON(w, http.StatusOK, run)
 }
 
+// ListActionRecords handles GET /soar/action-records — the durable records internal executors wrote (#187 slice C).
+func (h *Handler) ListActionRecords(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	recs, err := h.svc.ListActionRecords(r.Context(), p.TenantID, 100)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"records": recs})
+}
+
 // CreatePlaybook handles POST /soar/playbooks — author a tenant-owned playbook (#187 slice A, soc_manager+).
 func (h *Handler) CreatePlaybook(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

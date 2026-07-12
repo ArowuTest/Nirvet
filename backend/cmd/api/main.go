@@ -297,6 +297,12 @@ func main() {
 		Register("notify_analyst", soar.NewNotifyExecutor(outboxRepo)).
 		Register("notify_customer", soar.NewNotifyExecutor(outboxRepo))
 	soarRepo := soar.NewRepository(db)
+	// #187 slice C: real internal, non-destructive executors (create_note/create_ticket/add_watchlist/
+	// collect_evidence/enrich) — each writes a durable tenant-scoped soar_action_records row inside the run tx.
+	internalRec := soar.NewInternalRecorder(soarRepo)
+	for _, k := range soar.InternalActionKeys() {
+		soarExecs.Register(k, internalRec)
+	}
 	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs)
 	// §6.11 slice B/C: wire the two-phase supervisor. The Actioner registry starts EMPTY — real vendor
 	// containment actions (Defender isolate/release, Entra disable, PAN block) register incrementally
@@ -698,6 +704,7 @@ func main() {
 	mux.Handle("POST /soar/playbooks", soarAuthor(soarH.CreatePlaybook))
 	mux.Handle("PUT /soar/playbooks/{id}", soarAuthor(soarH.UpdatePlaybook))
 	mux.Handle("PATCH /soar/playbooks/{id}/enabled", soarAuthor(soarH.SetPlaybookEnabled))
+	mux.Handle("GET /soar/action-records", provider(soarH.ListActionRecords)) // #187 slice C: internal-action records
 	mux.Handle("GET /soar/runs", provider(soarH.ListRuns))
 	mux.Handle("GET /soar/runs/{id}", provider(soarH.GetRun))
 	mux.Handle("POST /soar/runs/{id}/approve", soarApprover(soarH.Approve))

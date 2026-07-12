@@ -1733,3 +1733,45 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+
+  # --- auto-added by cmd/openapigen (external-review OpenAPI parity); enrich schemas incrementally ---
+  /soar/action-records:
+    get:
+      tags: [soar]
+      summary: GET /soar/action-records
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/playbooks:
+    post:
+      tags: [soar]
+      summary: POST /soar/playbooks
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/playbooks/{id}:
+    put:
+      tags: [soar]
+      summary: PUT /soar/playbooks/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/playbooks/{id}/enabled:
+    patch:
+      tags: [soar]
+      summary: PATCH /soar/playbooks/{id}/enabled
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }

@@ -123,6 +123,16 @@ type Playbook struct {
 	CreatedAt       time.Time  `json:"created_at"`
 }
 
+// ActionRecord is a durable record written by an internal, non-destructive executor (#187 slice C).
+type ActionRecord struct {
+	ID         uuid.UUID  `json:"id"`
+	IncidentID *uuid.UUID `json:"incident_id,omitempty"`
+	ActionKey  string     `json:"action_key"`
+	Kind       string     `json:"kind"`
+	Summary    string     `json:"summary"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
 // RunStatus of a playbook run.
 type RunStatus string
 
