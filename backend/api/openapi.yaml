@@ -1598,6 +1598,71 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /tenant/ai/redaction:
+    get:
+      tags: [tenant]
+      summary: Get the tenant's effective AI-egress redaction policy (#188)
+      responses:
+        '200': { description: '{enabled, mode}' }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [tenant]
+      summary: Set the tenant's AI-egress redaction policy (mask-by-default; off is an explicit audited choice)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, mode]
+              properties:
+                enabled: { type: boolean }
+                mode: { type: string, enum: [balanced, strict, off] }
+      responses:
+        '200': { description: updated policy }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /tenant/ai/redaction/patterns:
+    get:
+      tags: [tenant]
+      summary: List the tenant's own + global config-extensible masking patterns (#188)
+      responses:
+        '200': { description: '{patterns:[...]}' }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [tenant]
+      summary: Add a config-extensible masking pattern (validated + compiled server-side; e.g. a jurisdiction ID)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, regex, placeholder]
+              properties:
+                name: { type: string, maxLength: 64 }
+                regex: { type: string, maxLength: 512 }
+                placeholder: { type: string, description: 'placeholder prefix, ^[A-Z][A-Z0-9_]{0,31}$' }
+      responses:
+        '201': { description: '{id}' }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /tenant/ai/redaction/patterns/{id}:
+    delete:
+      tags: [tenant]
+      summary: Delete a tenant-own masking pattern (#188)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: deleted }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '404': { description: not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /threat-intel/settings:
     get:
       tags: [threat-intel]

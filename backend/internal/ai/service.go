@@ -89,7 +89,8 @@ type Assets interface {
 // calls the gateway (or falls back offline), and logs every call.
 type Service struct {
 	gw        *Gateway
-	resolver  *Resolver // §6.12 #117: per-tenant provider resolution (A-5). nil → use the startup gateway (back-compat).
+	resolver  *Resolver         // §6.12 #117: per-tenant provider resolution (A-5). nil → use the startup gateway (back-compat).
+	redaction *RedactionService // §6.12 #188: AI-egress redaction. nil → fail-safe built-in mask floor (still masks).
 	alerts    *alert.Service
 	incidents Incidents
 	assets    Assets
@@ -113,6 +114,39 @@ func (s *Service) WithIncidentContext(i Incidents, a Assets) *Service {
 func (s *Service) WithResolver(r *Resolver) *Service {
 	s.resolver = r
 	return s
+}
+
+// WithRedaction wires the AI-egress Redactor (§6.12 #188). If unset, completeExternal still masks with the built-in
+// floor (mask-by-default is structural, not dependent on wiring).
+func (s *Service) WithRedaction(r *RedactionService) *Service {
+	s.redaction = r
+	return s
+}
+
+// completeExternal is the ONE and ONLY path that sends data to an LLM provider (CI-fenced: `.Complete(` may appear
+// nowhere else in the ai service layer). It redacts the fenced lines BEFORE they leave the platform, then fences +
+// length-bounds them. mask-by-default: with no Redactor wired, or on any config error, the built-in floor still
+// masks — a caller can never egress un-redacted customer telemetry.
+func (s *Service) completeExternal(ctx context.Context, tenantID uuid.UUID, prov Provider, lines []string, instruction string) (string, RedactionResult, error) {
+	policy := defaultRedactionPolicy()
+	patterns := append(builtinSpecific(), builtinBroad()...)
+	if s.redaction != nil {
+		policy = s.redaction.ResolvePolicy(ctx, tenantID)
+		patterns = s.redaction.Patterns(ctx, tenantID)
+	}
+	redacted, rr := redactLines(lines, policy, patterns)
+	user := fenceBlock(redacted) + instruction
+	text, err := prov.Complete(ctx, systemPrompt, user)
+	return text, rr, err
+}
+
+// withRedactionMeta folds the redaction outcome into an AI-call audit record: whether masking ran, the mode, and
+// the substitution COUNT. The cleartext, the masked values, and the placeholder map are NEVER recorded.
+func withRedactionMeta(m map[string]any, rr RedactionResult) map[string]any {
+	m["redaction_applied"] = rr.Applied
+	m["redaction_mode"] = rr.Mode
+	m["redaction_masked_count"] = rr.Count
+	return m
 }
 
 // resolve picks the provider for a tenant. Without a resolver wired it falls back to the startup gateway so
@@ -154,11 +188,9 @@ func (s *Service) SummariseAlert(ctx context.Context, p auth.Principal, alertID 
 		"mitre=" + strings.Join(a.MITRE, ","),
 		"status=" + string(a.Status),
 	}
-	// Event-derived fields are untrusted (they originate in monitored, possibly
-	// compromised, customer systems), so they are fenced (R2 H-A). The instruction lives
-	// OUTSIDE the fence.
-	userContent := fenceBlock(evidence) +
-		"\n\nUsing only the data above, summarise what happened, why it matters, and suggested next investigative steps."
+	// Event-derived fields are untrusted (they originate in monitored, possibly compromised, customer systems);
+	// they are REDACTED then fenced at the egress chokepoint (#188 + R2 H-A). The instruction lives OUTSIDE the fence.
+	const instruction = "\n\nUsing only the data above, summarise what happened, why it matters, and suggested next investigative steps."
 
 	prov, res := s.resolve(ctx, p.TenantID) // §6.12 #117: the tenant's configured provider (fail-closed to disabled)
 	sum := &Summary{Model: prov.Model(), Evidence: []string{"alert:" + a.ID.String()}, Assistive: true}
@@ -166,8 +198,10 @@ func (s *Service) SummariseAlert(ctx context.Context, p auth.Principal, alertID 
 		sum.Evidence = append(sum.Evidence, "event:"+a.EventID.String())
 	}
 
+	var rr RedactionResult
 	if prov.Available() {
-		text, err := prov.Complete(ctx, systemPrompt, userContent)
+		text, r, err := s.completeExternal(ctx, p.TenantID, prov, evidence, instruction)
+		rr = r
 		if err == nil {
 			sum.Text = text
 			sum.Confidence = "inferred"
@@ -177,16 +211,16 @@ func (s *Service) SummariseAlert(ctx context.Context, p auth.Principal, alertID 
 			sum.Model = "offline-fallback (llm error)"
 		}
 	} else {
-		sum.Text = fallbackSummary(a)
+		sum.Text = fallbackSummary(a) // no egress → no redaction (rr stays applied=false)
 		sum.Confidence = "observed"
 	}
 
-	// Audit the AI call (model + output + provider kind/endpoint + fallback reason) — guardrail: full logging.
+	// Audit the AI call (model + output + provider + redaction outcome) — guardrail: full logging.
 	_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "ai.summarise_alert",
 			Target:   "alert:" + a.ID.String(),
-			Metadata: withProviderMeta(auditMeta(sum.Model, sum.Text), res),
+			Metadata: withRedactionMeta(withProviderMeta(auditMeta(sum.Model, sum.Text), res), rr),
 		})
 	})
 	return sum, nil
@@ -252,8 +286,7 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 	if assetsIncomplete {
 		facts = append(facts, "Note: affected-asset criticality context was unavailable for this assessment.")
 	}
-	userContent := fenceBlock(facts) +
-		"\n\nUsing only the data above, provide a concise triage assessment: what this incident appears to be, why it matters " +
+	const instruction = "\n\nUsing only the data above, provide a concise triage assessment: what this incident appears to be, why it matters " +
 		"(consider severity, SLA status and affected-asset criticality), and the recommended next steps " +
 		"(to be executed by a human via the approval workflow)."
 
@@ -266,8 +299,11 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 		sum.Evidence = append(sum.Evidence, "asset:"+as.Ref)
 	}
 
+	var rr RedactionResult
 	if prov.Available() {
-		if text, gerr := prov.Complete(ctx, systemPrompt, userContent); gerr == nil {
+		text, r, gerr := s.completeExternal(ctx, p.TenantID, prov, facts, instruction)
+		rr = r
+		if gerr == nil {
 			sum.Text = text
 			sum.Confidence = "inferred"
 		} else {
@@ -276,7 +312,7 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 			sum.Model = "offline-fallback (llm error)"
 		}
 	} else {
-		sum.Text = fallbackTriage(facts)
+		sum.Text = fallbackTriage(facts) // no egress → no redaction
 		sum.Confidence = "observed"
 	}
 
@@ -284,7 +320,7 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "ai.triage_incident",
 			Target:   "incident:" + inc.ID.String(),
-			Metadata: withProviderMeta(auditMeta(sum.Model, sum.Text), res), // persist output + provider (R3 L-Triage-Audit)
+			Metadata: withRedactionMeta(withProviderMeta(auditMeta(sum.Model, sum.Text), res), rr),
 		})
 	})
 	return sum, nil
@@ -313,11 +349,16 @@ func triageFacts(inc *incident.Incident, alerts []alert.Alert, assets []asset.As
 		facts = append(facts, "mitre="+strings.Join(techniques, ", "))
 	}
 	if len(assets) > 0 {
-		names := make([]string, 0, len(assets))
+		// Split so the Redactor can mask the identifier refs (usernames/hostnames = high re-identification value)
+		// while KEEPING per-asset criticality as an analytic signal (safe field) — grounding preserved (#188).
+		refs := make([]string, 0, len(assets))
+		crits := make([]string, 0, len(assets))
 		for _, a := range assets {
-			names = append(names, fmt.Sprintf("%s(%s)", a.Ref, a.Criticality))
+			refs = append(refs, a.Ref)
+			crits = append(crits, string(a.Criticality))
 		}
-		facts = append(facts, "affected_assets="+strings.Join(names, ", "))
+		facts = append(facts, "affected_asset_refs="+strings.Join(refs, ", "))
+		facts = append(facts, "asset_criticalities="+strings.Join(crits, ", "))
 	}
 	return facts
 }

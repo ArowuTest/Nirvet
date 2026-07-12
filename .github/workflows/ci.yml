@@ -64,6 +64,9 @@ jobs:
       - name: Guard — every seeded playbook action resolves to a catalog action_key (no silently-broken content)
         working-directory: backend
         run: bash scripts/check-playbook-actions-cataloged.sh
+      - name: Guard — LLM egress flows only through the completeExternal redaction chokepoint (#188 AI-egress)
+        working-directory: backend
+        run: bash scripts/check-ai-egress-redaction.sh
       - name: Apply migrations
         working-directory: backend
         env:

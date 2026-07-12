@@ -345,6 +345,12 @@ func main() {
 	// a cipher-backed box (not the audited connector vault, whose Open is connector-credential-specific, GC-1).
 	aiBox := cipherSecretBox{cipher}
 	aiSvc.WithResolver(ai.NewResolver(ai.NewRepository(db), cfg.AnthropicAPIKey, cfg.AIModel, ai.NewVaultKeyResolver(aiBox)))
+	// §6.12 #188 AI-egress redaction: mask customer PII/secrets before they leave to a third-party LLM. mask-by-
+	// default (balanced) — the resolver reads the tenant's policy + config-extensible patterns; even unwired it
+	// masks via the built-in floor. Wired into the service so the completeExternal chokepoint applies it.
+	redactionSvc := ai.NewRedactionService(db)
+	aiSvc.WithRedaction(redactionSvc)
+	redactionH := ai.NewRedactionHandler(redactionSvc)
 	aiH := ai.NewHandler(aiSvc)
 	// §6.12 #117 admin-configurable AI providers: config surface (global default + per-tenant override + platform
 	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
@@ -654,6 +660,12 @@ func main() {
 	mux.Handle("PUT /admin/tenants/{id}/ai-policy", padmin(aiCfgH.SetTenantPolicy))
 	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
 	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
+	// §6.12 #188 AI-egress redaction — tenant-admin manages the mask-by-default policy + config-extensible patterns.
+	mux.Handle("GET /tenant/ai/redaction", ssoAdmin(redactionH.GetPolicy))
+	mux.Handle("PUT /tenant/ai/redaction", ssoAdmin(redactionH.SetPolicy))
+	mux.Handle("GET /tenant/ai/redaction/patterns", ssoAdmin(redactionH.ListPatterns))
+	mux.Handle("POST /tenant/ai/redaction/patterns", ssoAdmin(redactionH.AddPattern))
+	mux.Handle("DELETE /tenant/ai/redaction/patterns/{id}", ssoAdmin(redactionH.DeletePattern))
 	// §6.9 #124 I-1 investigation hunt-query (INV-006 / API-INV-006 + API-INV-001). Provider-gated (analyst_t1+);
 	// allow-listed predicates compile to bound-param SQL under the tenant's RLS context, every run read-audited.
 	mux.Handle("POST /investigation/run-hunt-query", provider(investigationH.RunHunt))
