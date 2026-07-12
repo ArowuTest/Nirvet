@@ -32,9 +32,14 @@ func statefulSetup(t *testing.T) (*detection.Engine, *detection.Repository, *dat
 	return detection.NewEngine(repo), repo, db, ctx
 }
 
+// statefulTestClass is a synthetic class_name no SHIPPED global rule matches (the 0107 content pack keys on
+// "Authentication"). These tests exercise their OWN tenant rules in isolation, so they must not accidentally
+// also trip seeded global content — that would count a second, legitimate fire and break the exactly-once assert.
+const statefulTestClass = "StatefulEngineTest"
+
 func failedAuth(tenantID uuid.UUID, user string) eventstore.NormalizedEvent {
 	return eventstore.NormalizedEvent{
-		ID: uuid.New(), TenantID: tenantID, ClassName: "Authentication", ActorRef: "user:" + user,
+		ID: uuid.New(), TenantID: tenantID, ClassName: statefulTestClass, ActorRef: "user:" + user,
 		Action: "signin", Outcome: "failure", ObservedAt: time.Now(),
 	}
 }
@@ -48,7 +53,7 @@ func createStatefulRule(t *testing.T, repo *detection.Repository, ctx context.Co
 		Enabled: true, Stage: detection.StageProduction,
 		Kind: kind, WindowSeconds: window, Threshold: threshold, EntityField: entityField, DistinctField: distinctField,
 		Condition: detection.Condition{All: []detection.Predicate{
-			{Field: "class_name", Op: detection.OpEq, Value: "Authentication"},
+			{Field: "class_name", Op: detection.OpEq, Value: statefulTestClass},
 			{Field: "outcome", Op: detection.OpEq, Value: "failure"},
 		}},
 	}

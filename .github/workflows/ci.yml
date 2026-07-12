@@ -61,6 +61,9 @@ jobs:
       - name: Guard — customer read chain serves only readmodel projections (audience over-disclosure)
         working-directory: backend
         run: bash scripts/check-audience-projection.sh
+      - name: Guard — every seeded playbook action resolves to a catalog action_key (no silently-broken content)
+        working-directory: backend
+        run: bash scripts/check-playbook-actions-cataloged.sh
       - name: Apply migrations
         working-directory: backend
         env:

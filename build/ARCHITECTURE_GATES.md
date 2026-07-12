@@ -2896,3 +2896,75 @@ needs a baseline model. Sliding windows (vs tumbling) = later.
 **→ Awaiting reviewer pre-code pass. HEAVY-ish (new eval path + concurrency) → dedicated adversarial landing
 round (concurrent-threshold double-fire, cross-tenant entity isolation, back-compat of simple rules, reaper
 never deletes a live window). Building against verified structure. Nothing pushed.**
+
+## Gate — LAUNCH #3: Seed detection + playbook content (10 use-cases / 6 playbooks) — #186
+
+**Grounding (source-verified, Jul 12).** Launch needs the platform to ship with meaningful out-of-box
+content, not empty catalogues. Verified facts this gate rests on:
+- **Seed convention = numbered migration INSERTs** run by the migrator superuser (bypasses RLS so
+  `tenant_id NULL` global rows commit). Existing packs: `0002`, `0023_detection_rulepack.sql`,
+  `0069_host_detection_pack.sql` (global rules, `stage` defaults to `production` + `enabled=true` ⇒ active
+  on ingest; a tenant may disable/override — DET-004). One global playbook already seeded in `0004_soar.sql`.
+- **Stateful engine now exists** (DET-002, mig 0106): `Kind ∈ {simple,threshold,distinct}`, `EntityField`,
+  `WindowSeconds`, `Threshold`, `DistinctField`. The `0069` rule *"Host: repeated failed authentication"* is a
+  single-event medium that literally comments *"correlates into brute-force"* — this slice makes that real.
+- **Entra telemetry fields (verified `poller.go:177-183`, FLAT Data map):** failed sign-in →
+  `class_name=Authentication`, `outcome=failure`, `actor_ref=user:<upn>`; `data.countryOrRegion`, `data.city`,
+  `data.ipAddress`, `data.failureReason`, `data.mfaAuthMethod`, `data.riskLevelDuringSignIn` all present.
+  `fieldValue` resolves flat `data.<key>` (and nested `data.x.y`). So impossible-travel `distinct_field =
+  data.countryOrRegion` (flat, populated — **no normalizer change needed**).
+- **SOAR safety model (verified `soar/service.go:68`, `0004`, `0036`): NOTHING AUTO-RUNS.** Playbooks are inert
+  templates; a run is created only by an explicit `Run`/`RunForTarget` principal call. `resolveDecision`
+  **fail-closes to `observe`** with no authorizer/policy. Each step's `action_key` → `soar_action_catalog`
+  risk_class + executor; **an uncatalogued action fails closed to `business_critical` (never runnable)**.
+  Destructive steps → `pending_approval` → senior `Approve` (`requiredApproverRank`); real vendor actioners
+  (Defender isolate, Entra disable, slices B/C) engage only under `destructive_enabled` + supervisor, else
+  truthful-simulate. **⇒ Seeding playbooks is safe by construction.** The `soar_action_catalog` already seeds
+  all 23 needed keys (`enrich, notify_analyst, notify_customer, create_ticket, create_note, collect_evidence,
+  inspect_mailbox, mark_email_review, quarantine_email, add_watchlist, block_ip/domain/hash, isolate_endpoint,
+  release_endpoint, disable_user, revoke_sessions, reset_password, request_customer_action, generate_report,
+  mass_quarantine, cloud_lockdown, network_block_all`) — content references only these ⇒ zero fail-closed rows.
+
+**In scope.**
+- **Detection content pack (mig 0107, global `tenant_id NULL`).** ~10 ATT&CK-mapped use-cases over the LAUNCH #1
+  identity/host telemetry, mixing simple + the two new stateful kinds:
+  - `threshold` **brute-force / password-spray** — `class_name=Authentication` + `outcome=failure`,
+    `entity_field=actor_ref`, window 900s, threshold 10 (conservative; tenant-tunable).
+  - `threshold` **MFA fatigue** — failed sign-in with `data.mfaAuthMethod` present (MFA challenge) per actor,
+    window 600s, threshold 5.
+  - `distinct` **impossible travel** — successful `Authentication`, `entity_field=actor_ref`,
+    `distinct_field=data.countryOrRegion`, window 3600s, threshold 2.
+  - `simple`: risky-user elevated (`class_name=Identity Risk`, `data.riskLevelDuringSignIn` high), privileged
+    role assignment (Directory Audit), legacy-auth protocol sign-in, sign-in from a flagged/blocked account,
+    admin-consent grant, mass mailbox export/exfil.
+- **Playbook content pack (mig 0108, global inert templates).** ~6 playbooks, each step's `action_key` drawn
+  ONLY from the seeded catalog; low-risk enrich/notify/ticket steps `requires_approval=false`, contain/disrupt
+  steps (`isolate_endpoint`, `disable_user`, `revoke_sessions`, `quarantine_email`, `block_ip`)
+  `requires_approval=true`. Playbooks: compromised-account (extend the existing one only if additive),
+  phishing-response, malware-host-isolation, brute-force-response, data-exfil-response, ransomware-early-stage.
+  `trigger_category` set for discovery only — it does **not** cause auto-run (verified).
+- **CI structural fence** `check-playbook-actions-cataloged.sh`: extract every `action_key`/`action` in seeded
+  playbook step JSON and assert each appears in the catalog seed — a durable guard against the fail-closed trap
+  for all future content (not just this slice).
+
+**Invariants honoured.**
+- *No auto-execution:* content adds templates + rules only; playbooks never fire without an explicit
+  principal-initiated run + approval chain (verified, not assumed). Detection rules ARE active-on-ingest — that
+  is their purpose — so they must be **well-scoped** (the anti-goal is an alert storm): thresholds set
+  conservatively, conditions anchored on `class_name` + a specific `outcome`/field, not broad `contains`.
+- *No silently-broken content (completeness-critic theme):* every stateful rule's `entity_field`/`distinct_field`
+  is a field the normalizer provably emits (verified above) — a rule that can never fire is worse than none, it
+  manufactures false coverage confidence. An **integration test synthesizes Entra events and asserts each
+  stateful seeded rule actually fires** (brute-force at threshold, impossible-travel on the 2nd distinct country).
+- *action_key ↔ catalog integrity:* a second test asserts every seeded playbook step resolves to a catalog row
+  (no `business_critical` fail-closed) — plus the CI fence above.
+- *Idempotent seed:* `INSERT … SELECT … WHERE NOT EXISTS (name, tenant_id IS NULL)` anti-join (no schema
+  change; safe to re-apply). from-zero migration validated.
+- *Tenant sovereignty preserved:* global content; tenants disable/override via existing RLS + DET-004.
+
+**Deferred (tracked, not TODO).** Content-pack **import/export API** (DET-004 uploadable packs) → #187/#188.
+Sequence-based detections wait on the sequence engine primitive (deferred in #185). Anomaly/baseline content
+waits on the anomaly primitive. This slice ships the built-in launch catalogue via migration.
+
+**→ LIGHT–MEDIUM (data migrations + safe-by-construction; no new eval path or auth surface). Reviewer reviews
+at the commit boundary (continuous-review model). Building against verified structure. Nothing pushed.**
