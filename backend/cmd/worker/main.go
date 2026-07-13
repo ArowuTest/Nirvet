@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/billing"
 	"github.com/ArowuTest/nirvet/internal/connector"
 	"github.com/ArowuTest/nirvet/internal/correlation"
 	"github.com/ArowuTest/nirvet/internal/detection"
@@ -111,6 +112,9 @@ func main() {
 	// silent is a detection GAP — alert once per silence episode. last-seen is recorded on every keyed ingest;
 	// this is the silence half. (interval 5m; silent after 30m of no events; ≤200/tick.)
 	go connector.NewSilenceSweeper(connector.NewRepository(db), alertSvc).Start(ctx, log, 5*time.Minute, 30*time.Minute, 200)
+	// ING-010/BILL-002: day-close ingest metering — feeds the usage ledger (log_volume) that drives overage +
+	// the "exceeded contracted volume" commercial signal. Idempotent per (tenant, day); hourly cadence.
+	go billing.NewService(billing.NewRepository(db)).StartDailyMeteringLoop(ctx, log, time.Hour)
 	// §6.18 #122 Reinf-B: auto-revert protected feature flags whose time-box has expired to their secure default —
 	// a temporary loosening (e.g. destructive-SOAR gate opened for an incident) can never persist indefinitely.
 	go platformadmin.NewService(platformadmin.NewRepository(db), alertSvc).StartRevertSweep(ctx, log, time.Minute)
