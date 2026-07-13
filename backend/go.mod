@@ -2,6 +2,12 @@ module github.com/ArowuTest/nirvet
 
 go 1.25.0
 
+// Build toolchain pinned to a patched 1.25.x so the compiled stdlib is free of the
+// known CVEs govulncheck flags in go1.25.0 (crypto/tls GO-2026-5856, crypto/x509
+// GO-2026-5037, html/template GO-2026-4980/4982, net/textproto GO-2026-5039, mime
+// GO-2026-5038 — all fixed by go1.25.12). Bump as new stdlib CVEs are disclosed.
+toolchain go1.25.12
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
 	github.com/beevik/etree v1.6.0

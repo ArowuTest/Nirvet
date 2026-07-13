@@ -2,7 +2,7 @@
 # One image ships api + worker + migrate; each deploy target picks the command.
 # Portable identically to Render, Cloud Run, GKE, or a sovereign VM (ADR-0005).
 
-FROM golang:1.25-bookworm AS build
+FROM golang:1.25.12-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
