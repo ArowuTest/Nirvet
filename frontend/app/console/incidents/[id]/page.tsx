@@ -32,6 +32,7 @@ type Incident = {
 };
 type TimelineEntry = { id: string; at: string; author: string; kind: string; visibility: string; note: string };
 type Task = { id: string; title: string; status: string; created_at: string };
+type Attachment = { id: string; filename: string; content_type: string; size_bytes: number; sha256: string; uploaded_at: string };
 
 // Mirrors backend stageTransitions (transitions.go). We omit "closed" — closing is the criteria-gated /close flow.
 const TRANSITIONS: Record<string, string[]> = {
@@ -67,6 +68,7 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
   const [inc, setInc] = useState<Incident | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -85,6 +87,8 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       setTimeline(res.timeline ?? []);
       const t = await apiGet<{ tasks: Task[] | null }>(`/incidents/${id}/tasks`).catch(() => ({ tasks: [] }));
       setTasks(t.tasks ?? []);
+      const at = await apiGet<{ attachments: Attachment[] | null }>(`/incidents/${id}/attachments`).catch(() => ({ attachments: [] }));
+      setAttachments(at.attachments ?? []);
       setState("ready");
     } catch {
       setState("notfound");
@@ -109,6 +113,31 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
     } finally {
       setBusy(false);
     }
+  }
+
+  async function downloadPack() {
+    setMsg(null);
+    setBusy(true);
+    try {
+      const pack = await apiGet<unknown>(`/incidents/${id}/evidence-pack`);
+      const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `evidence-${id}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMsg({ tone: "ok", text: "Signed evidence pack downloaded." });
+    } catch (e) {
+      const forbidden = e instanceof ApiError && e.status === 403;
+      setMsg({ tone: "danger", text: forbidden ? "Exporting an evidence pack requires a senior analyst role." : e instanceof Error ? e.message : "Export failed." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function fmtBytes(n: number) {
+    return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   }
 
   if (state === "loading") return <div className="text-sm" style={{ color: "var(--c-ink-3)" }}>Loading…</div>;
@@ -329,6 +358,28 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
                   Add
                 </Button>
               </div>
+            )}
+          </Panel>
+
+          <Panel
+            title="Evidence"
+            sub="Chain-of-custody artifacts (CASE-008)"
+            actions={<Button size="sm" variant="ghost" disabled={busy} onClick={downloadPack}>Export pack</Button>}
+          >
+            {attachments.length === 0 ? (
+              <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>No evidence files attached. The signed evidence pack bundles the case record, timeline and custody chain.</p>
+            ) : (
+              <ul className="space-y-2">
+                {attachments.map((a) => (
+                  <li key={a.id} className="rounded-lg p-2.5" style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm" style={{ color: "var(--c-ink)" }} title={a.filename}>{a.filename}</span>
+                      <span className="shrink-0 text-[11px]" style={{ color: "var(--c-ink-3)" }}>{fmtBytes(a.size_bytes)}</span>
+                    </div>
+                    <div className="mt-1 truncate font-mono text-[10px]" style={{ color: "var(--c-ink-3)" }} title={a.sha256}>sha256:{a.sha256.slice(0, 24)}…</div>
+                  </li>
+                ))}
+              </ul>
             )}
           </Panel>
         </div>
