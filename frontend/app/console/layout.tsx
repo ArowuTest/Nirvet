@@ -19,13 +19,13 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Dashboard", href: "/console", icon: "grid", ready: true },
       { label: "Incidents", href: "/console/incidents", icon: "alert-circle", badge: "incidents", ready: true },
       { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true },
-      { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: false },
+      { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true },
     ],
   },
   {
     section: "Response",
     items: [
-      { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: false },
+      { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true },
       { label: "Evidence", href: "/console/evidence", icon: "server", ready: false },
       { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true },
     ],
