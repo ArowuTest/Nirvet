@@ -27,7 +27,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: false },
       { label: "Evidence", href: "/console/evidence", icon: "server", ready: false },
-      { label: "Notifications", href: "/console/notifications", icon: "bell", ready: false },
+      { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true },
     ],
   },
   {
@@ -45,6 +45,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
   const [me, setMe] = useState<Me | null>(null);
   const [state, setState] = useState<"loading" | "ready">("loading");
   const [counts, setCounts] = useState<{ incidents?: number; alerts?: number }>({});
+  const [unread, setUnread] = useState(0);
   const [menu, setMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -57,6 +58,9 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         setState("ready");
         apiGet<{ open_incidents: number; open_alerts: number }>("/reports/summary")
           .then((s) => alive && setCounts({ incidents: s.open_incidents, alerts: s.open_alerts }))
+          .catch(() => {});
+        apiGet<{ unread_count: number }>("/notify/inbox/unread-count")
+          .then((n) => alive && setUnread(n.unread_count))
           .catch(() => {});
       })
       .catch(() => alive && router.replace("/login"));
@@ -124,9 +128,14 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
             All systems operational
           </span>
           <div className="mx-1 h-6 w-px" style={{ background: "var(--c-border)" }} />
-          <button className="rounded-lg p-1.5" style={{ color: "var(--c-ink-2)" }} aria-label="Notifications">
+          <Link href="/console/notifications" className="relative rounded-lg p-1.5" style={{ color: "var(--c-ink-2)" }} aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}>
             <Icon name="bell" size={17} />
-          </button>
+            {unread > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold text-white" style={{ background: "var(--c-danger)" }}>
+                {unread > 9 ? "9+" : unread}
+              </span>
+            )}
+          </Link>
 
           <div className="relative" ref={menuRef}>
             <button
@@ -232,11 +241,15 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
           ))}
 
           <div className="mt-auto pt-3" style={{ borderTop: "1px solid var(--c-border)" }}>
-            <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 opacity-50" style={{ color: "var(--c-ink-3)" }} aria-disabled>
+            <Link
+              href="/console/settings"
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition"
+              aria-current={pathname.startsWith("/console/settings") ? "page" : undefined}
+              style={pathname.startsWith("/console/settings") ? { background: "rgba(14,165,233,0.1)", color: "var(--c-ink)" } : { color: "var(--c-ink-2)" }}
+            >
               <Icon name="settings" size={16} />
               <span className="flex-1 text-sm">Settings</span>
-              <span className="text-[9px] uppercase tracking-wide">soon</span>
-            </div>
+            </Link>
           </div>
         </aside>
 
