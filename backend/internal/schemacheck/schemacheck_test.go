@@ -264,3 +264,46 @@ func keys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestPolicyGrantParity (guard #4): every per-command RLS policy on a public table must be backed by
+// the matching table GRANT to the application role nirvet_app. RLS decides which ROWS are visible; the
+// GRANT decides whether the role may touch the table at all. A FOR SELECT/INSERT/UPDATE/DELETE policy
+// with no matching grant is a latent "permission denied" at runtime — and it hides in local/CI because
+// migrations and superuser-owner tests bypass both grants and RLS. This retires exactly the class that
+// shipped in 0066/0098 (protected_hosts had four policies and zero grants; protected_identities /
+// protected_directory_roles had an UPDATE policy but no UPDATE grant), fixed in 0117.
+//
+// Only explicit per-command policies are checked. A no-FOR (ALL) policy reports cmd='ALL' and cannot be
+// mapped to a single privilege without false-positiving on intentionally-immutable tables (which carry
+// a broad policy but deliberately withhold UPDATE/DELETE grants), so those are out of scope here.
+func TestPolicyGrantParity(t *testing.T) {
+	db := connect(t)
+
+	rows, err := db.Pool.Query(context.Background(), `
+		SELECT p.tablename, p.cmd
+		FROM pg_policies p
+		WHERE p.schemaname = 'public'
+		  AND p.cmd IN ('SELECT','INSERT','UPDATE','DELETE')
+		  AND NOT has_table_privilege('nirvet_app', ('public.'||quote_ident(p.tablename))::regclass, p.cmd)
+		ORDER BY p.tablename, p.cmd`)
+	if err != nil {
+		t.Fatalf("policy/grant parity query: %v", err)
+	}
+	defer rows.Close()
+
+	var offenders []string
+	for rows.Next() {
+		var tbl, cmd string
+		if err := rows.Scan(&tbl, &cmd); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		offenders = append(offenders, fmt.Sprintf("%s missing %s grant", tbl, cmd))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("RLS policy without matching nirvet_app GRANT (the app would fail with 'permission denied' "+
+			"at runtime — add the GRANT to the migration that creates the policy): %v", offenders)
+	}
+}
