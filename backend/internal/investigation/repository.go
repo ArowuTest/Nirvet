@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -82,4 +83,16 @@ func (r *Repository) WriteQueryAudit(ctx context.Context, tenantID, actorID uuid
 			tenantID, actorID, kind, qj, rowCount)
 		return e
 	})
+}
+
+// RawEventMeta reads a raw event's blob URI + checksum, RLS-confined (a foreign/absent id → not-found). The raw
+// payload itself lives in the object store; this returns only the pointer so the service can fetch it after audit.
+func (r *Repository) RawEventMeta(ctx context.Context, tenantID, id uuid.UUID) (blobURI, checksum string, err error) {
+	err = r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT COALESCE(blob_uri,''), checksum FROM raw_events WHERE id=$1`, id).Scan(&blobURI, &checksum)
+	})
+	if err == pgx.ErrNoRows {
+		return "", "", httpx.ErrNotFound("raw event not found")
+	}
+	return blobURI, checksum, err
 }

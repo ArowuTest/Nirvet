@@ -4,6 +4,7 @@ package investigation
 // (analyst_t1+) in the router; the allow-list/role/cost/audit controls live in the service.
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +28,28 @@ func NewHandler(svc *Service, entities *EntityService, datagaps *DataGapService)
 
 // defaultTimelineWindow is applied when a get-timeline request omits from/to.
 const defaultTimelineWindow = 7 * 24 * time.Hour
+
+// GetRawEvent handles GET /investigation/raw-event/{id} — fetch the untransformed raw payload for one raw event.
+// The most sensitive read: role-gated at the router (senior+), RLS-confined, and fail-closed-audited in the service.
+// The payload is returned base64-encoded so it is format-agnostic and safe to embed in JSON.
+func (h *Handler) GetRawEvent(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid raw event id"))
+		return
+	}
+	raw, err := h.svc.GetRawEvent(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"id":             raw.ID,
+		"checksum":       raw.Checksum,
+		"payload_base64": base64.StdEncoding.EncodeToString(raw.Payload),
+	})
+}
 
 // RunHunt handles POST /investigation/run-hunt-query and PATCH /investigation/search-events (same allow-listed engine).
 func (h *Handler) RunHunt(w http.ResponseWriter, r *http.Request) {

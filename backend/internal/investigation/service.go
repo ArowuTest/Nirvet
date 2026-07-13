@@ -9,16 +9,58 @@ import (
 	"context"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/google/uuid"
 )
 
 // Service owns the hunt-query flow.
 type Service struct {
 	repo    *Repository
 	journal CaseJournalReader // #188 optional: the incident journal, for the merged multi-lane case timeline
+	rawBlob blobstore.Store   // #188 optional: the object store holding raw event payloads (get-raw-event)
 }
 
 // NewService builds the service.
 func NewService(repo *Repository) *Service { return &Service{repo: repo} }
+
+// WithRawStore wires the object store for the raw-event fetch path (#188). Without it, get-raw-event is unavailable.
+func (s *Service) WithRawStore(b blobstore.Store) *Service { s.rawBlob = b; return s }
+
+// RawEvent is the untransformed captured payload for one raw event — the most sensitive data an analyst can pull.
+type RawEvent struct {
+	ID       uuid.UUID `json:"id"`
+	Checksum string    `json:"checksum"`
+	Payload  []byte    `json:"-"`
+}
+
+// GetRawEvent fetches the raw captured payload for one raw event, RLS-confined to the caller's tenant (a foreign id
+// resolves to not-found). The read-audit (INV-007, kind=raw_event) is FAIL-CLOSED: the payload is never served
+// unless the access is recorded first. The most sensitive read in the product — role-gated at the router.
+func (s *Service) GetRawEvent(ctx context.Context, p auth.Principal, id uuid.UUID) (*RawEvent, error) {
+	if s.rawBlob == nil {
+		return nil, httpx.ErrBadRequest("raw-event retrieval is not available")
+	}
+	if id == uuid.Nil {
+		return nil, httpx.ErrBadRequest("raw event id is required")
+	}
+	blobURI, checksum, err := s.repo.RawEventMeta(ctx, p.TenantID, id) // RLS: foreign/absent id → not-found
+	if err != nil {
+		return nil, err
+	}
+	// Fail-closed audit BEFORE serving any payload — never a raw-data access that isn't recorded.
+	if err := s.repo.WriteQueryAudit(ctx, p.TenantID, p.UserID, "raw_event", map[string]string{"raw_event_id": id.String()}, 1); err != nil {
+		return nil, err
+	}
+	if blobURI == "" {
+		return nil, httpx.ErrNotFound("raw payload is not available for this event")
+	}
+	payload, err := s.rawBlob.Get(ctx, blobURI)
+	if err != nil {
+		return nil, httpx.ErrInternal("raw payload could not be read")
+	}
+	return &RawEvent{ID: id, Checksum: checksum, Payload: payload}, nil
+}
 
 // RunHunt validates + runs a hunt query and records the read-path audit.
 func (s *Service) RunHunt(ctx context.Context, p auth.Principal, q HuntQuery) (HuntResult, error) {

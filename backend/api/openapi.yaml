@@ -1356,6 +1356,18 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /investigation/raw-event/{id}:
+    get:
+      tags: [investigation]
+      summary: Fetch the untransformed raw payload for one raw event (#188; senior+, RLS-confined, fail-closed audited)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: '{id, checksum, payload_base64}' }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '404': { description: not found (unknown or foreign-tenant id), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /investigation/run-hunt-query:
     post:
       tags: [investigation]
