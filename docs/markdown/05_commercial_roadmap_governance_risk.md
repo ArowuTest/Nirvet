@@ -81,6 +81,7 @@ one country or one vendor ecosystem.
 
 Ghana-hosted SOCaaS for public-sector, regulated and CII clients. The platform should remain broader than this
 use case, but the Ghana proposition is a strong example of how the same core product can be packaged for a local
+regulated market.
 
 ## Reference standards and sources
 

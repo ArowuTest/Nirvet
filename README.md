@@ -35,7 +35,7 @@ nirvet/
 ├─ deploy/              ← docker-compose (local Postgres), infra
 ├─ docs/
 │  ├─ source/           ← IMMUTABLE original files (.docx / .pdf / .xlsx) — never edit
-│  └─ markdown/         ← agent-readable conversions (00_SRS + 01–06 + Ghana)
+│  └─ markdown/         ← agent-readable conversions (00_SRS + 01–06)
 ├─ knowledge/           ← synthesized quick-reference (overview, requirements register, standards)
 └─ build/adr/           ← Architecture Decision Records (6: multi-tenancy, event store, ingestion, vault, cloud-portability, canonical schema)
 ```

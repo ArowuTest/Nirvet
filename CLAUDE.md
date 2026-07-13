@@ -68,8 +68,8 @@ expert review rather than deciding them unilaterally.
 
 ## Known environment gaps (for future sessions)
 
-- **PDF text extraction was unavailable** when this base was built (no poppler / PDF library). The Ghana concept
-  therefore a summary + pointer, **not** a full extraction. If you have PDF tooling, extract the source PDF and
-  replace it.
+- **PDF text extraction was unavailable** when this base was built (no poppler / PDF library), so any source
+  PDFs under `docs/source/` are represented by summaries/pointers rather than full extractions. If you have PDF
+  tooling, extract the source PDF and replace the derived markdown.
 - `.docx`/`.xlsx` were extracted via ZIP/XML parsing (PowerShell .NET). The SRS markdown flattens Word tables to
   sequential lines; the `.docx`/`.pdf` in `docs/source/` remain authoritative.

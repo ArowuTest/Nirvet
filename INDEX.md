@@ -48,3 +48,4 @@ Every artifact in this project: its markdown (agent-readable), its immutable sou
 
 ## Source inventory (`docs/source/`, immutable)
 
+13 files: docs 01–05 (`.docx` + `.pdf` each = 10), SRS (`.docx` + `.pdf`), backlog (`.xlsx`).
