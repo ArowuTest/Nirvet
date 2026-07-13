@@ -67,6 +67,9 @@ jobs:
       - name: Guard — LLM egress flows only through the completeExternal redaction chokepoint (#188 AI-egress)
         working-directory: backend
         run: bash scripts/check-ai-egress-redaction.sh
+      - name: Guard — every AI-008 eval category is seeded + defined (§6.12 governance, no silent gap)
+        working-directory: backend
+        run: bash scripts/check-ai-eval-categories.sh
       - name: Apply migrations
         working-directory: backend
         env:

@@ -474,6 +474,13 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /admin/ai/prompts: { get: { tags: [admin], summary: list AI prompts, responses: { '200': { description: OK } } }, post: { tags: [admin], summary: create AI prompt, responses: { '201': { description: created } } } }
+  /admin/ai/prompts/{key}/versions: { get: { tags: [admin], summary: list prompt versions, parameters: [{ name: key, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }, post: { tags: [admin], summary: add prompt version, parameters: [{ name: key, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created } } } }
+  /admin/ai/prompts/{key}/versions/{version}/activate: { post: { tags: [admin], summary: activate a prompt version, parameters: [{ name: key, in: path, required: true, schema: { type: string } }, { name: version, in: path, required: true, schema: { type: integer } }], responses: { '200': { description: OK } } } }
+  /admin/ai/eval/cases: { get: { tags: [admin], summary: list AI eval cases, responses: { '200': { description: OK } } } }
+  /admin/ai/eval/runs: { get: { tags: [admin], summary: list AI eval runs, responses: { '200': { description: OK } } }, post: { tags: [admin], summary: run the AI safety-eval suite, responses: { '201': { description: created } } } }
+  /admin/ai/eval/runs/{id}: { get: { tags: [admin], summary: get an AI eval run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } } }
+  /ai/outputs/{ref}/feedback: { get: { tags: [ai], summary: list feedback on an AI output, parameters: [{ name: ref, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }, post: { tags: [ai], summary: submit feedback on an AI output, parameters: [{ name: ref, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created } } } }
   /admin/billing/accounts:
     post:
       tags: [admin]

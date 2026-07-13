@@ -74,6 +74,34 @@ var (
 		Name: "nirvet_retention_oldest_pending_cleanup_seconds",
 		Help: "Age of the oldest incomplete retention deletion attempt (0 when the ledger is clean).",
 	})
+
+	// --- AI governance (§6.12 slice A: eval harness + feedback) ---
+
+	// AIEvalRunsTotal counts eval-suite runs executed.
+	AIEvalRunsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "nirvet_ai_eval_runs_total",
+		Help: "AI safety-eval suite runs executed.",
+	})
+
+	// AIEvalPassRate is the pass rate (0..1) of the most recent eval run — the headline governance signal.
+	AIEvalPassRate = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "nirvet_ai_eval_pass_rate",
+		Help: "Pass rate (0..1) of the most recent AI safety-eval run.",
+	})
+
+	// AIGroundingFailuresTotal counts grounding/unsupported-claim eval cases that FAILED — a rising rate means
+	// the copilot is asserting things not supported by the provided context (AI-002/AI-008).
+	AIGroundingFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "nirvet_ai_grounding_failures_total",
+		Help: "Eval cases in the grounding/unsupported-claim categories that failed.",
+	})
+
+	// AIFeedbackTotal counts analyst feedback labels on copilot outputs, by label (SRS §11). 'unsafe' and
+	// 'hallucinated' rates are the ones an operator pages on.
+	AIFeedbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "nirvet_ai_feedback_total",
+		Help: "Analyst feedback labels on AI copilot outputs, by label.",
+	}, []string{"label"})
 )
 
 type statusRecorder struct {

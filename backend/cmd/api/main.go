@@ -360,6 +360,9 @@ func main() {
 	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
 	// boundary. DORMANT — the seeded global anthropic row keeps current behavior until an admin changes it.
 	aiCfgH := ai.NewConfigHandler(ai.NewConfigService(ai.NewRepository(db), aiBox))
+	// §6.12 AI governance slice A: prompt registry + eval harness (padmin content) + output feedback (analyst).
+	// The eval runner is deterministic/hermetic (no provider needed); the llm judge is dormant until slice B.
+	aiGovH := ai.NewGovernanceHandler(ai.NewGovernanceService(ai.NewGovRepo(db)))
 	// §6.18 #122 platform-admin: safety-classed feature flags, tenant lifecycle (legal hold / uniform offboarding),
 	// maintenance windows. The safety gates (immutable/protected/four-eyes, legal-hold-blocks-delete, critical-breaks-
 	// through) live in the services; the handler is thin plumbing. All routes are padmin-gated below.
@@ -671,6 +674,19 @@ func main() {
 	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
 	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
 	// §6.12 #188 AI-egress redaction — tenant-admin manages the mask-by-default policy + config-extensible patterns.
+	// §6.12 AI governance — prompt registry + eval harness (padmin) + output feedback (analyst).
+	mux.Handle("GET /admin/ai/prompts", padmin(aiGovH.ListPrompts))
+	mux.Handle("POST /admin/ai/prompts", padmin(aiGovH.CreatePrompt))
+	mux.Handle("GET /admin/ai/prompts/{key}/versions", padmin(aiGovH.ListVersions))
+	mux.Handle("POST /admin/ai/prompts/{key}/versions", padmin(aiGovH.AddVersion))
+	mux.Handle("POST /admin/ai/prompts/{key}/versions/{version}/activate", padmin(aiGovH.ActivateVersion))
+	mux.Handle("GET /admin/ai/eval/cases", padmin(aiGovH.ListCases))
+	mux.Handle("POST /admin/ai/eval/runs", padmin(aiGovH.RunEval))
+	mux.Handle("GET /admin/ai/eval/runs", padmin(aiGovH.ListRuns))
+	mux.Handle("GET /admin/ai/eval/runs/{id}", padmin(aiGovH.GetRun))
+	mux.Handle("POST /ai/outputs/{ref}/feedback", provider(aiGovH.SubmitFeedback))
+	mux.Handle("GET /ai/outputs/{ref}/feedback", provider(aiGovH.ListFeedback))
+
 	mux.Handle("GET /tenant/ai/redaction", ssoAdmin(redactionH.GetPolicy))
 	mux.Handle("PUT /tenant/ai/redaction", ssoAdmin(redactionH.SetPolicy))
 	mux.Handle("GET /tenant/ai/redaction/patterns", ssoAdmin(redactionH.ListPatterns))
