@@ -212,3 +212,125 @@ func TestRetention_TelemetryOnly(t *testing.T) {
 		t.Fatal("retention must NOT delete alerts (telemetry-only)")
 	}
 }
+
+// --- external-audit Finding 1: idempotent-delete self-heal + deletion-attempt ledger ---
+
+// flakyBlobs wraps a Store to inject Delete failures, simulating an object-store outage.
+type flakyBlobs struct {
+	blobstore.Store
+	failDelete bool
+}
+
+func (f *flakyBlobs) Delete(ctx context.Context, uri string) error {
+	if f.failDelete {
+		return errTestBlobDelete
+	}
+	return f.Store.Delete(ctx, uri)
+}
+
+var errTestBlobDelete = pgErr("injected blob delete failure")
+
+type pgErr string
+
+func (e pgErr) Error() string { return string(e) }
+
+func ledgerEntry(t *testing.T, db *database.DB, tid, id uuid.UUID) (blobDeleted, rowDeleted, exists bool) {
+	t.Helper()
+	_ = db.WithTenant(context.Background(), tid, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT blob_deleted, row_deleted, true FROM retention_deletion_attempt WHERE raw_event_id=$1`, id).
+			Scan(&blobDeleted, &rowDeleted, &exists)
+	})
+	return
+}
+
+func pendingMissing(t *testing.T, db *database.DB) int64 {
+	t.Helper()
+	var n int64
+	_ = db.WithSystem(context.Background(), func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT coalesce(rows_with_missing_blob,0) FROM retention_pending_summary()`).Scan(&n)
+	})
+	return n
+}
+
+// A row orphaned by a crash between blob delete and metadata delete (blob already gone, row still present)
+// self-heals on the next sweep: blobstore.Delete is idempotent on a missing object, so the row is finally
+// removed. This is the recovery from the exact failure the auditor described.
+func TestRetention_OrphanedRowSelfHeals(t *testing.T) {
+	db := retDB(t)
+	svc, blobs := retSvc(t, db)
+	p, tid := retTenant(t, db, 30)
+	ctx := context.Background()
+	_, _ = svc.SetPolicy(ctx, p, true, nil)
+	id, uri := seedRaw(t, db, blobs, tid, oldT, true)
+	if err := blobs.Delete(ctx, uri); err != nil { // post-failure state: blob deleted, metadata row still present
+		t.Fatalf("pre-delete blob: %v", err)
+	}
+	if _, err := svc.SweepTenant(ctx, tid); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if rawExists(t, db, tid, id) {
+		t.Fatal("orphaned row (blob already gone) must self-heal — the idempotent Delete lets the row be removed")
+	}
+}
+
+// A blob-delete failure is fail-safe — the row AND its blob are both kept (never over-delete) — and is recorded
+// in the deletion-attempt ledger; when the object store recovers, the next sweep completes and heals it.
+func TestRetention_BlobDeleteFailureFailSafeThenHeals(t *testing.T) {
+	db := retDB(t)
+	local, err := blobstore.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobstore: %v", err)
+	}
+	flaky := &flakyBlobs{Store: local}
+	svc := NewService(db, flaky)
+	p, tid := retTenant(t, db, 30)
+	ctx := context.Background()
+	_, _ = svc.SetPolicy(ctx, p, true, nil)
+	id, uri := seedRaw(t, db, flaky, tid, oldT, true)
+
+	flaky.failDelete = true
+	if _, err := svc.SweepTenant(ctx, tid); err != nil {
+		t.Fatalf("sweep with a failing blob delete must not error (fail-safe skip), got %v", err)
+	}
+	if !rawExists(t, db, tid, id) {
+		t.Fatal("a blob-delete failure must KEEP the row (retained with its blob)")
+	}
+	if _, err := local.Get(ctx, uri); err != nil {
+		t.Fatal("the blob must be retained with the row on a blob-delete failure")
+	}
+	if bd, _, ok := ledgerEntry(t, db, tid, id); !ok || bd {
+		t.Fatalf("expected a ledger entry with blob_deleted=false; got exists=%v blob_deleted=%v", ok, bd)
+	}
+
+	flaky.failDelete = false // object store recovers
+	if _, err := svc.SweepTenant(ctx, tid); err != nil {
+		t.Fatalf("sweep after recovery: %v", err)
+	}
+	if rawExists(t, db, tid, id) {
+		t.Fatal("the row must be deleted once the blob delete succeeds")
+	}
+}
+
+// The ledger + cross-tenant summary make the "blob deleted, metadata delete failed" orphan observable and show
+// it healing: an orphan recorded via recordAttempts is reported by retention_pending_summary; completing it
+// clears the signal.
+func TestRetention_LedgerReportsAndClearsOrphan(t *testing.T) {
+	db := retDB(t)
+	svc, blobs := retSvc(t, db)
+	_, tid := retTenant(t, db, 30)
+	ctx := context.Background()
+	id, _ := seedRaw(t, db, blobs, tid, oldT, false)
+
+	before := pendingMissing(t, db)
+	svc.recordAttempts(ctx, tid, []uuid.UUID{id}, []string{"deadbeef"}, true) // blob gone, metadata row remains
+	if got := pendingMissing(t, db) - before; got != 1 {
+		t.Fatalf("retention_pending_summary rows_with_missing_blob delta = %d, want 1", got)
+	}
+	if bd, rd, ok := ledgerEntry(t, db, tid, id); !ok || !bd || rd {
+		t.Fatalf("ledger should be blob_deleted=true,row_deleted=false; got ok=%v bd=%v rd=%v", ok, bd, rd)
+	}
+	svc.completeAttempts(ctx, tid, []uuid.UUID{id})
+	if got := pendingMissing(t, db) - before; got != 0 {
+		t.Fatalf("after completion the summary delta = %d, want 0 (healed)", got)
+	}
+}

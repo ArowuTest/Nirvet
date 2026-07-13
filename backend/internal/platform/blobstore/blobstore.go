@@ -25,8 +25,16 @@ type Store interface {
 	Put(ctx context.Context, tenantID uuid.UUID, key string, data []byte) (string, error)
 	// Get retrieves a blob by its URI.
 	Get(ctx context.Context, uri string) ([]byte, error)
-	// Delete removes a blob by its URI (best-effort cleanup of an orphaned write — e.g. a blob
-	// written for a raw event that turned out to be a duplicate). Missing is not an error.
+	// Delete removes a blob by its URI.
+	//
+	// CONTRACT — Delete MUST be idempotent: deleting a missing or already-deleted object
+	// returns nil, never an error. This is load-bearing, not a convenience: retention deletes
+	// the payload blob BEFORE its raw_events row (so a blob is never retained past its row), and
+	// a crash between those two steps leaves an orphaned row whose blob is already gone. The next
+	// retention sweep re-selects that row and calls Delete again — an idempotent Delete lets the
+	// row finally be removed (self-heal), whereas a Delete that errored on "not found" would
+	// strand the row permanently. Every implementation (local, S3, and any future GCS/Azure)
+	// must satisfy this; blobstore_test.go asserts it.
 	Delete(ctx context.Context, uri string) error
 	// Backend identifies the implementation (for health/diagnostics).
 	Backend() string

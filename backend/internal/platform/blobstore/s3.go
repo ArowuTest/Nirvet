@@ -91,6 +91,9 @@ func (s *s3Store) Get(ctx context.Context, uri string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
+// Delete satisfies the blobstore.Store idempotency contract: S3's DeleteObject is idempotent —
+// removing a key that does not exist succeeds (HTTP 204), so RemoveObject returns nil for an
+// already-deleted blob. That is what lets a retention sweep self-heal an orphaned row.
 func (s *s3Store) Delete(ctx context.Context, uri string) error {
 	obj, err := s.objectFromURI(uri)
 	if err != nil {

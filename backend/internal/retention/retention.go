@@ -8,6 +8,8 @@ package retention
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"time"
 
@@ -16,9 +18,20 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/blobstore"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/platform/metrics"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// blobHash returns the sha256 hex of a blob URI for the deletion-attempt ledger (we record a hash, never
+// the raw URI). Empty in → empty out (a raw event with no payload blob).
+func blobHash(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(uri))
+	return hex.EncodeToString(sum[:])
+}
 
 // batchSize bounds each delete batch so a sweep never holds a long transaction or a huge lock.
 const batchSize = 5000
@@ -107,17 +120,27 @@ func (s *Service) SweepTenant(ctx context.Context, tenantID uuid.UUID) (int, err
 	}
 
 	// Enabled: delete raw_events (+ their payload blobs) then events, in bounded batches. A batch error aborts the
-	// sweep (partial keep) — under-delete-never-over.
+	// sweep (partial keep) — under-delete-never-over. Count eligible rows FIRST so the sweep-log ledger records a
+	// real candidate-vs-deleted delta (a positive delta = rows a blob/DB failure left for the next sweep).
+	var rawCand, evCand int64
+	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_ = tx.QueryRow(ctx, `SELECT count(*) FROM raw_events WHERE received_at < $1`, cutoff).Scan(&rawCand)
+		_ = tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE collected_at < $1`, cutoff).Scan(&evCand)
+		return nil
+	})
 	rawDeleted, err := s.deleteRawEvents(ctx, tenantID, cutoff)
 	if err != nil {
+		s.writeLog(ctx, tenantID, "raw_events", cutoff, rawCand, int64(rawDeleted), false) // record the partial delta
 		return rawDeleted, err
 	}
 	evDeleted, err := s.deleteEvents(ctx, tenantID, cutoff)
 	if err != nil {
+		s.writeLog(ctx, tenantID, "raw_events", cutoff, rawCand, int64(rawDeleted), false)
+		s.writeLog(ctx, tenantID, "events", cutoff, evCand, int64(evDeleted), false)
 		return rawDeleted + evDeleted, err
 	}
-	s.writeLog(ctx, tenantID, "raw_events", cutoff, int64(rawDeleted), int64(rawDeleted), false)
-	s.writeLog(ctx, tenantID, "events", cutoff, int64(evDeleted), int64(evDeleted), false)
+	s.writeLog(ctx, tenantID, "raw_events", cutoff, rawCand, int64(rawDeleted), false)
+	s.writeLog(ctx, tenantID, "events", cutoff, evCand, int64(evDeleted), false)
 	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{ActorEmail: "system:retention", Action: "retention.sweep",
 			Target: "tenant:" + tenantID.String(), Metadata: map[string]any{"raw_deleted": rawDeleted, "events_deleted": evDeleted, "cutoff": cutoff.UTC()}})
@@ -125,8 +148,22 @@ func (s *Service) SweepTenant(ctx context.Context, tenantID uuid.UUID) (int, err
 	return rawDeleted + evDeleted, nil
 }
 
-// deleteRawEvents deletes raw_events older than cutoff in batches, deleting each row's payload blob FIRST so the
-// blob is never orphaned. A row whose blob delete fails is left for the next sweep (row+blob stay together).
+// deleteRawEvents deletes raw_events older than cutoff in bounded batches, deleting each row's payload blob
+// FIRST and then its metadata row. This ordering is the COMPLIANCE-SAFE choice and is deliberately never
+// database-first: a blob is never retained past its row, so the retention/privacy guarantee (destroy the
+// payload) always holds. Object storage and Postgres cannot share one transaction, so two cross-store
+// failures are possible; each is made OBSERVABLE in the retention_deletion_attempt ledger and each SELF-HEALS
+// on a later sweep because blobstore.Store.Delete is contractually idempotent on a missing object:
+//
+//   - blob delete fails       → the row is kept (row+blob retained together); recorded blob_deleted=false and
+//     retried on the next sweep. Fail-safe: nothing is deleted, no orphan.
+//   - blob deleted, then the   → the row is TRANSIENTLY orphaned (payload gone, metadata row still present).
+//     metadata-row delete fails   Recorded blob_deleted=true and counted in RetentionMetadataCleanupFailures.
+//     The next sweep re-selects the row, the idempotent blob delete "succeeds"
+//     (already gone), the row is finally removed, and the ledger entry is completed.
+//
+// A row that deletes cleanly in one pass is NOT written to the ledger (its aggregate is in retention_sweep_log);
+// only anomalies are, so a persistently non-empty pending ledger means a genuine stuck deletion.
 func (s *Service) deleteRawEvents(ctx context.Context, tenantID uuid.UUID, cutoff time.Time) (int, error) {
 	total := 0
 	for {
@@ -157,16 +194,25 @@ func (s *Service) deleteRawEvents(ctx context.Context, tenantID uuid.UUID, cutof
 		}
 		// Delete blobs first; only rows whose blob is gone (or had none) are eligible to delete.
 		var ids []uuid.UUID
+		var okHashes []string
+		var failIDs []uuid.UUID
+		var failHashes []string
 		for _, c := range batch {
 			if c.blob != "" {
 				if e := s.blobs.Delete(ctx, c.blob); e != nil {
-					continue // keep this row+blob together; retry next sweep
+					failIDs = append(failIDs, c.id) // keep this row+blob together; ledger + retry next sweep
+					failHashes = append(failHashes, blobHash(c.blob))
+					continue
 				}
 			}
 			ids = append(ids, c.id)
+			okHashes = append(okHashes, blobHash(c.blob))
+		}
+		if len(failIDs) > 0 {
+			s.recordAttempts(ctx, tenantID, failIDs, failHashes, false)
 		}
 		if len(ids) == 0 {
-			return total, nil // nothing safely deletable this pass
+			return total, nil // nothing safely deletable this pass (only blob-delete failures remain)
 		}
 		var n int
 		if err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -174,13 +220,83 @@ func (s *Service) deleteRawEvents(ctx context.Context, tenantID uuid.UUID, cutof
 			// for this governed retention sweep only; refuses on legal_hold defense-in-depth).
 			return tx.QueryRow(ctx, `SELECT retention_delete_raw($1, $2)`, tenantID, ids).Scan(&n)
 		}); err != nil {
+			// Blobs are already gone but the metadata rows remain → orphaned references. Record them so the
+			// inconsistency is visible and reconcilable, count it, and abort this tenant's sweep (partial keep).
+			// The next sweep re-selects these rows and completes the deletion (idempotent blob delete).
+			s.recordAttempts(ctx, tenantID, ids, okHashes, true)
+			metrics.RetentionMetadataCleanupFailures.Add(float64(len(ids)))
 			return total, err
 		}
+		// Rows deleted: mark any previously-stuck ledger entries for these ids completed (no-op for clean rows).
+		s.completeAttempts(ctx, tenantID, ids)
 		total += n
 		if len(batch) < batchSize {
 			return total, nil
 		}
 	}
+}
+
+// recordAttempts upserts deletion-attempt ledger entries for rows that did NOT complete cleanly. blobDeleted
+// distinguishes a blob-delete failure (false — row+blob both retained) from an orphaned reference (true — blob
+// gone, metadata row remains). Best-effort: ledger bookkeeping must never block the retention sweep itself.
+func (s *Service) recordAttempts(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID, hashes []string, blobDeleted bool) {
+	if len(ids) == 0 {
+		return
+	}
+	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		for i, id := range ids {
+			h := ""
+			if i < len(hashes) {
+				h = hashes[i]
+			}
+			_, _ = tx.Exec(ctx,
+				`INSERT INTO retention_deletion_attempt (raw_event_id, blob_uri_hash, blob_deleted)
+				 VALUES ($1, $2, $3)
+				 ON CONFLICT (tenant_id, raw_event_id) DO UPDATE
+				    SET blob_deleted    = retention_deletion_attempt.blob_deleted OR EXCLUDED.blob_deleted,
+				        retry_count     = retention_deletion_attempt.retry_count + 1,
+				        last_attempt_at = now()`,
+				id, h, blobDeleted)
+		}
+		return nil
+	})
+}
+
+// completeAttempts marks any ledger entries for the given (now-deleted) rows as completed. It is a no-op for
+// rows that deleted cleanly on the first pass (no ledger entry) — the common case.
+func (s *Service) completeAttempts(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) {
+	if len(ids) == 0 {
+		return
+	}
+	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, _ = tx.Exec(ctx,
+			`UPDATE retention_deletion_attempt
+			    SET blob_deleted = true, row_deleted = true, completed_at = now(), last_attempt_at = now()
+			  WHERE raw_event_id = ANY($1) AND completed_at IS NULL`, ids)
+		return nil
+	})
+}
+
+// reconcileMetrics publishes the pending/oldest gauges from the cross-tenant ledger summary (SECURITY DEFINER,
+// so it aggregates every tenant), and prunes long-completed ledger rows so the table stays bounded. Called
+// once per sweep cycle by SweepAll.
+func (s *Service) reconcileMetrics(ctx context.Context) {
+	_ = s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var missing int64
+		var oldest *time.Time
+		if e := tx.QueryRow(ctx, `SELECT rows_with_missing_blob, oldest_pending FROM retention_pending_summary()`).Scan(&missing, &oldest); e != nil {
+			return nil // best-effort observability; never fail the sweep
+		}
+		metrics.RetentionRowsWithMissingBlob.Set(float64(missing))
+		if oldest != nil {
+			metrics.RetentionOldestPendingCleanupSeconds.Set(time.Since(*oldest).Seconds())
+		} else {
+			metrics.RetentionOldestPendingCleanupSeconds.Set(0)
+		}
+		// Keep a week of completion evidence, then prune so the ledger stays bounded.
+		_, _ = tx.Exec(ctx, `SELECT retention_prune_completed_attempts('7 days')`)
+		return nil
+	})
 }
 
 // deleteEvents deletes normalized events older than cutoff in batches (no blob).
@@ -232,6 +348,9 @@ func (s *Service) SweepAll(ctx context.Context, log *slog.Logger) {
 			log.Warn("retention sweep failed", "tenant", id, "err", err)
 		}
 	}
+	// After the cycle, publish the reconciliation gauges (rows still orphaned, oldest pending) and prune
+	// long-completed ledger entries — the operator's evidence that the transient inconsistency is healing.
+	s.reconcileMetrics(ctx)
 }
 
 // StartRetentionReaper runs SweepAll on a ticker until ctx is cancelled. Panic-guarded so a bad sweep can't take
