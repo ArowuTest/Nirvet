@@ -173,9 +173,9 @@ export function Th({ children, className = "" }: { children?: ReactNode; classNa
   return <th className={`px-4 py-3 text-[11px] font-semibold uppercase tracking-wide ${className}`}>{children}</th>;
 }
 
-export function Td({ children, className = "" }: { children?: ReactNode; className?: string }) {
+export function Td({ children, className = "", title }: { children?: ReactNode; className?: string; title?: string }) {
   return (
-    <td className={`px-4 py-3 ${className}`} style={{ borderTop: "1px solid var(--c-border)", color: "var(--c-ink-2)" }}>
+    <td className={`px-4 py-3 ${className}`} title={title} style={{ borderTop: "1px solid var(--c-border)", color: "var(--c-ink-2)" }}>
       {children}
     </td>
   );

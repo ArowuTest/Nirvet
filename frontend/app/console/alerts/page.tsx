@@ -1,7 +1,14 @@
 "use client";
 
+// Alert queue — the analyst's primary triage surface (SRS §6.8). Lists alerts from GET /alerts?status=,
+// filterable by workflow status, wired to the real disposition + promote actions. Promote is senior-gated
+// on the backend (POST /alerts/{id}/promote → 403 for T1) — we surface that verdict rather than hide the
+// control, so the RBAC boundary is visible, not guessed.
+
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost } from "@/lib/api";
+import Link from "next/link";
+import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { PageHeader, Panel, Table, Th, Td, SevBadge, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Alert = {
   id: string;
@@ -9,91 +16,141 @@ type Alert = {
   severity: string;
   status: string;
   source: string;
+  confidence: number;
   actor_ref: string;
   target_ref: string;
+  mitre?: string[];
   created_at: string;
 };
 
-const sevColor: Record<string, string> = {
-  critical: "bg-red-500/20 text-red-300",
-  high: "bg-orange-500/20 text-orange-300",
-  medium: "bg-yellow-500/20 text-yellow-300",
-  low: "bg-blue-500/20 text-blue-300",
-  informational: "bg-slate-500/20 text-slate-300",
+const FILTERS = [
+  { key: "", label: "All" },
+  { key: "new", label: "New" },
+  { key: "assigned", label: "Assigned" },
+  { key: "promoted", label: "Promoted" },
+  { key: "closed", label: "Closed" },
+];
+
+const statusTone: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = {
+  new: "danger",
+  assigned: "warn",
+  promoted: "info",
+  closed: "neutral",
 };
 
 export default function AlertsPage() {
+  const [filter, setFilter] = useState("");
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    const res = await apiGet<{ alerts: Alert[] | null }>("/alerts");
-    setAlerts(res.alerts ?? []);
+  const load = useCallback(async (status: string) => {
+    setLoading(true);
+    try {
+      const res = await apiGet<{ alerts: Alert[] | null }>(`/alerts${status ? `?status=${status}` : ""}`);
+      setAlerts(res.alerts ?? []);
+    } catch {
+      setAlerts([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    load(filter);
+  }, [filter, load]);
 
   async function promote(id: string) {
     setMsg(null);
+    setBusy(id);
     try {
       await apiPost(`/alerts/${id}/promote`);
-      setMsg("Alert promoted to incident");
-      await load();
-    } catch {
-      setMsg("Promote failed");
+      setMsg({ tone: "ok", text: "Alert promoted to an incident." });
+      await load(filter);
+    } catch (e) {
+      const forbidden = e instanceof ApiError && e.status === 403;
+      const m = e instanceof Error ? e.message : "Promote failed";
+      setMsg({ tone: "danger", text: forbidden ? "Promoting to an incident requires a senior analyst role." : m });
+    } finally {
+      setBusy(null);
     }
   }
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-white">Alert queue</h1>
-      {msg && <p className="mt-2 text-sm text-blue-300">{msg}</p>}
-      <div className="mt-6 overflow-hidden rounded-2xl border border-slate-800">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-900 text-slate-400">
-            <tr>
-              <th className="px-4 py-3">Severity</th>
-              <th className="px-4 py-3">Title</th>
-              <th className="px-4 py-3">Source</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {alerts.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-slate-500">
-                  No alerts.
-                </td>
-              </tr>
-            )}
+      <PageHeader title="Alert queue" sub="Detections awaiting triage across your monitored estate" />
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {FILTERS.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium transition"
+            style={
+              filter === f.key
+                ? { background: "rgba(14,165,233,0.14)", color: "var(--c-primary)", border: "1px solid var(--c-border-strong)" }
+                : { color: "var(--c-ink-2)", border: "1px solid var(--c-border)" }
+            }
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {msg && (
+        <p className="mb-3 text-[13px]" style={{ color: msg.tone === "ok" ? "var(--c-ok)" : "var(--c-danger)" }}>
+          {msg.text}
+        </p>
+      )}
+
+      <Panel bodyStyle={{ padding: 0 }}>
+        {loading ? (
+          <div className="p-6 text-sm" style={{ color: "var(--c-ink-3)" }}>Loading alerts…</div>
+        ) : alerts.length === 0 ? (
+          <div className="p-6">
+            <EmptyState title="No alerts here" hint="Nothing matches this filter right now." />
+          </div>
+        ) : (
+          <Table
+            head={
+              <>
+                <Th>Severity</Th>
+                <Th>Alert</Th>
+                <Th>Source</Th>
+                <Th>Entities</Th>
+                <Th>Status</Th>
+                <Th className="text-right">Actions</Th>
+              </>
+            }
+          >
             {alerts.map((a) => (
-              <tr key={a.id} className="border-t border-slate-800">
-                <td className="px-4 py-3">
-                  <span className={`rounded px-2 py-1 text-xs ${sevColor[a.severity] ?? ""}`}>
-                    {a.severity}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-white">{a.title}</td>
-                <td className="px-4 py-3 text-slate-400">{a.source}</td>
-                <td className="px-4 py-3 text-slate-400">{a.status}</td>
-                <td className="px-4 py-3 text-right">
-                  {a.status === "new" && (
-                    <button
-                      onClick={() => promote(a.id)}
-                      className="rounded-lg bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-500"
-                    >
-                      Promote
-                    </button>
+              <tr key={a.id}>
+                <Td><SevBadge severity={a.severity} /></Td>
+                <Td className="!text-[color:var(--c-ink)]">
+                  <Link href={`/console/alerts/${a.id}`} className="font-medium hover:underline">{a.title}</Link>
+                  <div className="mt-0.5 text-[11px]" style={{ color: "var(--c-ink-3)" }}>
+                    {new Date(a.created_at).toLocaleString()}
+                    {a.mitre && a.mitre.length > 0 && <> · {a.mitre.slice(0, 3).join(", ")}</>}
+                  </div>
+                </Td>
+                <Td className="text-xs">{a.source}</Td>
+                <Td className="max-w-[220px] truncate font-mono text-[11px]" title={`${a.actor_ref} → ${a.target_ref}`}>
+                  {a.actor_ref || "—"}{a.target_ref ? ` → ${a.target_ref}` : ""}
+                </Td>
+                <Td><StatusTag tone={statusTone[a.status] ?? "neutral"}>{a.status}</StatusTag></Td>
+                <Td className="text-right">
+                  {(a.status === "new" || a.status === "assigned") && (
+                    <Button size="sm" variant="ghost" onClick={() => promote(a.id)} disabled={busy === a.id}>
+                      {busy === a.id ? "…" : "Promote"}
+                    </Button>
                   )}
-                </td>
+                </Td>
               </tr>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </Table>
+        )}
+      </Panel>
     </div>
   );
 }
