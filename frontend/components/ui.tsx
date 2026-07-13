@@ -214,6 +214,7 @@ export function Button({
   type = "button",
   disabled,
   title,
+  className = "",
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -222,6 +223,7 @@ export function Button({
   type?: "button" | "submit";
   disabled?: boolean;
   title?: string;
+  className?: string;
 }) {
   const pad = size === "sm" ? "px-2.5 py-1 text-xs" : "px-3.5 py-2 text-sm";
   const styles: Record<string, CSSProperties> = {
@@ -235,7 +237,7 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`rounded-lg transition disabled:opacity-50 ${pad}`}
+      className={`rounded-lg transition disabled:opacity-50 ${pad} ${className}`}
       style={styles[variant]}
     >
       {children}

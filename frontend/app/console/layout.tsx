@@ -34,7 +34,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Platform",
     items: [
       { label: "Integrations", href: "/console/integrations", icon: "plug", ready: true },
-      { label: "Reports", href: "/console/reports", icon: "file-text", ready: false },
+      { label: "Reports", href: "/console/reports", icon: "file-text", ready: true },
     ],
   },
 ];
