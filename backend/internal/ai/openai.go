@@ -85,7 +85,11 @@ func (p *openAICompatibleProvider) Complete(ctx context.Context, system, user st
 		Messages:  []oaiMessage{{Role: "system", Content: system}, {Role: "user", Content: user}},
 	})
 	url := p.endpoint + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	// The endpoint is not user-tainted: it is a platform-admin-configured, ALLOWLIST-gated
+	// openai-compatible provider URL (#117). A sovereign model legitimately lives on an internal
+	// address, so this path is deliberately exempt from netsafe/IsInternalHost — the admin allowlist
+	// is the control. gosec's taint analysis can't see the allowlist, hence the #nosec on the sinks.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body)) // #nosec G704 -- admin-configured, allowlist-gated endpoint; not user input
 	if err != nil {
 		return "", err
 	}
@@ -93,6 +97,7 @@ func (p *openAICompatibleProvider) Complete(ctx context.Context, system, user st
 	if p.apiKey != "" {
 		req.Header.Set("authorization", "Bearer "+p.apiKey)
 	}
+	// #nosec G704 -- admin-configured, allowlist-gated endpoint (see above); not user input
 	resp, err := p.http.Do(req)
 	if err != nil {
 		return "", err

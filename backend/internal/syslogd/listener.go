@@ -99,6 +99,10 @@ func (l *Listener) TLSConfig() *tls.Config {
 		ClientAuth:            tls.RequireAnyClientCert,
 		MinVersion:            tls.VersionTLS12,
 		VerifyPeerCertificate: l.verifyPeer,
+		// Disable TLS session resumption so verifyPeer (the cert-fingerprint attribution +
+		// enabled-source check) runs on EVERY connection. A resumed session would otherwise
+		// skip VerifyPeerCertificate and could bypass a since-disabled source (gosec G123).
+		SessionTicketsDisabled: true,
 	}
 }
 
