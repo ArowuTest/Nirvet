@@ -18,8 +18,11 @@ func seedRawAt(t *testing.T, db *database.DB, tid uuid.UUID, at time.Time, n int
 	t.Helper()
 	err := db.WithTenant(context.Background(), tid, func(ctx context.Context, tx pgx.Tx) error {
 		for i := 0; i < n; i++ {
-			if _, e := tx.Exec(ctx, `INSERT INTO raw_events (id, tenant_id, source, dedupe_key, checksum, payload, received_at)
-				VALUES ($1,$2,'test',$3,'chk',$4,$5)`, uuid.New(), tid, uuid.NewString(), []byte("x"), at); e != nil {
+			// enqueued_at is set (= received_at) so these look like real, fully-ingested events — NOT unenqueued
+			// orphans. The cross-tenant ingest reconcile (FindUnenqueued) would otherwise pick these test rows up
+			// out of the shared CI DB and fail scanning their NULL blob_uri.
+			if _, e := tx.Exec(ctx, `INSERT INTO raw_events (id, tenant_id, source, dedupe_key, checksum, payload, received_at, enqueued_at)
+				VALUES ($1,$2,'test',$3,'chk',$4,$5,$5)`, uuid.New(), tid, uuid.NewString(), []byte("x"), at); e != nil {
 				return e
 			}
 		}
