@@ -21,7 +21,8 @@
 -- ================= Framework 1: Sovereign / Government CII Cybersecurity Baseline =================
 INSERT INTO compliance_frameworks (tenant_id, key, name, version, description) VALUES
   (NULL, 'sovereign_cii_baseline', 'Sovereign / Government CII Cybersecurity Baseline',
-   '1.0', 'Generic baseline cybersecurity requirements for designated critical-information-infrastructure owners under a national cybersecurity regime. Reusable template — add country-specific windows/regulator/statute as tenant-custom refinements.');
+   '1.0', 'Generic baseline cybersecurity requirements for designated critical-information-infrastructure owners under a national cybersecurity regime. Reusable template — add country-specific windows/regulator/statute as tenant-custom refinements.')
+ON CONFLICT DO NOTHING;
 
 INSERT INTO compliance_controls (tenant_id, framework_key, control_ref, parent_ref, title, weight, auto_signal, auto_config) VALUES
   -- top-level functions (rollups)
@@ -51,12 +52,14 @@ INSERT INTO compliance_controls (tenant_id, framework_key, control_ref, parent_r
   (NULL,'sovereign_cii_baseline','RESP.4','RESP','Automated containment and response',        2,'soar_automation','{}'::jsonb),
   -- audit and assurance
   (NULL,'sovereign_cii_baseline','AUD.1','AUD','Periodic security audits',                    2,'manual','{}'::jsonb),
-  (NULL,'sovereign_cii_baseline','AUD.2','AUD','Immutable audit trail',                       2,'platform_capability','{"note":"Immutable, tenant-scoped audit log."}'::jsonb);
+  (NULL,'sovereign_cii_baseline','AUD.2','AUD','Immutable audit trail',                       2,'platform_capability','{"note":"Immutable, tenant-scoped audit log."}'::jsonb)
+ON CONFLICT DO NOTHING;
 
 -- ================= Framework 2: Sovereign Data Protection Baseline =================
 INSERT INTO compliance_frameworks (tenant_id, key, name, version, description) VALUES
   (NULL, 'sovereign_data_protection', 'Sovereign Data Protection Baseline',
-   '1.0', 'The standard data-protection principles common to national data-protection laws. Reusable template — add the country statute and regulator specifics as tenant-custom refinements.');
+   '1.0', 'The standard data-protection principles common to national data-protection laws. Reusable template — add the country statute and regulator specifics as tenant-custom refinements.')
+ON CONFLICT DO NOTHING;
 
 INSERT INTO compliance_controls (tenant_id, framework_key, control_ref, parent_ref, title, weight, auto_signal, auto_config) VALUES
   (NULL,'sovereign_data_protection','DPP','', 'Data Protection Principles', 1,'','{}'::jsonb),
@@ -71,4 +74,5 @@ INSERT INTO compliance_controls (tenant_id, framework_key, control_ref, parent_r
   -- go-live (the vault exists but full key management is not yet in place). Officer attests actual state.
   (NULL,'sovereign_data_protection','DPP.7','DPP','Data security safeguards',                 3,'manual','{}'::jsonb),
   (NULL,'sovereign_data_protection','DPP.8','DPP','Data subject participation and rights',    2,'manual','{}'::jsonb),
-  (NULL,'sovereign_data_protection','DPP.9','DPP','Personal data breach response',           2,'incident_response','{}'::jsonb);
+  (NULL,'sovereign_data_protection','DPP.9','DPP','Personal data breach response',           2,'incident_response','{}'::jsonb)
+ON CONFLICT DO NOTHING;

@@ -113,11 +113,32 @@ func (s *Service) advanceRun(ctx context.Context, p auth.Principal, run *Playboo
 				return
 			}
 		} else {
-			_ = s.repo.RunTx(ctx, run.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+			// Internal step. Commit its EFFECT, its audit, its terminal STATUS and the cursor advance in ONE tx
+			// (audit fix): previously the effect committed here and the status persisted in a SEPARATE tx below, so
+			// a crash between them left the effect durably applied while the step stayed non-terminal — ResumeStale
+			// then re-dispatched it, double-firing the effect. Connector steps get this crash-safety from their
+			// claim-once soar_action_execution row; internal steps had no such guard until now.
+			if err := s.repo.RunTx(ctx, run.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 				status, note = s.execs.dispatch(ctx, tx, run.TenantID, pl.act, stepParams(incidentID, "", pl.sr.Name))
-				return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
-					Target: "action:" + pl.act.ActionKey, Metadata: map[string]any{"status": status, "risk": pl.act.RiskClass}})
-			})
+				if e := audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_execute",
+					Target: "action:" + pl.act.ActionKey, Metadata: map[string]any{"status": status, "risk": pl.act.RiskClass}}); e != nil {
+					return e
+				}
+				run.Steps[i].Status, run.Steps[i].Note = status, note
+				if e := s.repo.updateRunTx(ctx, tx, run); e != nil {
+					return e
+				}
+				return s.repo.setCurrentStepTx(ctx, tx, run.ID, i+1)
+			}); err != nil {
+				// Effect + status rolled back together — nothing was applied. Record the failure via the shared
+				// path below; a later ResumeStale re-drives this step from the unchanged cursor, which is safe.
+				status, note = StatusFailed, "internal step aborted: "+err.Error()
+			} else {
+				if status == StatusFailed {
+					anyFailed = true
+				}
+				continue // effect + status + cursor already committed atomically; move to the next step
+			}
 		}
 		run.Steps[i].Status, run.Steps[i].Note = status, note
 		if status == StatusFailed {

@@ -145,6 +145,27 @@ func (c *defenderClient) resolveMachineID(ctx context.Context, hostname string) 
 	return out.Value[0].ID, nil
 }
 
+// machineDNSName returns the canonical computerDnsName for an MDE machine id. Used by the D5 host guard to
+// evaluate the SAME identity the actioner acts on (a machine:<id> or DNS-alias target resolves to one machine),
+// so a protected host can't be isolated by choosing a target namespace the name-pattern guard can't see.
+func (c *defenderClient) machineDNSName(ctx context.Context, machineID string) (string, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/machines/"+url.PathEscape(machineID), nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("mde machine lookup: status %d", resp.StatusCode)
+	}
+	var out struct {
+		ComputerDnsName string `json:"computerDnsName"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.ComputerDnsName, nil
+}
+
 // machineActionStatus is the subset of an MDE machineAction we read for PreCheck. Status is one of
 // Pending | InProgress | Succeeded | Failed | Cancelled | TimeOut. RequestorComment carries the correlator
 // we embed on our own actions (round #34 H-1b own-vs-foreign attribution).

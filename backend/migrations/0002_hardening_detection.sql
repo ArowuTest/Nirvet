@@ -73,7 +73,8 @@ INSERT INTO detection_rules (id, tenant_id, name, description, severity, confide
   '{"any":[{"field":"action","op":"contains","value":"forward"},{"field":"class_name","op":"contains","value":"forwarding"}]}'),
  (gen_random_uuid(), NULL, 'Malicious outbound connection',
   'Connection to a known-bad IP/domain (C2).', 'medium', 65, ARRAY['TA0011'],
-  '{"any":[{"field":"outcome","op":"eq","value":"malicious"},{"field":"action","op":"contains","value":"c2"},{"field":"class_name","op":"contains","value":"command and control"}]}');
+  '{"any":[{"field":"outcome","op":"eq","value":"malicious"},{"field":"action","op":"contains","value":"c2"},{"field":"class_name","op":"contains","value":"command and control"}]}')
+ON CONFLICT DO NOTHING;
 
 -- Now enforce RLS: tenants read global + own; may write only their own.
 ALTER TABLE detection_rules ENABLE ROW LEVEL SECURITY;

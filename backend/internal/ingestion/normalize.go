@@ -99,8 +99,10 @@ func Normalize(in IngestInput) IngestInput {
 			in.Data["product"] = in.Source
 		}
 	}
-	// NORM-003/006: record which parser (+version) produced this event and how completely it
-	// populated the canonical fields, so a vendor schema change is observable, not silent.
+	// NORM-003: record which parser (+version) produced this event and how completely it populated the
+	// canonical fields, so a vendor schema change is observable, not silent. (This is a data-QUALITY /
+	// drift signal — NOT NORM-006 inferred-vs-authoritative entity-resolution confidence, which is
+	// deferred to §6.5 normalization slice B along with entity resolution.)
 	in.Data["parser"] = parser
 	in.Data["parser_version"] = parserVersion
 	in.Data["normalization_confidence"] = NormalizationConfidence(in)
@@ -108,9 +110,9 @@ func Normalize(in IngestInput) IngestInput {
 }
 
 // NormalizationConfidence scores 0-100 how completely a mapper populated the canonical fields — a
-// data-quality signal (NORM-006), NOT a detection weight. Weighted so the fields that matter most to
-// downstream detection/correlation count more. class_name + a mapped entity are the backbone; a
-// still-empty class_name (mapper fell through) is the strongest drift signal.
+// data-QUALITY / drift signal (NORM-003), NOT a detection weight and NOT NORM-006 resolution confidence.
+// Weighted so the fields that matter most to downstream detection/correlation count more. class_name + a
+// mapped entity are the backbone; a still-empty class_name (mapper fell through) is the strongest drift signal.
 func NormalizationConfidence(in IngestInput) int {
 	score, total := 0, 0
 	add := func(weight int, present bool) {

@@ -151,7 +151,7 @@ func main() {
 	soarSup := soar.NewSupervisor(soarRepo, soarReg, soarCreds, log).
 		WithAlerter(soarwire.NewContainmentAlerter(alertSvc, outboxRepo)).
 		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)). // D5 identity net
-		WithGuard(connector.NewHostProtectedGuard(soarRepo))                    // D5 host net (M3)
+		WithGuard(connector.NewHostProtectedGuard(soarRepo, "", "", "", nil))   // D5 host net (M3; resolves to canonical machine id)
 	soarSvc := soar.NewService(soarRepo).WithAuthorizer(tenantSvc).WithExecutors(soarExecs).WithSupervisor(soarSup)
 	go soarSvc.StartResumeLoop(ctx, log, time.Minute, 300)
 	// §6.11 reconciler: confirm submitted containments took effect; surface failures/stalls (read-only poll).

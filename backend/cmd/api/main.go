@@ -330,7 +330,7 @@ func main() {
 	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soarReg, soarCreds, log).
 		WithAlerter(soarwire.NewContainmentAlerter(alertSvc, outboxRepo)).
 		WithGuard(connector.NewEntraProtectedGuard(soarRepo, "", "", "", nil)). // D5 identity net
-		WithGuard(connector.NewHostProtectedGuard(soarRepo)))                   // D5 host net (M3)
+		WithGuard(connector.NewHostProtectedGuard(soarRepo, "", "", "", nil)))  // D5 host net (M3; resolves to canonical machine id)
 	// #188 customer-approval: re-validate a recorded internal approver is still active at execution time (a stale
 	// approval by a since-disabled user cannot fire a destructive action).
 	soarSvc.WithApproverValidator(approverActiveAdapter{iam: iamSvc})
@@ -829,7 +829,9 @@ func main() {
 	mux.Handle("PUT /admin/tenants/{id}/billing-mode", padmin(billingH.SetMode))
 	mux.Handle("POST /admin/tenants/{id}/billing-suspend", padmin(billingH.SuspendTenant))
 	mux.Handle("POST /admin/billing/accounts/{id}/suspend", padmin(billingH.SuspendAccount))
-	mux.Handle("GET /admin/billing/accounts/{id}/invoice", manager(billingH.AccountInvoice))
+	// padmin (not manager): the umbrella-account invoice is a cross-tenant aggregate; a provider soc_manager must
+	// not read an arbitrary account's spend by id (BOLA). Matches the account WRITES, which are all padmin-only.
+	mux.Handle("GET /admin/billing/accounts/{id}/invoice", padmin(billingH.AccountInvoice))
 	// notifications
 	mux.Handle("POST /notify/test", senior(notifyH.Test))
 	// §6.16 per-tenant email/SMS sender config (COMM-001); secrets vault-encrypted, manager-gated.

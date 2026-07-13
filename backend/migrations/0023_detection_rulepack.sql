@@ -28,4 +28,5 @@ INSERT INTO detection_rules (id, tenant_id, name, description, severity, confide
 
  (gen_random_uuid(), NULL, 'Privileged account manipulation',
   'Account added to an administrative/privileged group or role (T1098).', 'high', 70, ARRAY['T1098'],
-  '{"any":[{"field":"activity_name","op":"contains","value":"added to admin"},{"field":"activity_name","op":"contains","value":"privileged group"},{"field":"activity_name","op":"contains","value":"role assignment"},{"field":"class_name","op":"contains","value":"account manipulation"}]}');
+  '{"any":[{"field":"activity_name","op":"contains","value":"added to admin"},{"field":"activity_name","op":"contains","value":"privileged group"},{"field":"activity_name","op":"contains","value":"role assignment"},{"field":"class_name","op":"contains","value":"account manipulation"}]}')
+ON CONFLICT DO NOTHING;

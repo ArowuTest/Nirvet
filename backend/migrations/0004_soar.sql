@@ -26,7 +26,8 @@ INSERT INTO playbooks (id, tenant_id, name, description, trigger_category, steps
   '[{"name":"Enrich user sign-ins & MFA","connector_key":"entra-id","action":"enrich","risk":"low","requires_approval":false},
     {"name":"Check mailbox rules & OAuth grants","connector_key":"microsoft-365","action":"inspect_mailbox","risk":"low","requires_approval":false},
     {"name":"Revoke sessions","connector_key":"entra-id","action":"revoke_sessions","risk":"high","requires_approval":true},
-    {"name":"Reset password","connector_key":"entra-id","action":"reset_password","risk":"high","requires_approval":true}]');
+    {"name":"Reset password","connector_key":"entra-id","action":"reset_password","risk":"high","requires_approval":true}]')
+ON CONFLICT DO NOTHING;
 
 ALTER TABLE playbooks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE playbooks FORCE ROW LEVEL SECURITY;
