@@ -30,14 +30,16 @@ type Service struct {
 }
 
 // NewService builds the retention service.
-func NewService(db *database.DB, blobs blobstore.Store) *Service { return &Service{db: db, blobs: blobs} }
+func NewService(db *database.DB, blobs blobstore.Store) *Service {
+	return &Service{db: db, blobs: blobs}
+}
 
 // Policy is the tenant-facing view.
 type Policy struct {
-	Enabled       bool `json:"enabled"`
-	WindowDays    *int `json:"window_days,omitempty"`     // nil = use the entitlement window
-	EffectiveDays int  `json:"effective_days"`            // resolved effective window (0 = none → keep)
-	EntitlementDays int `json:"entitlement_days"`
+	Enabled         bool `json:"enabled"`
+	WindowDays      *int `json:"window_days,omitempty"` // nil = use the entitlement window
+	EffectiveDays   int  `json:"effective_days"`        // resolved effective window (0 = none → keep)
+	EntitlementDays int  `json:"entitlement_days"`
 }
 
 // resolveWindow returns the tenant's effective retention window and whether deletion is enabled. ok=false means

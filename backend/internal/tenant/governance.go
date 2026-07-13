@@ -342,7 +342,7 @@ func (s *Service) ResolveEscalation(ctx context.Context, tenantID uuid.UUID, sev
 
 // ResolveEscalationFor is the category-scoped router (#188). A contact fires when its min_severity is at/below the
 // notification severity AND its category scope matches: an empty `category` argument broadcasts to ALL contacts
-// (category-agnostic notification); a non-empty `category` routes to GENERAL contacts (category='') PLUS contacts
+// (category-agnostic notification); a non-empty `category` routes to GENERAL contacts (category=”) PLUS contacts
 // scoped to exactly that category — so a "network" incident never pages the identity-only on-call. Severity
 // ordering is the canonical §10.2 scale.
 func (s *Service) ResolveEscalationFor(ctx context.Context, tenantID uuid.UUID, sevLevel, category string) ([]incident.EscalationTarget, error) {

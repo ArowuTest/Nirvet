@@ -28,9 +28,9 @@ type Service struct {
 	repo      *Repository
 	authz     Authorizer
 	execs     *Executors
-	sup       *Supervisor        // §6.11 slice B: drives real connector containment two-phase (optional)
-	actioners *ActionerRegistry  // registered real connector actions (empty = none → slice-A behavior)
-	validator ApproverValidator  // §6.12 #188: re-validate a recorded internal approver is still active (optional)
+	sup       *Supervisor       // §6.11 slice B: drives real connector containment two-phase (optional)
+	actioners *ActionerRegistry // registered real connector actions (empty = none → slice-A behavior)
+	validator ApproverValidator // §6.12 #188: re-validate a recorded internal approver is still active (optional)
 }
 
 // ApproverValidator re-checks, at execution time, that a recorded internal approver is still an active user — so a

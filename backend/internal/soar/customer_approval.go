@@ -25,7 +25,7 @@ import (
 
 // Authority modes (source of truth for the customer_approval_policy.authority CHECK).
 const (
-	AuthorityPlatformAnalyst = "platform_analyst"
+	AuthorityPlatformAnalyst  = "platform_analyst"
 	AuthorityCustomerApprover = "customer_approver"
 	AuthorityBothRequired     = "both_required"
 )

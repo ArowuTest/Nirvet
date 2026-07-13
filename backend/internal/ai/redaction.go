@@ -38,7 +38,9 @@ type RedactionPolicy struct {
 
 // defaultRedactionPolicy is the fail-safe used when no policy is wired or config load/parse fails: mask-by-default,
 // balanced. A broken config NEVER egresses cleartext.
-func defaultRedactionPolicy() RedactionPolicy { return RedactionPolicy{Enabled: true, Mode: RedactBalanced} }
+func defaultRedactionPolicy() RedactionPolicy {
+	return RedactionPolicy{Enabled: true, Mode: RedactBalanced}
+}
 
 // CompiledPattern is one masking rule: a compiled RE2 regex and the placeholder prefix its matches collapse to.
 type CompiledPattern struct {

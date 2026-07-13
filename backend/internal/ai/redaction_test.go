@@ -31,11 +31,11 @@ func TestEgress_RawPIINeverReachesProvider(t *testing.T) {
 	cap := &captureProvider{}
 	lines := []string{
 		"title=suspicious login",
-		"actor=jdoe@corp.example",             // identifier (email) → wholesale masked
-		"source=10.1.2.3",                     // identifier (ip)    → wholesale masked
-		"target=host-db-01",                   // identifier         → wholesale masked
+		"actor=jdoe@corp.example", // identifier (email) → wholesale masked
+		"source=10.1.2.3",         // identifier (ip)    → wholesale masked
+		"target=host-db-01",       // identifier         → wholesale masked
 		"note=leaked key ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 here", // free-text w/ secret token → token masked
-		"severity=high",                       // safe → verbatim
+		"severity=high", // safe → verbatim
 	}
 	_, rr, err := s.completeExternal(context.Background(), uuid.New(), cap, lines, "\n\ninstr")
 	if err != nil {

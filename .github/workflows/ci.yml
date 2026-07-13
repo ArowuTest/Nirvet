@@ -117,16 +117,18 @@ jobs:
           cache-dependency-path: backend/go.sum
       # Known-vulnerable dependencies / stdlib (R2 low). Versions are PINNED (not @latest)
       # so a scanner release cannot silently change results or break a build between runs;
-      # bump these tags deliberately (R3 CI-pin).
+      # bump these tags deliberately (R3 CI-pin). Both pinned to Go-1.25-compatible releases
+      # (older govulncheck/gosec pulled x/tools@v0.23, which fails to compile on Go 1.25 with
+      # "invalid array length" — Jul 2026 bump).
       - name: govulncheck
         working-directory: backend
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.3
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
       # Static security analysis; high-severity findings fail the build (lower-severity
       # style nits are reported but don't gate, to avoid drowning the signal).
       - name: gosec
         working-directory: backend
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.21.4
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
           gosec -exclude-generated -severity high -confidence medium ./...
