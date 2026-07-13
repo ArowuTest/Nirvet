@@ -307,3 +307,48 @@ func TestPolicyGrantParity(t *testing.T) {
 			"at runtime — add the GRANT to the migration that creates the policy): %v", offenders)
 	}
 }
+
+// TestOwnerBypassPolicy (guard #5): every RLS-enabled public table must carry the `owner_bypass` policy
+// (migration 0118). The platform's SECURITY DEFINER functions (auth lookups, background reapers,
+// cross-tenant fleet reads) run as the DB owner and must bypass RLS. Locally the owner is a superuser and
+// bypasses natively; on managed Postgres the owner is NOT a superuser, so FORCE ROW LEVEL SECURITY binds
+// it and every one of those functions silently returns zero rows (no login, no async processing). The
+// owner_bypass policy restores the owner's exemption without weakening nirvet_app (which is never the
+// owner). A new RLS table shipped without it would re-break auth/reapers on the managed DB only — invisible
+// to local tests — so this guard fails the build instead.
+func TestOwnerBypassPolicy(t *testing.T) {
+	db := connect(t)
+
+	rows, err := db.Pool.Query(context.Background(), `
+		SELECT c.relname
+		FROM pg_class c
+		WHERE c.relkind = 'r'
+		  AND c.relnamespace = 'public'::regnamespace
+		  AND c.relrowsecurity
+		  AND NOT EXISTS (
+		    SELECT 1 FROM pg_policies p
+		    WHERE p.schemaname = 'public' AND p.tablename = c.relname AND p.policyname = 'owner_bypass'
+		  )
+		ORDER BY c.relname`)
+	if err != nil {
+		t.Fatalf("owner_bypass query: %v", err)
+	}
+	defer rows.Close()
+
+	var missing []string
+	for rows.Next() {
+		var tbl string
+		if err := rows.Scan(&tbl); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		missing = append(missing, tbl)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(missing) > 0 {
+		t.Fatalf("RLS table without the owner_bypass policy (SECURITY DEFINER functions owned by the "+
+			"non-superuser managed-DB owner would silently return zero rows — add the owner_bypass policy, "+
+			"see migration 0118): %v", missing)
+	}
+}
