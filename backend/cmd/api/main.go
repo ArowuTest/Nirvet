@@ -125,6 +125,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	// Fail-closed backstop: refuse to serve if the runtime DB role can bypass RLS (superuser / BYPASSRLS / owns
+	// RLS tables via owner_bypass). Isolation depends on connecting as the non-owner nirvet_app role; a
+	// misconfigured NIRVET_DATABASE_URL must crash loudly, not silently disable cross-tenant isolation.
+	if err := db.AssertRLSConstrainedRole(ctx); err != nil {
+		log.Error("refusing to start", "err", err)
+		os.Exit(1)
+	}
 
 	cipher, err := crypto.New(cfg.KMSKeyName, cfg.SecretMasterKey, log)
 	if err != nil {
