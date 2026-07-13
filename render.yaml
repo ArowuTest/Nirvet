@@ -1,17 +1,28 @@
-# Render blueprint for Nirvet (MVP hosting; portable to GCP later — ADR-0005).
-# The frontend deploys on Vercel natively (not here). Both API and worker run the
-# SAME Docker image with different commands.
+# Render blueprint for Nirvet (pilot hosting; portable to GCP later — ADR-0005).
+# The frontend deploys on Vercel natively (not here).
 #
-# SECURITY NOTE (RLS): the app must connect as the non-owner role `nirvet_app`
-# (created by the migration) so FORCE ROW LEVEL SECURITY applies. Render's managed
-# database exposes the OWNER connection string — use it for the migrate step
-# (NIRVET_MIGRATE_DATABASE_URL) and set NIRVET_DATABASE_URL manually to the
-# nirvet_app URL after the first migration creates that role.
+# ONE web service only: it runs the API AND the background worker in-process
+# (NIRVET_INLINE_WORKER=true) — the SLA sweeper, retention reaper, notification
+# dispatcher, cred-expiry reaper, etc. all run inside the API process. No separate
+# worker service (not needed at pilot scale; add one later only if the worker load
+# warrants isolation). ClickHouse / NATS / Redis are optional scale backends with
+# Postgres/in-memory fallbacks — not provisioned for the pilot.
+#
+# SECURITY (RLS): the app MUST connect as the non-owner role `nirvet_app` so
+# FORCE ROW LEVEL SECURITY + the evidence-immutability REVOKEs apply. Render's
+# managed DB exposes the OWNER string — used for the migrate step
+# (NIRVET_MIGRATE_DATABASE_URL). Before the first deploy, create the nirvet_app
+# role on the DB (owner: CREATE ROLE nirvet_app LOGIN PASSWORD '...') and set
+# NIRVET_DATABASE_URL to its connection string (sync:false secret below).
+#
+# BLOBS: a persistent disk at /data holds raw-event payloads + evidence packs +
+# reports (NIRVET_BLOB_DIR=/data/blobs), so they survive redeploys. Swap to an
+# object bucket (NIRVET_GCS_BUCKET / S3) at scale.
 
 databases:
   - name: nirvet-db
     databaseName: nirvet
-    plan: basic-256mb
+    plan: basic-256mb          # pilot; resize as volume grows
 
 services:
   - type: web
@@ -20,37 +31,33 @@ services:
     dockerfilePath: backend/Dockerfile
     dockerContext: backend
     healthCheckPath: /healthz
-    preDeployCommand: /app/migrate     # applies migrations as the DB owner
+    preDeployCommand: /app/migrate      # applies migrations as the DB owner (before boot)
+    disk:
+      name: nirvet-blobs
+      mountPath: /data
+      sizeGB: 1                          # evidence/raw/report blobs (grow later)
     envVars:
       - key: NIRVET_ENV
         value: production
-      - key: NIRVET_HTTP_ADDR
-        value: ":10000"                # Render sets $PORT; align or read PORT
+      - key: NIRVET_INLINE_WORKER
+        value: "true"                    # API + worker in ONE service
+      - key: NIRVET_BLOB_DIR
+        value: /data/blobs               # persistent disk
       - key: NIRVET_MIGRATE_DATABASE_URL
-        fromDatabase: { name: nirvet-db, property: connectionString }
-      - key: NIRVET_DATABASE_URL       # set to the nirvet_app URL (non-owner, RLS)
+        fromDatabase: { name: nirvet-db, property: connectionString }   # OWNER — migrate only
+      - key: NIRVET_DATABASE_URL         # nirvet_app (non-owner, RLS) — set manually (secret)
         sync: false
       - key: NIRVET_JWT_SECRET
         generateValue: true
-      - key: NIRVET_CORS_ORIGIN
-        sync: false                     # your Vercel frontend origin
-      - key: NIRVET_ANTHROPIC_API_KEY
+      - key: NIRVET_SECRET_MASTER_KEY    # vault/cipher master key — MUST be stable across deploys
         sync: false
-      - key: NIRVET_GCS_BUCKET          # optional; empty => local disk
+      - key: NIRVET_EVIDENCE_SIGNING_KEY # Ed25519 seed — stable so evidence/breach signatures stay verifiable
         sync: false
-      - key: NIRVET_INLINE_WORKER
-        value: "false"                  # dedicated worker service runs it
-
-  - type: worker
-    name: nirvet-worker
-    runtime: docker
-    dockerfilePath: backend/Dockerfile
-    dockerContext: backend
-    dockerCommand: /app/worker
-    envVars:
-      - key: NIRVET_ENV
-        value: production
-      - key: NIRVET_DATABASE_URL
-        sync: false                     # same nirvet_app URL as the API
-      - key: NIRVET_ANTHROPIC_API_KEY
+      - key: NIRVET_CORS_ORIGIN          # the Vercel frontend origin (set once the frontend deploys)
+        sync: false
+      - key: NIRVET_BOOTSTRAP_EMAIL      # first super-admin (rotate the password after first login)
+        sync: false
+      - key: NIRVET_BOOTSTRAP_PASSWORD
+        sync: false
+      - key: NIRVET_ANTHROPIC_API_KEY    # optional — AI copilot falls back offline if unset
         sync: false
