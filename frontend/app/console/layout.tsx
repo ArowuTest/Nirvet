@@ -55,6 +55,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Billing", href: "/console/admin/billing", icon: "file-text", ready: true },
       { label: "Feature flags", href: "/console/admin/flags", icon: "settings", ready: true },
       { label: "Audit trail", href: "/console/admin/audit", icon: "file-text", ready: true },
+      { label: "Fleet oversight", href: "/console/oversight", icon: "grid", ready: true },
     ],
   },
 ];
