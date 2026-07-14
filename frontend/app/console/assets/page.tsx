@@ -6,6 +6,7 @@
 // (POST /assets, upsert on ref) → non-managers see the 403 surfaced. Exposure drives triage priority (§6.8/§6.15).
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
 import { PageHeader, Panel, KpiStrip, Kpi, Table, Th, Td, SevBadge, StatusTag, EmptyState, Button } from "@/components/ui";
 
@@ -19,6 +20,7 @@ const vulnStatusTone: Record<string, "ok" | "warn" | "danger" | "info" | "neutra
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
 export default function AssetsPage() {
+  const router = useRouter();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [vulns, setVulns] = useState<Vuln[]>([]);
   const [exposure, setExposure] = useState<Exposure | null>(null);
@@ -131,7 +133,7 @@ export default function AssetsPage() {
           ) : (
             <Table head={<><Th>Ref</Th><Th>Name</Th><Th>Kind</Th><Th>Criticality</Th><Th>Owner</Th><Th>Tags</Th></>}>
               {assets.map((a) => (
-                <tr key={a.id}>
+                <tr key={a.id} onClick={() => router.push(`/console/assets/${a.id}`)} className="cursor-pointer transition hover:bg-[color:var(--c-surface-2)]">
                   <Td className="font-mono text-[12px]">{a.ref}</Td>
                   <Td className="font-medium">{a.name}</Td>
                   <Td>{a.kind}</Td>
