@@ -14,6 +14,8 @@ type Incident = { incident_id: string; title: string; severity: string; status: 
 type Alert = { alert_id: string; title: string; severity: string; status: string; affected_asset?: string; created_at: string };
 
 const CLOSED = new Set(["closed", "post_incident_review"]);
+const SEV_ORDER = ["critical", "high", "medium", "low", "informational"];
+const sevColor: Record<string, string> = { critical: "#fca5a5", high: "#fcd34d", medium: "#fde68a", low: "#7dd3fc", informational: "#cbd5e1" };
 
 export default function PortalOverview() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -34,6 +36,9 @@ export default function PortalOverview() {
   const openInc = incidents.filter((i) => !CLOSED.has(i.status));
   const breaching = incidents.filter((i) => i.ack_breached || i.resolve_breached).length;
   const openAlerts = alerts.filter((a) => a.status === "new" || a.status === "assigned").length;
+  // Severity mix, computed from the customer's own alert rows (no separate rollup — honest to what they can see).
+  const sevCounts = alerts.reduce<Record<string, number>>((acc, a) => { acc[a.severity] = (acc[a.severity] ?? 0) + 1; return acc; }, {});
+  const totalSev = Object.values(sevCounts).reduce((a, b) => a + b, 0);
 
   return (
     <div>
@@ -64,6 +69,31 @@ export default function PortalOverview() {
           )}
         </Panel>
 
+        <Panel title="Alert severity mix" sub="Your alerts by severity">
+          {loading ? <p className="text-sm" style={{ color: "var(--c-ink-3)" }}>Loading…</p> : totalSev === 0 ? (
+            <p className="text-sm" style={{ color: "var(--c-ink-3)" }}>No alerts to summarise.</p>
+          ) : (
+            <div className="space-y-2.5">
+              {SEV_ORDER.filter((s) => sevCounts[s]).map((s) => {
+                const pct = Math.round((sevCounts[s] / totalSev) * 100);
+                return (
+                  <div key={s}>
+                    <div className="mb-1 flex items-center justify-between text-[12px]">
+                      <span className="capitalize" style={{ color: "var(--c-ink-2)" }}>{s}</span>
+                      <span style={{ color: "var(--c-ink-3)" }}>{sevCounts[s]} · {pct}%</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--c-surface-2)" }}>
+                      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: sevColor[s] }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <div className="mt-6">
         <Panel title="Recent alerts" actions={<Link href="/portal/alerts" className="text-[12px]" style={{ color: "var(--c-primary)" }}>All →</Link>}>
           {loading ? <p className="text-sm" style={{ color: "var(--c-ink-3)" }}>Loading…</p> : alerts.length === 0 ? (
             <EmptyState title="No alerts" hint="Nothing to show." />
