@@ -20,6 +20,9 @@ const NAV = [
   { label: "Overview", href: "/portal", icon: "grid" },
   { label: "Incidents", href: "/portal/incidents", icon: "alert-circle" },
   { label: "Alerts", href: "/portal/alerts", icon: "alert-triangle" },
+  { label: "Assets", href: "/portal/assets", icon: "box" },
+  { label: "Vulnerabilities", href: "/portal/vulnerabilities", icon: "shield" },
+  { label: "Compliance", href: "/portal/compliance", icon: "file-text" },
 ];
 
 export default function PortalLayout({ children }: { children: React.ReactNode }) {
