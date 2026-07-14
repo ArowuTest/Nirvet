@@ -6,6 +6,7 @@
 // incident (it needs case context) and is senior-gated, so this screen is library + oversight, not a launch pad.
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, EmptyState, Button } from "@/components/ui";
 
@@ -60,7 +61,11 @@ export default function PlaybooksPage() {
 
   return (
     <div>
-      <PageHeader title="Playbooks" sub="Response-workflow library and execution history" />
+      <PageHeader
+        title="Playbooks"
+        sub="Response-workflow library and execution history"
+        actions={<Link href="/console/playbooks/new"><Button size="sm">New playbook</Button></Link>}
+      />
       {msg && <p className="mb-3 text-[13px]" style={{ color: msg.tone === "ok" ? "var(--c-ok)" : "var(--c-danger)" }}>{msg.text}</p>}
 
       <div className="grid gap-6" style={{ gridTemplateColumns: "1fr 1fr" }}>
