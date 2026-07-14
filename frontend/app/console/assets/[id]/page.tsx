@@ -54,7 +54,7 @@ export default function ConsoleAssetDetail() {
 
   return (
     <div>
-      <PageHeader title={asset.name} sub={<span className="font-mono text-xs">{asset.ref}</span>} actions={<Link href="/console/assets" className="text-sm" style={{ color: "var(--c-primary)" }}>← Inventory</Link>} />
+      <PageHeader title={asset.name} sub={<span className="font-mono text-xs">{asset.ref}</span>} actions={<div className="flex items-center gap-3"><Link href={`/console/entities?ref=${encodeURIComponent(asset.ref)}`} className="text-sm" style={{ color: "var(--c-primary)" }}>Blast radius →</Link><Link href="/console/assets" className="text-sm" style={{ color: "var(--c-primary)" }}>← Inventory</Link></div>} />
 
       <Panel>
         <div className="flex flex-wrap gap-x-10 gap-y-3">
