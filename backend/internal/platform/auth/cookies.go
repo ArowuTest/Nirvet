@@ -35,16 +35,26 @@ const (
 	securePrefix = "__Secure-"
 )
 
-// CookieOpts are the environment-dependent cookie attributes. Secure is on in production (TLS); SameSite=Lax
-// blocks cross-site cookie attachment on top-level navigations' sub-requests.
+// CookieOpts are the environment-dependent cookie attributes.
+//
+// SameSite: production runs cross-site — the SPA is served from a different registrable domain than the API
+// (e.g. the Vercel frontend calls the Render API), so the browser will only attach the session cookies to those
+// cross-origin fetches when they are SameSite=None; Secure. Dev is same-site (localhost:3000 → :8081) and keeps
+// SameSite=Lax. Dropping Lax in production does NOT open a CSRF hole: writes are still gated by the double-submit
+// CSRF token (a header no cross-site page can forge onto a credentialed request), and the __Host-/__Secure-
+// cookie prefixes still prevent cookie-planting — the two controls Lax was defence-in-depth for.
 type CookieOpts struct {
 	Secure   bool
 	SameSite http.SameSite
 }
 
-// DefaultCookieOpts derives cookie attributes: Secure when in production (served over TLS), SameSite=Lax.
+// DefaultCookieOpts derives cookie attributes. Production: Secure + SameSite=None (cross-site SPA↔API). Dev
+// (http, same-site): SameSite=Lax. SameSite=None requires Secure, which production always has.
 func DefaultCookieOpts(production bool) CookieOpts {
-	return CookieOpts{Secure: production, SameSite: http.SameSiteLaxMode}
+	if production {
+		return CookieOpts{Secure: true, SameSite: http.SameSiteNoneMode}
+	}
+	return CookieOpts{Secure: false, SameSite: http.SameSiteLaxMode}
 }
 
 // Prefixed cookie names. Only Secure sessions get the prefixes (browsers reject __Host-/__Secure- without Secure).
