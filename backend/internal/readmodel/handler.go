@@ -57,6 +57,7 @@ type VulnReader interface {
 type ComplianceReader interface {
 	ListFrameworks(ctx context.Context, tenantID uuid.UUID) ([]compliance.Framework, error)
 	Assess(ctx context.Context, tenantID uuid.UUID, frameworkKey string) (*compliance.Coverage, error)
+	ListControls(ctx context.Context, tenantID uuid.UUID, frameworkKey string) ([]compliance.Control, error)
 }
 
 // Handler serves the customer- and regulator-audience read endpoints. It is THE projection chokepoint: it can

@@ -71,6 +71,17 @@ func TestCustomerProjections_ExactAllowlist(t *testing.T) {
 	assertExactFields(t, reflect.TypeOf(CustomerComplianceView{}), []string{
 		"Key", "Name", "Version", "Score", "Summary",
 	})
+	// Compliance drill-down: per-control status/description is customer-safe; the internal ControlAssessment
+	// fields (source/note/evidence) must never appear on these projections.
+	assertExactFields(t, reflect.TypeOf(CustomerComplianceControlView{}), []string{
+		"ControlRef", "Title", "Description", "Status",
+	})
+	assertExactFields(t, reflect.TypeOf(CustomerComplianceFunctionView{}), []string{
+		"ControlRef", "Title", "Status", "Controls",
+	})
+	assertExactFields(t, reflect.TypeOf(CustomerComplianceDetailView{}), []string{
+		"Key", "Name", "Version", "Score", "Summary", "Functions",
+	})
 }
 
 // assertExactFields fails unless the struct's field names are EXACTLY `want` — no more, no fewer.

@@ -8,6 +8,7 @@ package readmodel
 import (
 	"net/http"
 
+	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 )
 
@@ -86,4 +87,46 @@ func (h *Handler) ListCompliance(w http.ResponseWriter, r *http.Request) {
 		out = append(out, ProjectComplianceForCustomer(f, cov))
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"frameworks": out})
+}
+
+// GetCompliance serves GET /customer/compliance/{key} — the drill-down for ONE framework: the function→control
+// tree with per-control status + description, so the customer can see exactly which controls are the gaps. Only
+// an ENABLED framework is resolvable (a disabled/unknown key is a 404 — existence is not revealed). Internal
+// assessment metadata (source/note/evidence) is dropped at the projection boundary.
+func (h *Handler) GetCompliance(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.requireAudience(w, r, AudienceCustomer)
+	if !ok {
+		return
+	}
+	if h.compl == nil {
+		httpx.Error(w, httpx.ErrNotFound("framework not found"))
+		return
+	}
+	key := r.PathValue("key")
+	fws, err := h.compl.ListFrameworks(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not load compliance frameworks"))
+		return
+	}
+	var fw *compliance.Framework
+	for i := range fws {
+		if fws[i].Key == key && fws[i].Enabled {
+			fw = &fws[i]
+			break
+		}
+	}
+	if fw == nil {
+		httpx.Error(w, httpx.ErrNotFound("framework not found"))
+		return
+	}
+	cov, err := h.compl.Assess(r.Context(), p.TenantID, key)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not assess framework"))
+		return
+	}
+	controls, err := h.compl.ListControls(r.Context(), p.TenantID, key)
+	if err != nil {
+		controls = nil // descriptions are best-effort; status tree still projects
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"framework": ProjectComplianceDetailForCustomer(*fw, cov, controls)})
 }

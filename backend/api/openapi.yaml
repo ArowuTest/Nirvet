@@ -1919,6 +1919,17 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /customer/compliance/{key}:
+    get:
+      tags: [customer]
+      summary: GET /customer/compliance/{key}
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '404': { description: not found }
   /customer/incidents:
     get:
       tags: [customer]

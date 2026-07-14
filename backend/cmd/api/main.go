@@ -927,6 +927,7 @@ func main() {
 	mux.Handle("GET /customer/assets", customerRead(custReadH.ListAssets))
 	mux.Handle("GET /customer/vulnerabilities", customerRead(custReadH.ListVulnerabilities))
 	mux.Handle("GET /customer/compliance", customerRead(custReadH.ListCompliance))
+	mux.Handle("GET /customer/compliance/{key}", customerRead(custReadH.GetCompliance))
 	mux.Handle("GET /oversight/incidents-rollup", oversight(custReadH.IncidentRollup))
 	mux.Handle("GET /oversight/alerts-rollup", oversight(custReadH.AlertRollup))
 	// Provider-operator configures what each customer tenant sees (a customer cannot self-widen).

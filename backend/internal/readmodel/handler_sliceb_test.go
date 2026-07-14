@@ -6,14 +6,26 @@ package readmodel
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/compliance"
+	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
+
+// reqWithKey drives a handler with the {key} path value set (the framework detail route), mirroring `call`.
+func reqWithKey(h func(http.ResponseWriter, *http.Request), p auth.Principal, key string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodGet, "/x", nil)
+	r = r.WithContext(auth.WithPrincipal(r.Context(), p))
+	r.SetPathValue("key", key)
+	w := httptest.NewRecorder()
+	h(w, r)
+	return w
+}
 
 type fakeAssets struct{ list []asset.Asset }
 
@@ -35,6 +47,9 @@ func (f fakeCompliance) ListFrameworks(_ context.Context, _ uuid.UUID) ([]compli
 }
 func (f fakeCompliance) Assess(_ context.Context, _ uuid.UUID, _ string) (*compliance.Coverage, error) {
 	return f.cov, nil
+}
+func (f fakeCompliance) ListControls(_ context.Context, _ uuid.UUID, _ string) ([]compliance.Control, error) {
+	return nil, nil
 }
 
 func sliceBHandler() *Handler {
@@ -109,5 +124,72 @@ func TestSliceB_CustomerComplianceSkipsDisabled(t *testing.T) {
 	}
 	if strings.Contains(body, "disabled_fw") {
 		t.Errorf("disabled framework should be skipped, but appeared: %s", body)
+	}
+}
+
+// detailHandler wires a coverage with a function→control tree carrying an INTERNAL note/evidence, to prove the
+// drill-down projects per-control status/description but drops the internal assessment fields.
+func detailHandler() *Handler {
+	fws := []compliance.Framework{{Key: "cis", Name: "CIS Controls", Version: "8.1", Enabled: true}}
+	cov := &compliance.Coverage{
+		Framework: "cis", Score: 50, Summary: map[string]int{"met": 1, "gap": 1},
+		Functions: []compliance.FunctionAssessment{{
+			ControlRef: "CIS-5", Title: "Account Management", Status: "partial",
+			Controls: []compliance.ControlAssessment{
+				{ControlRef: "CIS-5.1", Title: "Inventory accounts", Status: "met", Source: "auto", Note: "INTERNAL analyst note", EvidenceRef: "s3://internal/evidence-x"},
+				{ControlRef: "CIS-5.2", Title: "MFA for admins", Status: "gap", Source: "manual", Note: "INTERNAL remediation plan"},
+			},
+		}},
+	}
+	ctrls := []compliance.Control{
+		{ControlRef: "CIS-5.1", Description: "Maintain an inventory of all accounts."},
+		{ControlRef: "CIS-5.2", Description: "Require MFA for all administrative access."},
+	}
+	fc := fakeComplianceDetail{fws: fws, cov: cov, ctrls: ctrls}
+	return NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{},
+		fakeAssets{}, fakeVulns{}, fc, nil)
+}
+
+type fakeComplianceDetail struct {
+	fws   []compliance.Framework
+	cov   *compliance.Coverage
+	ctrls []compliance.Control
+}
+
+func (f fakeComplianceDetail) ListFrameworks(_ context.Context, _ uuid.UUID) ([]compliance.Framework, error) {
+	return f.fws, nil
+}
+func (f fakeComplianceDetail) Assess(_ context.Context, _ uuid.UUID, _ string) (*compliance.Coverage, error) {
+	return f.cov, nil
+}
+func (f fakeComplianceDetail) ListControls(_ context.Context, _ uuid.UUID, _ string) ([]compliance.Control, error) {
+	return f.ctrls, nil
+}
+
+func TestSliceB_ComplianceDetail_DrillDownRedacted(t *testing.T) {
+	h := detailHandler()
+	// provider refused
+	if w := call(h.GetCompliance, provider, ""); w.Code != http.StatusForbidden {
+		t.Errorf("provider on GetCompliance: got %d, want 403", w.Code)
+	}
+	// customer: per-control status + description present; internal note/evidence absent
+	r := reqWithKey(h.GetCompliance, custViewer, "cis")
+	if r.Code != http.StatusOK {
+		t.Fatalf("customer GetCompliance: got %d, want 200", r.Code)
+	}
+	body := r.Body.String()
+	for _, want := range []string{"CIS-5.2", "MFA for admins", "gap", "Require MFA for all administrative access."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("drill-down missing customer-safe %q: %s", want, body)
+		}
+	}
+	for _, leak := range []string{"INTERNAL analyst note", "INTERNAL remediation plan", "s3://internal/evidence-x"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("SECURITY: internal assessment field leaked to customer: %q", leak)
+		}
+	}
+	// unknown framework key → 404 (existence not revealed)
+	if w := reqWithKey(h.GetCompliance, custViewer, "nonexistent"); w.Code != http.StatusNotFound {
+		t.Errorf("unknown framework key: got %d, want 404", w.Code)
 	}
 }
