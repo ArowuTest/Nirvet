@@ -4,6 +4,7 @@
 // on the customer's own estate: CVE, affected asset, severity/CVSS, known-exploited flag, remediation timeline.
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, SevBadge, StatusTag, EmptyState, KpiStrip, Kpi } from "@/components/ui";
 
@@ -18,13 +19,28 @@ type Vuln = {
   remediation_due?: string;
   created_at: string;
 };
+type Asset = { asset_id: string; ref: string };
+
+// AssetRef renders an affected-asset reference, linking to the asset detail when we can resolve it.
+function AssetRef({ refStr, map }: { refStr: string; map: Record<string, string> }) {
+  if (!refStr) return <>—</>;
+  const id = map[refStr];
+  if (!id) return <span className="font-mono text-[11px]">{refStr}</span>;
+  return <Link href={`/portal/assets/${id}`} className="font-mono text-[11px]" style={{ color: "var(--c-primary)" }}>{refStr}</Link>;
+}
 
 export default function PortalVulnerabilities() {
   const [items, setItems] = useState<Vuln[]>([]);
+  const [assetMap, setAssetMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     apiGet<{ vulnerabilities: Vuln[] | null }>("/customer/vulnerabilities").then((r) => setItems(r.vulnerabilities ?? [])).catch(() => {}).finally(() => setLoading(false));
+    apiGet<{ assets: Asset[] | null }>("/customer/assets").then((r) => {
+      const m: Record<string, string> = {};
+      (r.assets ?? []).forEach((a) => { m[a.ref] = a.asset_id; });
+      setAssetMap(m);
+    }).catch(() => {});
   }, []);
 
   const critHigh = items.filter((v) => ["critical", "high"].includes(v.severity?.toLowerCase())).length;
@@ -56,7 +72,7 @@ export default function PortalVulnerabilities() {
                 </Td>
                 <Td className="font-mono text-[11px]">{v.cve || "—"}</Td>
                 <Td className="!text-[color:var(--c-ink)] font-medium">{v.title}</Td>
-                <Td className="font-mono text-[11px]">{v.ref || "—"}</Td>
+                <Td><AssetRef refStr={v.ref} map={assetMap} /></Td>
                 <Td className="text-xs">{v.cvss ? v.cvss.toFixed(1) : "—"}</Td>
                 <Td><StatusTag tone={v.status?.toLowerCase() === "open" ? "warn" : "ok"}>{v.status}</StatusTag></Td>
                 <Td className="text-right text-xs">{v.remediation_due ? new Date(v.remediation_due).toLocaleDateString() : "—"}</Td>

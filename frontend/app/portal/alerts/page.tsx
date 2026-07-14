@@ -4,17 +4,32 @@
 // the customer's own affected asset; detection internals are absent by construction.
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, SevBadge, StatusTag, EmptyState } from "@/components/ui";
 
 type Alert = { alert_id: string; title: string; severity: string; status: string; affected_asset?: string; created_at: string };
+type Asset = { asset_id: string; ref: string };
+
+function AssetRef({ refStr, map }: { refStr?: string; map: Record<string, string> }) {
+  if (!refStr) return <>—</>;
+  const id = map[refStr];
+  if (!id) return <span className="font-mono text-[11px]">{refStr}</span>;
+  return <Link href={`/portal/assets/${id}`} className="font-mono text-[11px]" style={{ color: "var(--c-primary)" }}>{refStr}</Link>;
+}
 
 export default function PortalAlerts() {
   const [items, setItems] = useState<Alert[]>([]);
+  const [assetMap, setAssetMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     apiGet<{ alerts: Alert[] | null }>("/customer/alerts").then((r) => setItems(r.alerts ?? [])).catch(() => {}).finally(() => setLoading(false));
+    apiGet<{ assets: Asset[] | null }>("/customer/assets").then((r) => {
+      const m: Record<string, string> = {};
+      (r.assets ?? []).forEach((a) => { m[a.ref] = a.asset_id; });
+      setAssetMap(m);
+    }).catch(() => {});
   }, []);
 
   return (
@@ -29,7 +44,7 @@ export default function PortalAlerts() {
               <tr key={a.alert_id}>
                 <Td><SevBadge severity={a.severity} /></Td>
                 <Td className="!text-[color:var(--c-ink)] font-medium">{a.title}</Td>
-                <Td className="font-mono text-[11px]">{a.affected_asset || "—"}</Td>
+                <Td><AssetRef refStr={a.affected_asset} map={assetMap} /></Td>
                 <Td><StatusTag tone={a.status === "new" ? "info" : "neutral"}>{a.status}</StatusTag></Td>
                 <Td className="text-right text-xs">{new Date(a.created_at).toLocaleString()}</Td>
               </tr>
