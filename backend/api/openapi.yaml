@@ -324,7 +324,7 @@ paths:
   /alerts/{id}/assign: { post: { tags: [alerts], summary: Assign alert, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: assigned } } } }
   /alerts/{id}/promote: { post: { tags: [alerts], summary: Promote alert to incident, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: incident } } } }
   /alerts/{id}/summarise: { post: { tags: [ai], summary: AI summary of an alert (assistive), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: summary } } } }
-  /incidents: { get: { tags: [incidents], summary: List incidents, responses: { '200': { description: incidents } } } }
+  /incidents: { get: { tags: [incidents], summary: List incidents, responses: { '200': { description: incidents } } }, post: { tags: [incidents], summary: Declare an incident manually (CASE-001), requestBody: { required: true, content: { application/json: { schema: { type: object, required: [title, severity], properties: { title: { type: string }, severity: { type: string, enum: [informational, low, medium, high, critical] }, category: { type: string } } } } } }, responses: { '201': { description: incident }, '400': { description: bad request } } } }
   /incidents/at-risk: { get: { tags: [incidents], summary: Open incidents breaching or near-breaching SLA (urgency-ordered), responses: { '200': { description: at-risk incidents } } } }
   /incidents/{id}/triage: { post: { tags: [incidents], summary: AI copilot triage assist (assistive-only, evidence-linked, offline fallback), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: assistive triage summary }, '404': { description: incident not found } } } }
   /incidents/{id}: { get: { tags: [incidents], summary: Get incident + timeline, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: incident } } } }
@@ -437,6 +437,7 @@ paths:
   /threat-intel:
     get: { tags: [threat-intel], summary: List watchlist indicators, responses: { '200': { description: indicators } } }
     post: { tags: [threat-intel], summary: Add an indicator, responses: { '201': { description: added } } }
+  /threat-intel/enrich: { get: { tags: [threat-intel], summary: Enrich candidate observables (alert refs / IOCs) against watchlist + STIX, parameters: [{ name: refs, in: query, required: true, schema: { type: string }, description: 'comma-separated observable values' }], responses: { '200': { description: matches }, '400': { description: at least one ref required } } } }
   /reports/summary: { get: { tags: [reporting], summary: Tenant operational summary, responses: { '200': { description: summary } } } }
   /compliance/coverage: { get: { tags: [compliance], summary: Framework control coverage (NIST CSF), parameters: [{ name: framework, in: query, schema: { type: string } }], responses: { '200': { description: coverage } } } }
   /billing/entitlements:

@@ -53,6 +53,7 @@ export default function AlertDetailPage({ params }: { params: Promise<{ id: stri
   const router = useRouter();
   const [alert, setAlert] = useState<Alert | null>(null);
   const [related, setRelated] = useState<{ id: string; title: string; severity: string; status: string }[]>([]);
+  const [ti, setTi] = useState<{ source: string; value: string; score: number; tlp: string; tags?: string[]; labels?: string[] }[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -66,6 +67,11 @@ export default function AlertDetailPage({ params }: { params: Promise<{ id: stri
       if (ref) {
         const r = await apiGet<{ alerts: { id: string; title: string; severity: string; status: string }[] | null }>(`/alerts?ref=${encodeURIComponent(ref)}`).catch(() => ({ alerts: [] }));
         setRelated((r.alerts ?? []).filter((x) => x.id !== id).slice(0, 8));
+      }
+      const refs = [a.actor_ref, a.target_ref].filter(Boolean);
+      if (refs.length > 0) {
+        const e = await apiGet<{ matches: { source: string; value: string; score: number; tlp: string; tags?: string[]; labels?: string[] }[] | null }>(`/threat-intel/enrich?refs=${encodeURIComponent(refs.join(","))}`).catch(() => ({ matches: [] }));
+        setTi(e.matches ?? []);
       }
     } catch {
       setState("notfound");
@@ -184,6 +190,34 @@ export default function AlertDetailPage({ params }: { params: Promise<{ id: stri
             </div>
           )}
         </Panel>
+
+        {ti.length > 0 && (
+          <Panel title="Threat intelligence" sub="Watchlist / STIX matches on this alert's entities">
+            <ul className="space-y-2">
+              {ti.map((m, idx) => (
+                <li key={`${m.value}-${idx}`} className="rounded-lg p-2.5" style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)" }}>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase" style={{ background: "rgba(239,68,68,0.14)", color: "#fca5a5" }}>{m.source}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[12px]" style={{ color: "var(--c-ink)" }} title={m.value}>{m.value}</span>
+                    <span className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>score {m.score}</span>
+                  </div>
+                  {((m.labels && m.labels.length > 0) || (m.tags && m.tags.length > 0) || m.tlp) && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {m.tlp && <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: "var(--c-surface)", color: "var(--c-ink-2)" }}>TLP:{m.tlp}</span>}
+                      {(m.labels ?? []).map((l) => (
+                        <span key={l} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "rgba(245,158,11,0.12)", color: "#fcd34d" }}>{l}</span>
+                      ))}
+                      {(m.tags ?? []).map((t) => (
+                        <span key={t} className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "var(--c-surface)", color: "var(--c-ink-3)" }}>{t}</span>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[11px]" style={{ color: "var(--c-ink-3)" }}>Matched against your watchlist and imported STIX indicators (§6.10).</p>
+          </Panel>
+        )}
 
         {related.length > 0 && (
           <Panel title="Related alerts" sub="Other alerts on the same entity">

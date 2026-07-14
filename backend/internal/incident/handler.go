@@ -34,6 +34,22 @@ func (h *Handler) PromoteFromAlert(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, inc)
 }
 
+// Create handles POST /incidents — an analyst-declared incident (CASE-001), not promoted from an alert.
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in ManualInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	inc, err := h.svc.CreateManual(r.Context(), p, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, inc)
+}
+
 // AtRisk handles GET /incidents/at-risk — open incidents breaching/near-breaching SLA.
 func (h *Handler) AtRisk(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

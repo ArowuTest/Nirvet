@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -44,6 +45,34 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"indicators": inds})
+}
+
+// Enrich handles GET /threat-intel/enrich?refs=a,b,c — matches candidate observables (an alert's actor/target
+// refs, raw IOCs) against the watchlist + STIX store. The caller passes whatever it holds; matching is by value.
+func (h *Handler) Enrich(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var candidates []string
+	for _, part := range strings.Split(r.URL.Query().Get("refs"), ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			candidates = append(candidates, v)
+		}
+	}
+	if len(candidates) == 0 {
+		httpx.Error(w, httpx.ErrBadRequest("at least one ref is required"))
+		return
+	}
+	if len(candidates) > 64 {
+		candidates = candidates[:64] // bound the lookup
+	}
+	matches, err := h.svc.Enrich(r.Context(), p.TenantID, candidates)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not enrich"))
+		return
+	}
+	if matches == nil {
+		matches = []Match{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"matches": matches})
 }
 
 // AddStix handles POST /threat-intel/stix — analyst submission of a single STIX object.

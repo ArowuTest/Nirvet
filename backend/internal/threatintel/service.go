@@ -243,6 +243,12 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]Indicator, er
 	return s.repo.List(ctx, tenantID)
 }
 
+// Enrich looks up candidate observables (an alert's actor/target refs and any raw IOCs) against the tenant's
+// watchlist + STIX store, returning the matches (§6.10). Read-only; used by the alert-detail enrichment panel.
+func (s *Service) Enrich(ctx context.Context, tenantID uuid.UUID, candidates []string) ([]Match, error) {
+	return s.enr.Enrich(ctx, tenantID, candidates)
+}
+
 // StixInput is an analyst-submitted STIX object (TI-001 manual add). A minimal indicator only needs
 // type + pattern (or type + value for a cyber-observable); everything else is defaulted.
 type StixInput struct {

@@ -794,6 +794,7 @@ func main() {
 	mux.Handle("PUT /soar/platform", padmin(soarH.SetPlatform))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
+	mux.Handle("GET /threat-intel/enrich", provider(threatH.Enrich)) // per-alert IOC enrichment (watchlist + STIX match)
 	mux.Handle("POST /threat-intel", senior(threatH.Add))
 	// STIX 2.1 object store (§6.10 TI-001..004). Reads are provider-wide; writes (manual add /
 	// bundle import) are senior — same gate as watchlist writes.
@@ -864,6 +865,7 @@ func main() {
 	mux.Handle("GET /notify/inbox/prefs", authed(inboxH.GetPrefs))
 	mux.Handle("PUT /notify/inbox/prefs", authed(inboxH.SetPrefs))
 	// incidents (SOC)
+	mux.Handle("POST /incidents", senior(incidentH.Create)) // analyst-declared incident (CASE-001)
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))

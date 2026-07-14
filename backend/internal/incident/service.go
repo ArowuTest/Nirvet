@@ -226,6 +226,63 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 	return inc, nil
 }
 
+// ManualInput is an analyst-declared incident (CASE-001): a case opened directly rather than promoted from an
+// alert or a correlation cluster — e.g. from a threat hunt, a customer report, or intel.
+type ManualInput struct {
+	Title    string `json:"title"`
+	Severity string `json:"severity"`
+	Category string `json:"category"`
+}
+
+// CreateManual opens an analyst-declared incident. The declaring analyst owns it (so it is acknowledged now), and
+// the ack/resolve deadlines follow the severity policy (§6.8). Notifies + mirrors to ITSM best-effort like a
+// promoted case, so a manually-declared incident behaves identically downstream.
+func (s *Service) CreateManual(ctx context.Context, p auth.Principal, in ManualInput) (*Incident, error) {
+	title := strings.TrimSpace(in.Title)
+	if title == "" {
+		return nil, httpx.ErrBadRequest("title is required")
+	}
+	if !sev.Valid(in.Severity) {
+		return nil, httpx.ErrBadRequest("severity must be one of informational, low, medium, high, critical")
+	}
+	category := strings.TrimSpace(in.Category)
+	if category == "" {
+		category = "uncategorised"
+	}
+	now := time.Now()
+	owner := p.UserID
+	ackDue, resolveDue := s.resolveSLA(ctx, p.TenantID, in.Severity).dueTimes(now)
+	inc := &Incident{
+		ID:             uuid.New(),
+		TenantID:       p.TenantID,
+		Title:          title,
+		Severity:       in.Severity,
+		Category:       category,
+		Stage:          StageTriage,
+		OwnerID:        &owner,
+		AcknowledgedAt: &now,
+		AckDueAt:       &ackDue,
+		ResolveDueAt:   &resolveDue,
+	}
+	seed := &TimelineEntry{ID: uuid.New(), Author: p.Email, Kind: "status", Note: "Incident manually declared by " + p.Email}
+	if err := s.repo.CreateWithSeed(ctx, p.TenantID, inc, seed); err != nil {
+		return nil, httpx.ErrInternal("could not create incident")
+	}
+	if s.notifier != nil {
+		_ = s.notifier.NotifyIncident(ctx, p.TenantID,
+			"Incident opened: "+inc.Title,
+			"A "+inc.Severity+" incident was declared by an analyst.")
+	}
+	if s.ticketer != nil {
+		if ref, url, terr := s.ticketer.MirrorIncident(ctx, p.TenantID, inc.Title, inc.Severity,
+			"Nirvet incident manually declared."); terr == nil && ref != "" {
+			_ = s.repo.AddNote(ctx, p.TenantID, &TimelineEntry{ID: uuid.New(), IncidentID: inc.ID, Author: "system", Kind: "action",
+				Note: "Ticket created: " + ref + " " + url})
+		}
+	}
+	return inc, nil
+}
+
 // Assign hands an incident to an analyst, moving it into 'investigating' and
 // recording the handoff on the timeline. The assignee must belong to the same
 // tenant (verified via the Assignees resolver when wired) so a case can never be
