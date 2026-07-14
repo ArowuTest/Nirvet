@@ -33,6 +33,11 @@ type Rule = {
 type Version = { version: number; stage?: string; note?: string; at?: string; created_at?: string } & Record<string, unknown>;
 type Feedback = { total: number; by_disposition: Record<string, number> | null; false_positives: number; fp_rate: number; tuning_recommended: boolean };
 type TestCase = { id: string; name?: string; expected_match?: boolean } & Record<string, unknown>;
+type Sample = { class_name: string; activity_name: string; severity: string; source: string; actor_ref: string; target_ref: string; action: string; outcome: string; confidence: number };
+type TestResult = { name: string; expected_match: boolean; actual_match: boolean; passed: boolean };
+type TestRun = { total: number; passed: number; failed: number; all_pass: boolean; results: TestResult[] | null };
+const emptySample = (): Sample => ({ class_name: "", activity_name: "", severity: "medium", source: "", actor_ref: "", target_ref: "", action: "", outcome: "", confidence: 50 });
+const fieldStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
 // Forward lifecycle (SRS §9.4). Any active stage may also retire.
 const NEXT: Record<string, string[]> = {
@@ -69,6 +74,11 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [run, setRun] = useState<TestRun | null>(null);      // last suite / sample run results
+  const [runLabel, setRunLabel] = useState("");
+  const [addName, setAddName] = useState("");
+  const [addExpect, setAddExpect] = useState(true);
+  const [sample, setSample] = useState<Sample>(emptySample());
 
   const load = useCallback(async () => {
     try {
@@ -107,6 +117,26 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
     } finally {
       setBusy(false);
     }
+  }
+
+  async function runSuite() {
+    setMsg(null); setBusy(true); setRun(null);
+    try {
+      const r = await apiPost<TestRun>(`/detections/${id}/tests/run`, {});
+      setRun(r); setRunLabel("Test suite");
+    } catch (e) {
+      setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "This requires a detection-engineer role." : e instanceof Error ? e.message : "Run failed." });
+    } finally { setBusy(false); }
+  }
+
+  async function runSample() {
+    setMsg(null); setBusy(true); setRun(null);
+    try {
+      const r = await apiPost<TestRun>(`/detections/${id}/tests/samples`, { samples: [{ name: "ad-hoc sample", sample, expected_match: true }] });
+      setRun(r); setRunLabel("Ad-hoc sample");
+    } catch (e) {
+      setMsg({ tone: "danger", text: e instanceof ApiError ? e.message : "Sample run failed." });
+    } finally { setBusy(false); }
   }
 
   if (state === "loading") return <div className="text-sm" style={{ color: "var(--c-ink-3)" }}>Loading…</div>;
@@ -166,8 +196,8 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
             )}
           </Panel>
 
-          <Panel title="Test cases" sub="DET-005 — sample events with expected match" actions={tests.length > 0 ? <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => apiPost(`/detections/${id}/tests/run`), "Tests run.")}>Run tests</Button> : undefined}>
-            {tests.length === 0 ? <EmptyState title="No test cases" hint="Add sample events to prove the rule fires as intended." /> : (
+          <Panel title="Test cases" sub="DET-005 — saved sample events with expected match" actions={tests.length > 0 ? <Button size="sm" variant="ghost" disabled={busy} onClick={runSuite}>Run suite</Button> : undefined}>
+            {tests.length === 0 ? <EmptyState title="No test cases" hint="Add sample events below to prove the rule fires as intended." /> : (
               <ul className="space-y-2">
                 {tests.map((t) => (
                   <li key={t.id} className="flex items-center gap-2 text-sm" style={{ color: "var(--c-ink-2)" }}>
@@ -177,6 +207,54 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
                 ))}
               </ul>
             )}
+
+            {/* Last run results */}
+            {run && (
+              <div className="mt-4 rounded-lg p-3" style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)" }}>
+                <div className="mb-2 flex items-center gap-2 text-sm">
+                  <StatusTag tone={run.all_pass ? "ok" : "danger"}>{run.all_pass ? "all pass" : `${run.failed} failed`}</StatusTag>
+                  <span style={{ color: "var(--c-ink-3)" }}>{runLabel} · {run.passed}/{run.total} passed</span>
+                </div>
+                <ul className="space-y-1">
+                  {(run.results ?? []).map((res, i) => (
+                    <li key={i} className="flex items-center gap-2 text-[12px]" style={{ color: "var(--c-ink-2)" }}>
+                      <span style={{ color: res.passed ? "var(--c-ok)" : "var(--c-danger)" }}>{res.passed ? "✓" : "✗"}</span>
+                      <span className="flex-1">{res.name || "sample"}</span>
+                      <span style={{ color: "var(--c-ink-3)" }}>matched: {res.actual_match ? "yes" : "no"} · expected: {res.expected_match ? "yes" : "no"}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Test a sample" sub="DET-005 — evaluate a sample event against this rule (paste fields → match/no-match). Optionally save it as a case.">
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                ["class_name", "Class (e.g. authentication)"],
+                ["activity_name", "Activity (e.g. logon)"],
+                ["source", "Source (e.g. entra_id)"],
+                ["severity", "Severity"],
+                ["actor_ref", "Actor ref"],
+                ["target_ref", "Target ref"],
+                ["action", "Action"],
+                ["outcome", "Outcome (success/failure)"],
+              ] as const).map(([k, ph]) => (
+                <input key={k} value={String(sample[k])} onChange={(e) => setSample({ ...sample, [k]: e.target.value })} placeholder={ph} className="rounded px-2 py-1.5 text-xs" style={fieldStyle} />
+              ))}
+              <label className="col-span-2 flex items-center gap-2 text-xs" style={{ color: "var(--c-ink-2)" }}>Confidence
+                <input type="number" min={0} max={100} value={sample.confidence} onChange={(e) => setSample({ ...sample, confidence: Math.max(0, Math.min(100, Number(e.target.value))) })} className="w-24 rounded px-2 py-1.5 text-xs" style={fieldStyle} />
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={busy || !sample.class_name} onClick={runSample}>Evaluate</Button>
+              <span className="mx-1 h-4 w-px" style={{ background: "var(--c-border)" }} />
+              <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="case name" className="rounded px-2 py-1.5 text-xs" style={fieldStyle} />
+              <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--c-ink-2)" }}>
+                <input type="checkbox" checked={addExpect} onChange={(e) => setAddExpect(e.target.checked)} /> should fire
+              </label>
+              <Button size="sm" variant="ghost" disabled={busy || !sample.class_name || !addName.trim()} onClick={() => act(() => apiPost(`/detections/${id}/tests`, { name: addName, sample, expected_match: addExpect }).then(() => { setAddName(""); setSample(emptySample()); }), "Test case saved.")}>Save as case</Button>
+            </div>
           </Panel>
         </div>
 
