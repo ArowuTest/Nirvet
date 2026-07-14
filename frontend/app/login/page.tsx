@@ -11,7 +11,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { login, ssoStartUrl, samlStartUrl, ApiError } from "@/lib/api";
+import { login, getMe, ssoStartUrl, samlStartUrl, ApiError } from "@/lib/api";
 
 function ShieldLogo() {
   return (
@@ -60,7 +60,9 @@ export default function LoginPage() {
         setStep("mfa");
         return;
       }
-      router.replace("/console");
+      // Route by audience: customer users land in the customer portal, provider/SOC users in the console.
+      const me = await getMe().catch(() => null);
+      router.replace(me?.role?.startsWith("customer") ? "/portal" : "/console");
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setError(step === "mfa" ? "Invalid or expired code." : "Invalid email or password.");

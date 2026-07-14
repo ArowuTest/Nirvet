@@ -56,6 +56,10 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
     getMe()
       .then((u) => {
         if (!alive) return;
+        if (u.role?.startsWith("customer")) {
+          router.replace("/portal"); // customer users belong in the customer portal, not the SOC console
+          return;
+        }
         setMe(u);
         setState("ready");
         apiGet<{ open_incidents: number; open_alerts: number }>("/reports/summary")
