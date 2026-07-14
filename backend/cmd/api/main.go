@@ -695,6 +695,14 @@ func main() {
 	mux.Handle("POST /alerts/{id}/promote", senior(incidentH.PromoteFromAlert))
 	mux.Handle("POST /alerts/{id}/summarise", aiProvider(aiH.SummariseAlert))
 	mux.Handle("POST /incidents/{id}/triage", aiProvider(aiH.TriageIncident))
+
+	// AI copilot workspace (§6.12 AI-001 / B1): multi-turn, assistive, private-per-analyst. Egress still flows
+	// only through completeExternal (redaction chokepoint). Sessions/list/get on the interactive tier; the message
+	// turn is AI-rate-limited (aiProvider already swaps in the tight AI bucket).
+	mux.Handle("POST /ai/copilot/sessions", aiProvider(aiH.CreateCopilotSession))
+	mux.Handle("GET /ai/copilot/sessions", aiProvider(aiH.ListCopilotSessions))
+	mux.Handle("GET /ai/copilot/sessions/{id}", aiProvider(aiH.GetCopilotSession))
+	mux.Handle("POST /ai/copilot/sessions/{id}/messages", aiProvider(aiH.PostCopilotMessage))
 	// §6.12 #117 AI-provider config. Platform-admin: global default + allowlist + per-tenant policy. Tenant-admin:
 	// own override (kind must be within policy; base_url must be allowlisted — enforced at save in ConfigService).
 	mux.Handle("GET /admin/ai/provider", padmin(aiCfgH.GetGlobalProvider))

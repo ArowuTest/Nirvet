@@ -24,6 +24,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Detections", href: "/console/detections", icon: "target", ready: true },
       { label: "Assets", href: "/console/assets", icon: "box", ready: true },
       { label: "Entity graph", href: "/console/entities", icon: "share-2", ready: true },
+      { label: "AI Copilot", href: "/console/copilot", icon: "activity", ready: true },
     ],
   },
   {
