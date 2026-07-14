@@ -532,7 +532,11 @@ func main() {
 	// ADR-0007 browser session: refresh rotates the access cookie; logout clears + revokes. Both authenticate by
 	// the refresh cookie (no bearer), so they sit outside the authed chain, rate-limited like login.
 	mux.Handle("POST /auth/refresh", httpx.Chain(http.HandlerFunc(iamH.Refresh), loginLimit))
-	mux.Handle("GET /auth/csrf", authed(iamH.CSRFToken)) // cross-site SPA fetches the double-submit token value here (can't read the __Host- cookie)
+	// GET /auth/csrf must NOT require a valid access token: the SPA fetches the CSRF token value precisely when it
+	// is about to REFRESH an EXPIRED access cookie (refresh is a cookie-authed POST that needs the token). Gating
+	// this behind authn would deadlock refresh → force a logout at every access-token expiry. It only reads/mints
+	// the CSRF cookie (sent automatically); CORS restricts who can read the response body to the trusted SPA origin.
+	mux.Handle("GET /auth/csrf", httpx.Chain(http.HandlerFunc(iamH.CSRFToken), loginLimit))
 	mux.Handle("POST /auth/logout", httpx.Chain(http.HandlerFunc(iamH.Logout), loginLimit))
 	// Logout-everywhere (LOW #3): authenticated — bumps the user's session generation (kills live JWTs on all
 	// devices) + revokes all refresh families. Needs a principal, so it sits on the authed chain.
