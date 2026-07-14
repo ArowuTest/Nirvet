@@ -33,12 +33,27 @@ func CSRF() httpx.Middleware {
 	}
 }
 
-// csrfRequired is true only for a state-changing method carried on a COOKIE-authenticated request.
+// csrfExemptPaths are session-ESTABLISHMENT endpoints a not-yet-authenticated user calls. They must never require
+// a CSRF token: the caller has no session yet (and may still hold a STALE/expired auth cookie from a dead session),
+// so demanding a token they cannot possibly hold would lock them out of logging in. These are not authenticated
+// state changes; login-CSRF / session-fixation is a separate, lower-severity concern mitigated elsewhere. Refresh
+// and logout are NOT here — they act on an established session and keep CSRF.
+var csrfExemptPaths = map[string]bool{
+	"/auth/login":                  true,
+	"/auth/invitations/accept":     true,
+	"/auth/password-reset/confirm": true,
+}
+
+// csrfRequired is true only for a state-changing method carried on a COOKIE-authenticated request that is not a
+// session-establishment endpoint.
 func csrfRequired(r *http.Request) bool {
 	switch r.Method {
 	case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
 	default:
 		return false // safe methods never need CSRF
+	}
+	if csrfExemptPaths[r.URL.Path] {
+		return false // login / invite-accept / password-reset: pre-auth, must work even with a stale cookie present
 	}
 	// hasAuthCookie is prefix-aware (matches __Host-/__Secure- and plain names). No auth cookie →
 	// Bearer/API-key/pre-login request → not CSRF-exposed.
