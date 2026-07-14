@@ -37,6 +37,26 @@ func (h *Handler) ListAssets(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"assets": out})
 }
 
+// RiskScore serves GET /customer/risk-score — the tenant's composite posture score with its component breakdown.
+// The score is an aggregate about the customer's own estate; projected as CustomerRiskScoreView for boundary
+// uniformity. A compute error is a 500 (not a fabricated score).
+func (h *Handler) RiskScore(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.requireAudience(w, r, AudienceCustomer)
+	if !ok {
+		return
+	}
+	if h.risk == nil {
+		httpx.JSON(w, http.StatusOK, map[string]any{"risk_score": ProjectRiskScoreForCustomer(nil)})
+		return
+	}
+	s, err := h.risk.Compute(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not compute risk score"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"risk_score": ProjectRiskScoreForCustomer(s)})
+}
+
 // GetAsset serves GET /customer/assets/{id} — one asset with its blast radius: the open vulnerabilities on it
 // and the alerts that targeted it. All three reads are RLS-scoped to the caller's own tenant and every nested
 // item is a customer *View. An asset that isn't the caller's (or doesn't exist) is a 404 (existence not revealed).

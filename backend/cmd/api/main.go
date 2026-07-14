@@ -59,6 +59,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/readmodel"
 	"github.com/ArowuTest/nirvet/internal/reporting"
 	"github.com/ArowuTest/nirvet/internal/retention"
+	"github.com/ArowuTest/nirvet/internal/riskscore"
 	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/soarwire"
 	"github.com/ArowuTest/nirvet/internal/sso"
@@ -409,9 +410,16 @@ func main() {
 	complianceSvc := compliance.NewService(compliance.NewRepository(db))
 	complianceH := compliance.NewHandler(complianceSvc)
 
-	// Customer read-side chokepoint (Slice A incidents/alerts + Slice B assets/vulns/compliance). Composes over the
-	// tenant's OWN RLS-scoped services; emits only *View projections. See the customer/oversight routes below.
-	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, assetSvc, vulnSvc, complianceSvc, db)
+	// Composite risk score (§6.15 risk overview): explainable posture score from real signals — vuln exposure +
+	// compliance coverage + incident/SLA posture. Weights/bands/model params are admin-config (mig 0121, no
+	// hardcoding). Provider console reads /risk-score; the customer sees it via the read-model projection below.
+	riskCfgStore := riskscore.NewStore(db)
+	riskSvc := riskscore.NewService(vulnSvc, complianceSvc, reportingSvc, riskCfgStore)
+	riskH := riskscore.NewHandler(riskSvc, riskCfgStore)
+
+	// Customer read-side chokepoint (Slice A incidents/alerts + Slice B assets/vulns/compliance/risk-score).
+	// Composes over the tenant's OWN RLS-scoped services; emits only *View projections. See the routes below.
+	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, assetSvc, vulnSvc, complianceSvc, riskSvc, db)
 
 	// --- bootstrap first-run provider tenant + platform admin ---
 	bootstrap(ctx, log, tenantSvc, iamSvc, cfg.BootstrapEmail, cfg.BootstrapPassword)
@@ -893,6 +901,10 @@ func main() {
 	mux.Handle("GET /vulnerabilities", provider(vulnH.List))
 	mux.Handle("GET /vulnerabilities/{id}", provider(vulnH.Get))
 	mux.Handle("GET /exposure/summary", provider(vulnH.Exposure))
+	// Composite risk score (§6.15): provider console reads the tenant's score; padmin tunes weights/bands.
+	mux.Handle("GET /risk-score", senior(riskH.Get))
+	mux.Handle("GET /admin/risk-config", padmin(riskH.GetConfig))
+	mux.Handle("PUT /admin/risk-config", padmin(riskH.SetConfig))
 	// Entity graph (§6.9)
 	mux.Handle("GET /entities/graph", provider(entityGraphH.Graph))
 	mux.Handle("GET /incidents/{id}/customer-timeline", provider(incidentH.CustomerTimeline))
@@ -929,6 +941,7 @@ func main() {
 	mux.Handle("GET /customer/vulnerabilities", customerRead(custReadH.ListVulnerabilities))
 	mux.Handle("GET /customer/compliance", customerRead(custReadH.ListCompliance))
 	mux.Handle("GET /customer/compliance/{key}", customerRead(custReadH.GetCompliance))
+	mux.Handle("GET /customer/risk-score", customerRead(custReadH.RiskScore))
 	mux.Handle("GET /oversight/incidents-rollup", oversight(custReadH.IncidentRollup))
 	mux.Handle("GET /oversight/alerts-rollup", oversight(custReadH.AlertRollup))
 	// Provider-operator configures what each customer tenant sees (a customer cannot self-widen).

@@ -13,6 +13,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/riskscore"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,12 @@ type ComplianceReader interface {
 	ListControls(ctx context.Context, tenantID uuid.UUID, frameworkKey string) ([]compliance.Control, error)
 }
 
+// RiskScorer computes the tenant's composite risk score (satisfied by riskscore.Service). The Score is an
+// aggregate about the customer's OWN estate (counts + labels only) — customer-safe by construction. Slice B.
+type RiskScorer interface {
+	Compute(ctx context.Context, tenantID uuid.UUID) (*riskscore.Score, error)
+}
+
 // Handler serves the customer- and regulator-audience read endpoints. It is THE projection chokepoint: it can
 // only ever emit *View / *Rollup projection types — a raw incident/alert entity is never serialized here. A CI
 // fence (scripts/check-audience-projection.sh) forbids a provider handler from being wired to a customer route,
@@ -75,13 +82,14 @@ type Handler struct {
 	assets AssetReader
 	vulns  VulnReader
 	compl  ComplianceReader
+	risk   RiskScorer
 	db     *database.DB
 }
 
 // NewHandler builds the read-model handler. assets/vulns/compl are the Slice B customer read surfaces (may be nil
 // in tests that exercise only the Slice A incident/alert paths — the Slice B handlers guard on nil).
-func NewHandler(inc IncidentReader, alerts AlertReader, policy PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver, assets AssetReader, vulns VulnReader, compl ComplianceReader, db *database.DB) *Handler {
-	return &Handler{inc: inc, alerts: alerts, policy: policy, reg: reg, scope: scope, assets: assets, vulns: vulns, compl: compl, db: db}
+func NewHandler(inc IncidentReader, alerts AlertReader, policy PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver, assets AssetReader, vulns VulnReader, compl ComplianceReader, risk RiskScorer, db *database.DB) *Handler {
+	return &Handler{inc: inc, alerts: alerts, policy: policy, reg: reg, scope: scope, assets: assets, vulns: vulns, compl: compl, risk: risk, db: db}
 }
 
 // requireAudience resolves the principal and asserts it maps to the expected audience — a defense-in-depth

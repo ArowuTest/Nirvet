@@ -12,6 +12,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/compliance"
+	"github.com/ArowuTest/nirvet/internal/riskscore"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
@@ -158,6 +159,31 @@ type CustomerComplianceDetailView struct {
 	Score     int                              `json:"score"`
 	Summary   map[string]int                   `json:"summary"`
 	Functions []CustomerComplianceFunctionView `json:"functions"`
+}
+
+// ---- Risk score (composite posture — aggregate-safe about the customer's OWN estate) ----
+
+// CustomerRiskScoreView is the customer projection of the composite risk score. Every field is an aggregate/label
+// about the customer's own estate (composite + band + per-component risk with count-only drivers) — there is no
+// per-record content or internal field on riskscore.Score or riskscore.Component, so it is customer-safe by
+// construction. Kept as a named *View so the audience boundary stays uniform and the reflection test covers it.
+type CustomerRiskScoreView struct {
+	Composite  int                   `json:"composite"`
+	Band       string                `json:"band"`
+	Tone       string                `json:"tone"`
+	Components []riskscore.Component `json:"components"`
+}
+
+// ProjectRiskScoreForCustomer builds the customer risk-score view (empty-but-valid when the score is nil).
+func ProjectRiskScoreForCustomer(s *riskscore.Score) CustomerRiskScoreView {
+	v := CustomerRiskScoreView{Components: []riskscore.Component{}}
+	if s != nil {
+		v.Composite, v.Band, v.Tone = s.Composite, s.Band, s.Tone
+		if s.Components != nil {
+			v.Components = s.Components
+		}
+	}
+	return v
 }
 
 // ProjectComplianceDetailForCustomer merges the assessed coverage (per-control status) with the control

@@ -1931,6 +1931,38 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /risk-score:
+    get:
+      tags: [riskscore]
+      summary: GET /risk-score
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/risk-config:
+    get:
+      tags: [riskscore]
+      summary: GET /admin/risk-config
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    put:
+      tags: [riskscore]
+      summary: PUT /admin/risk-config
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /customer/risk-score:
+    get:
+      tags: [customer]
+      summary: GET /customer/risk-score
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
   /customer/compliance/{key}:
     get:
       tags: [customer]
