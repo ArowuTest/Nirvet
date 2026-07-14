@@ -20,6 +20,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Incidents", href: "/console/incidents", icon: "alert-circle", badge: "incidents", ready: true },
       { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true },
       { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true },
+      { label: "Detections", href: "/console/detections", icon: "target", ready: true },
     ],
   },
   {
