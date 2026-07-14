@@ -897,7 +897,8 @@ func main() {
 	// incidents (SOC)
 	mux.Handle("POST /incidents", senior(incidentH.Create)) // analyst-declared incident (CASE-001)
 	mux.Handle("GET /incidents", provider(incidentH.List))
-	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
+	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk))   // literal beats {id}
+	mux.Handle("GET /incidents/workload", manager(incidentH.Workload)) // B4: manager team-load roll-up (literal)
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
 	mux.Handle("GET /incidents/{id}/alerts", provider(alertH.ByIncident)) // linked-alerts panel (Bucket-2)
 	mux.Handle("GET /incidents/{id}/evidence-pack", senior(evidenceH.Pack))

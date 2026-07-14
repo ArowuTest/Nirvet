@@ -31,6 +31,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true },
       { label: "Privileged access", href: "/console/pam", icon: "shield", ready: true },
+      { label: "Team workload", href: "/console/workload", icon: "users", ready: true },
       { label: "Evidence", href: "/console/evidence", icon: "server", ready: true },
       { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true },
     ],
