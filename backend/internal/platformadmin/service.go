@@ -81,6 +81,11 @@ func boolStr(b bool) string {
 }
 
 // SetFlag validates against the safety class, applies + audits, and alerts on a weakening.
+// ListFlags returns every configured feature flag (padmin read model). Read-only, no audit.
+func (s *Service) ListFlags(ctx context.Context) ([]FlagRow, error) {
+	return s.repo.ListFlags(ctx)
+}
+
 func (s *Service) SetFlag(ctx context.Context, actor auth.Principal, in SetFlagInput) (SetResult, error) {
 	if in.Scope == "" {
 		in.Scope = "global"

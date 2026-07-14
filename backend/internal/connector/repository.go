@@ -101,6 +101,22 @@ func (r *Repository) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	})
 }
 
+// Update edits a connector's name, enabled state and config (Bucket-2 edit/enable-disable toggle). Kind and the
+// vault-sealed secret are IMMUTABLE here — recreate the connector to rotate a credential. Tenant-scoped by RLS.
+func (r *Repository) Update(ctx context.Context, tenantID, id uuid.UUID, name string, enabled bool, config map[string]any) error {
+	cfg, _ := json.Marshal(config)
+	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, err := tx.Exec(ctx, `UPDATE connector_configs SET name=$2, enabled=$3, config=$4 WHERE id=$1`, id, name, enabled, cfg)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
+		return nil
+	})
+}
+
 // WebhookInfo is the minimal data needed to authenticate a webhook post.
 type WebhookInfo struct {
 	TenantID uuid.UUID

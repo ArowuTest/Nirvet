@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/ingestion"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -116,6 +117,28 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]ConnectorConf
 // Delete removes a connector.
 func (s *Service) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
 	if err := s.repo.Delete(ctx, tenantID, id); err != nil {
+		return httpx.ErrNotFound("connector not found")
+	}
+	return nil
+}
+
+// UpdateInput edits a connector's mutable fields (Bucket-2 edit + enable/disable toggle). Kind and the
+// vault-sealed secret are immutable here — recreate the connector to rotate a credential.
+type UpdateInput struct {
+	Name    string         `json:"name"`
+	Enabled bool           `json:"enabled"`
+	Config  map[string]any `json:"config"`
+}
+
+// Update edits a connector's name, enabled state and config. Name is required; config defaults to empty.
+func (s *Service) Update(ctx context.Context, tenantID, id uuid.UUID, in UpdateInput) error {
+	if strings.TrimSpace(in.Name) == "" {
+		return httpx.ErrBadRequest("name is required")
+	}
+	if in.Config == nil {
+		in.Config = map[string]any{}
+	}
+	if err := s.repo.Update(ctx, tenantID, id, in.Name, in.Enabled, in.Config); err != nil {
 		return httpx.ErrNotFound("connector not found")
 	}
 	return nil

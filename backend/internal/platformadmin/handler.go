@@ -23,6 +23,19 @@ func NewHandler(svc *Service, maint *MaintenanceService) *Handler {
 	return &Handler{svc: svc, maint: maint}
 }
 
+// ListFlags handles GET /admin/flags — the configured feature flags with derived safety class + secure default.
+func (h *Handler) ListFlags(w http.ResponseWriter, r *http.Request) {
+	flags, err := h.svc.ListFlags(r.Context())
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list flags"))
+		return
+	}
+	if flags == nil {
+		flags = []FlagRow{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"flags": flags})
+}
+
 // SetFlag handles PUT /admin/flags.
 func (h *Handler) SetFlag(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

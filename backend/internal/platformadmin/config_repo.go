@@ -109,6 +109,43 @@ func (r *Repository) ActiveMaintenance(ctx context.Context, tenantID uuid.UUID) 
 	return suppressNotif, pauseSLA, e
 }
 
+// FlagRow is a single feature-flag row for the platform-admin flags read model. SafetyClass and SecureDefault are
+// derived (not stored) so the UI can show why a flag is guarded and whether its current value is the secure one.
+type FlagRow struct {
+	Key           string     `json:"key"`
+	Scope         string     `json:"scope"`
+	ScopeRef      string     `json:"scope_ref"`
+	Enabled       bool       `json:"enabled"`
+	SafetyClass   string     `json:"safety_class"`
+	SecureDefault bool       `json:"secure_default"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+// ListFlags returns every configured feature flag (platform-admin read). Cross-scope → WithSystem.
+func (r *Repository) ListFlags(ctx context.Context) ([]FlagRow, error) {
+	var out []FlagRow
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT key, scope, scope_ref, enabled, expires_at, updated_at
+			FROM platform_feature_flags ORDER BY key, scope, scope_ref`)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var f FlagRow
+			if se := rows.Scan(&f.Key, &f.Scope, &f.ScopeRef, &f.Enabled, &f.ExpiresAt, &f.UpdatedAt); se != nil {
+				return se
+			}
+			f.SafetyClass = string(ClassOf(f.Key))
+			f.SecureDefault = SecureDefault(f.Key)
+			out = append(out, f)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // ExpiredWeakenings returns flags whose time-box has elapsed (Reinf-B), read cross-scope (system sees all).
 func (r *Repository) ExpiredWeakenings(ctx context.Context, limit int) ([]FlagChange, error) {
 	var out []FlagChange

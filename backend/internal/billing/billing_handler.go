@@ -114,6 +114,32 @@ func (h *Handler) Usage(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, roll)
 }
 
+// ListPackages handles GET /admin/billing/packages (padmin) — the operator price book (packages + rates).
+func (h *Handler) ListPackages(w http.ResponseWriter, r *http.Request) {
+	pkgs, err := h.svc.ListPackages(r.Context())
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list packages"))
+		return
+	}
+	if pkgs == nil {
+		pkgs = []Package{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"packages": pkgs})
+}
+
+// ListAccounts handles GET /admin/billing/accounts (padmin) — umbrella billing accounts.
+func (h *Handler) ListAccounts(w http.ResponseWriter, r *http.Request) {
+	accts, err := h.svc.ListAccounts(r.Context())
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list accounts"))
+		return
+	}
+	if accts == nil {
+		accts = []Account{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"accounts": accts})
+}
+
 // Invoice handles GET /billing/invoice?period= — the caller's own computed charges (tenant-scoped, manager-gated).
 func (h *Handler) Invoice(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

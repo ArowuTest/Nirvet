@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPut, ApiError } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, healthTone, EmptyState, Button } from "@/components/ui";
 
 type Connector = {
@@ -16,6 +16,7 @@ type Connector = {
   name: string;
   direction: string;
   enabled: boolean;
+  config?: Record<string, unknown>;
   health: string;
   last_success?: string;
   created_at: string;
@@ -76,6 +77,23 @@ export default function IntegrationsPage() {
     }
   }
 
+  // Enable/disable toggle via PUT /connectors/{id}. The backend replaces name+config, so we echo the current
+  // values and only flip `enabled` — the config is preserved, not wiped.
+  async function toggle(c: Connector) {
+    setMsg(null);
+    setBusy(c.id);
+    try {
+      await apiPut(`/connectors/${c.id}`, { name: c.name, enabled: !c.enabled, config: c.config ?? {} });
+      setMsg({ tone: "ok", text: c.enabled ? "Connector disabled — ingestion paused." : "Connector enabled." });
+      await load();
+    } catch (e) {
+      const forbidden = e instanceof ApiError && e.status === 403;
+      setMsg({ tone: "danger", text: forbidden ? "Changing a connector requires a senior analyst role." : e instanceof Error ? e.message : "Update failed." });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const installedKinds = new Set(connectors.map((c) => c.kind));
 
   return (
@@ -105,6 +123,9 @@ export default function IntegrationsPage() {
                 </div>
                 <Button size="sm" variant="ghost" disabled={busy === c.id} onClick={() => test(c.id)}>
                   {busy === c.id ? "Testing…" : "Test"}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={busy === c.id} onClick={() => toggle(c)}>
+                  {c.enabled ? "Disable" : "Enable"}
                 </Button>
               </li>
             ))}

@@ -86,6 +86,27 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// Update handles PUT /connectors/{id} — edit a connector's name/config and toggle it enabled/disabled.
+// Kind and the vault-sealed secret are immutable here (recreate to rotate a credential).
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid connector id"))
+		return
+	}
+	var in UpdateInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Update(r.Context(), p.TenantID, id, in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // TestConnection handles POST /connectors/{id}/test — a live credential + connectivity probe (tenant-scoped).
 // Always 200 with a {status, detail} body: status=ok|failed|not_applicable. A "failed" connection is a valid
 // probe outcome, not an HTTP error.

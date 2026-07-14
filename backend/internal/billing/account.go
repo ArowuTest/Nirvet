@@ -106,6 +106,27 @@ func (r *Repository) getAccount(ctx context.Context, id uuid.UUID) (*Account, er
 	return &a, err
 }
 
+// listAccounts returns every umbrella billing account (padmin billing read model). Global config → WithSystem.
+func (r *Repository) listAccounts(ctx context.Context) ([]Account, error) {
+	var out []Account
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT id, name, currency, contract_value_minor, payment_status, account_status FROM billing_account ORDER BY name`)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a Account
+			if e := rows.Scan(&a.ID, &a.Name, &a.Currency, &a.ContractValueMinor, &a.PaymentStatus, &a.AccountStatus); e != nil {
+				return e
+			}
+			out = append(out, a)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // setAccountStatus updates payment/account status (padmin). Empty string leaves a field unchanged.
 func (r *Repository) setAccountStatus(ctx context.Context, id uuid.UUID, accountStatus, paymentStatus string) error {
 	return r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -187,6 +208,11 @@ func (s *Service) CreateAccount(ctx context.Context, actor auth.Principal, name,
 	}
 	_ = s.repo.writeConfigAudit(ctx, actor.UserID, "create_account", name, map[string]any{"currency": currency, "contract_value_minor": contractValue})
 	return id, nil
+}
+
+// ListAccounts returns every umbrella billing account (padmin read). No audit (read-only).
+func (s *Service) ListAccounts(ctx context.Context) ([]Account, error) {
+	return s.repo.listAccounts(ctx)
 }
 
 // SetMode sets a tenant's billing mode (padmin). A covered tenant is pinned to its account's currency (M-4). Audited.

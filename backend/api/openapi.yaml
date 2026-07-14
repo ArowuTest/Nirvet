@@ -343,7 +343,7 @@ paths:
     get: { tags: [connectors], summary: List connectors, responses: { '200': { description: connectors } } }
     post: { tags: [connectors], summary: Create connector (webhook returns a one-time source key), responses: { '201': { description: created } } }
   /connectors/catalogue: { get: { tags: [connectors], summary: Available connector types, responses: { '200': { description: catalogue } } } }
-  /connectors/{id}: { delete: { tags: [connectors], summary: Delete connector, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
+  /connectors/{id}: { put: { tags: [connectors], summary: Edit connector (name/config) and toggle enabled, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: updated } } }, delete: { tags: [connectors], summary: Delete connector, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted } } } }
   /playbooks: { get: { tags: [soar], summary: List playbooks, responses: { '200': { description: playbooks } } } }
   /playbooks/{id}/run: { post: { tags: [soar], summary: Run a playbook (authority-to-act gated), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '201': { description: run, content: { application/json: { schema: { $ref: '#/components/schemas/PlaybookRun' } } } } } } }
   /soar/runs: { get: { tags: [soar], summary: List runs, responses: { '200': { description: runs } } } }
@@ -501,6 +501,13 @@ paths:
   /admin/ai/eval/runs/{id}: { get: { tags: [admin], summary: get an AI eval run, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } } }
   /ai/outputs/{ref}/feedback: { get: { tags: [ai], summary: list feedback on an AI output, parameters: [{ name: ref, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }, post: { tags: [ai], summary: submit feedback on an AI output, parameters: [{ name: ref, in: path, required: true, schema: { type: string } }], responses: { '201': { description: created } } } }
   /admin/billing/accounts:
+    get:
+      tags: [admin]
+      summary: GET /admin/billing/accounts
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
     post:
       tags: [admin]
       summary: POST /admin/billing/accounts
@@ -532,6 +539,13 @@ paths:
         '401': { description: unauthenticated }
         '403': { description: forbidden }
   /admin/billing/packages:
+    get:
+      tags: [admin]
+      summary: GET /admin/billing/packages
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
     post:
       tags: [admin]
       summary: POST /admin/billing/packages
@@ -561,6 +575,13 @@ paths:
         '401': { description: unauthenticated }
         '403': { description: forbidden }
   /admin/flags:
+    get:
+      tags: [admin]
+      summary: GET /admin/flags
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
     put:
       tags: [admin]
       summary: PUT /admin/flags

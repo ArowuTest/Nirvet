@@ -20,6 +20,14 @@ type Rate struct {
 	OverageMinor int64  `json:"overage_minor"` // price per unit over, integer minor-units
 }
 
+// Package is a commercial package with its per-metric rate lines (read model for the padmin billing screen).
+type Package struct {
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Currency string    `json:"currency"`
+	Rates    []Rate    `json:"rates"`
+}
+
 // --- repository (global config via WithSystem; tenant assignment via WithTenant) ---
 
 func (r *Repository) createPackage(ctx context.Context, name, currency string) (uuid.UUID, error) {
@@ -68,6 +76,38 @@ func (r *Repository) rates(ctx context.Context, packageID uuid.UUID) ([]Rate, er
 	return out, err
 }
 
+// listPackages returns every commercial package with its rate lines (padmin billing read model). Global config,
+// so WithSystem. Rate lines are loaded per package (N is small — the operator's own price book).
+func (r *Repository) listPackages(ctx context.Context) ([]Package, error) {
+	var out []Package
+	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, `SELECT id, name, currency FROM billing_package ORDER BY name`)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p Package
+			if e := rows.Scan(&p.ID, &p.Name, &p.Currency); e != nil {
+				return e
+			}
+			out = append(out, p)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		rt, e := r.rates(ctx, out[i].ID)
+		if e != nil {
+			return nil, e
+		}
+		out[i].Rates = rt
+	}
+	return out, nil
+}
+
 // assignPackage writes the tenant's package + contract currency (M-4) under the tenant's own RLS context.
 func (r *Repository) assignPackage(ctx context.Context, tenantID, packageID uuid.UUID, currency string) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -103,6 +143,11 @@ func (r *Repository) writeConfigAudit(ctx context.Context, actorID uuid.UUID, ac
 }
 
 // --- service (called only from padmin-gated routes) ---
+
+// ListPackages returns the operator's price book (padmin read). No audit (read-only).
+func (s *Service) ListPackages(ctx context.Context) ([]Package, error) {
+	return s.repo.listPackages(ctx)
+}
 
 // CreatePackage adds a commercial package (padmin). Audited.
 func (s *Service) CreatePackage(ctx context.Context, actor auth.Principal, name, currency string) (uuid.UUID, error) {

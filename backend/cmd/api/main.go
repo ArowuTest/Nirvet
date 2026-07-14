@@ -719,6 +719,7 @@ func main() {
 	// §6.18 #122 platform-admin surface. Feature-flag set/rollback runs the safety gate (immutable rejected; protected
 	// weakening needs senior+four-eyes+reason+HIGH-alert+time-box). Tenant lifecycle: legal-hold set is routine, CLEAR
 	// needs the elevated envelope (M-3); offboard runs the uniform purge (blocked while on hold) + cert of destruction.
+	mux.Handle("GET /admin/flags", padmin(padminH.ListFlags))
 	mux.Handle("PUT /admin/flags", padmin(padminH.SetFlag))
 	mux.Handle("POST /admin/flags/rollback", padmin(padminH.RollbackFlag))
 	mux.Handle("POST /admin/tenants/{id}/legal-hold", padmin(padminH.SetLegalHold))
@@ -752,6 +753,7 @@ func main() {
 	mux.Handle("GET /connectors/catalogue", provider(connectorH.Catalogue))
 	mux.Handle("GET /connectors", provider(connectorH.List))
 	mux.Handle("POST /connectors", senior(connectorH.Create))
+	mux.Handle("PUT /connectors/{id}", senior(connectorH.Update)) // edit + enable/disable toggle
 	mux.Handle("POST /connectors/{id}/test", senior(connectorH.TestConnection))
 	mux.Handle("PUT /connectors/{id}/cred-expiry", senior(connectorH.SetCredExpiry)) // #188 record credential expiry
 	mux.Handle("DELETE /connectors/{id}", senior(connectorH.Delete))
@@ -826,6 +828,7 @@ func main() {
 	// §6.17 #126 billing. Pricing WRITES are padmin-only (a tenant has no path to price). Usage/invoice READS are
 	// tenant-scoped + manager-gated (finance/admin tier, not every analyst). Metering has NO write endpoint —
 	// usage is server-derived only.
+	mux.Handle("GET /admin/billing/packages", padmin(billingH.ListPackages))
 	mux.Handle("POST /admin/billing/packages", padmin(billingH.CreatePackage))
 	mux.Handle("POST /admin/billing/packages/{id}/rates", padmin(billingH.SetRate))
 	mux.Handle("PUT /admin/tenants/{id}/billing-package", padmin(billingH.AssignPackage))
@@ -834,6 +837,7 @@ func main() {
 	// §6.17 slice B: umbrella accounts + billing modes + suspension. Account/mode/suspension writes are padmin-only
 	// (a tenant can't self-mark covered/comp or re-parent). Account-level suspend requires senior + raises a HIGH
 	// alert (service-enforced). The account rollup reads only the account's own covered tenants.
+	mux.Handle("GET /admin/billing/accounts", padmin(billingH.ListAccounts))
 	mux.Handle("POST /admin/billing/accounts", padmin(billingH.CreateAccount))
 	mux.Handle("PUT /admin/tenants/{id}/billing-mode", padmin(billingH.SetMode))
 	mux.Handle("POST /admin/tenants/{id}/billing-suspend", padmin(billingH.SuspendTenant))
