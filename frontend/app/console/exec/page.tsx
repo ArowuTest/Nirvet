@@ -25,6 +25,10 @@ type Summary = {
 };
 type Exposure = { by_severity: Record<string, number> | null; open_total: number; exploited_open: number; past_due: number };
 type Coverage = { framework: string; score: number };
+type RiskComponent = { key: string; label: string; risk: number; weight: number; present: boolean };
+type RiskScore = { composite: number; band: string; tone: string; components: RiskComponent[] };
+
+const riskTone: Record<string, string> = { ok: "var(--c-ok)", warn: "var(--c-warn)", danger: "var(--c-danger)", neutral: "var(--c-ink-3)" };
 
 const SEV_ORDER = ["critical", "high", "medium", "low", "informational"];
 const sevColor: Record<string, string> = { critical: "#fca5a5", high: "#fcd34d", medium: "#fde68a", low: "#7dd3fc", informational: "#cbd5e1" };
@@ -42,16 +46,19 @@ export default function ExecPage() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [exposure, setExposure] = useState<Exposure | null>(null);
   const [coverage, setCoverage] = useState<Coverage | null>(null);
+  const [risk, setRisk] = useState<RiskScore | null>(null);
   const [state, setState] = useState<"loading" | "ready">("loading");
 
   useEffect(() => {
     (async () => {
-      const [s, e] = await Promise.allSettled([
+      const [s, e, r] = await Promise.allSettled([
         apiGet<Summary>("/reports/summary"),
         apiGet<Exposure>("/exposure/summary"),
+        apiGet<RiskScore>("/risk-score"),
       ]);
       if (s.status === "fulfilled") setSummary(s.value);
       if (e.status === "fulfilled") setExposure(e.value);
+      if (r.status === "fulfilled") setRisk(r.value);
       // Compliance is best-effort: pick the first framework and read its coverage score.
       try {
         const fw = await apiGet<{ frameworks: { key?: string; name?: string }[] | string[] | null }>("/compliance/frameworks");
@@ -86,6 +93,40 @@ export default function ExecPage() {
   return (
     <div>
       <PageHeader title="Executive posture" sub={`Point-in-time security posture · rolling ${summary.mean_times.window_days}-day KPIs`} />
+
+      {risk && (
+        <Link href="/console/admin/risk" className="mb-6 block">
+          <Panel>
+            <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
+              <div className="flex items-center gap-4">
+                <svg width="76" height="76" viewBox="0 0 76 76" aria-hidden="true">
+                  <circle cx="38" cy="38" r="30" fill="none" stroke="var(--c-surface-2)" strokeWidth="8" />
+                  <circle cx="38" cy="38" r="30" fill="none" stroke={riskTone[risk.tone] ?? riskTone.neutral} strokeWidth="8" strokeLinecap="round" strokeDasharray={`${2 * Math.PI * 30 * (risk.composite / 100)} ${2 * Math.PI * 30}`} transform="rotate(-90 38 38)" />
+                  <text x="38" y="43" textAnchor="middle" fontSize="22" fontWeight="800" fill="var(--c-ink)">{risk.composite}</text>
+                </svg>
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>Composite risk</div>
+                  <div className="text-lg font-bold" style={{ color: riskTone[risk.tone] ?? riskTone.neutral }}>{risk.band}</div>
+                  <div className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>configure weights →</div>
+                </div>
+              </div>
+              <div className="flex flex-1 flex-wrap gap-x-6 gap-y-2">
+                {risk.components.map((c) => (
+                  <div key={c.key} className="min-w-[120px]">
+                    <div className="flex items-center justify-between text-[13px]">
+                      <span style={{ color: "var(--c-ink-2)" }}>{c.label}</span>
+                      <span className="font-semibold" style={{ color: "var(--c-ink)" }}>{c.present ? c.risk : "—"}</span>
+                    </div>
+                    <div className="mt-1 h-1 w-full overflow-hidden rounded-full" style={{ background: "var(--c-surface-2)" }}>
+                      <div className="h-full rounded-full" style={{ width: `${c.present ? c.risk : 0}%`, background: c.risk >= 60 ? "var(--c-danger)" : c.risk >= 30 ? "var(--c-warn)" : "var(--c-ok)" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Panel>
+        </Link>
+      )}
 
       <KpiStrip>
         <Kpi label="Open incidents" value={String(summary.open_incidents)} tone={summary.open_incidents > 0 ? "warn" : "ok"} />
