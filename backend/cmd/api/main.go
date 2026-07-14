@@ -54,6 +54,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/ratelimit"
 	"github.com/ArowuTest/nirvet/internal/platform/tracing"
 	"github.com/ArowuTest/nirvet/internal/platformadmin"
+	"github.com/ArowuTest/nirvet/internal/platformhealth"
 	"github.com/ArowuTest/nirvet/internal/posture"
 	"github.com/ArowuTest/nirvet/internal/postureproj"
 	"github.com/ArowuTest/nirvet/internal/readmodel"
@@ -103,6 +104,7 @@ func main() {
 	}
 	log := logger.New(cfg.Env)
 	log.Info("nirvet api starting", "env", cfg.Env, "addr", cfg.HTTPAddr)
+	startedAt := time.Now() // process start — real uptime for the platform-health snapshot (B3)
 
 	ctx := context.Background()
 
@@ -701,6 +703,13 @@ func main() {
 	mux.Handle("POST /admin/ai/allowed-endpoints", padmin(aiCfgH.AddAllowedEndpoint))
 	mux.Handle("DELETE /admin/ai/allowed-endpoints/{id}", padmin(aiCfgH.DeleteAllowedEndpoint))
 	mux.Handle("PUT /admin/tenants/{id}/ai-policy", padmin(aiCfgH.SetTenantPolicy))
+
+	// Platform health snapshot (§6.18 slice B / B3): authenticated, aggregated liveness of THIS instance —
+	// live db + event-store probes, configured backend names for queue/blob/cache, and real Go-runtime signal.
+	// Honest single-sovereign view (no fabricated fleet). padmin-only; /healthz + /readyz stay public.
+	platformHealthH := platformhealth.NewHandler(platformhealth.NewService(
+		db.Health, events.Ping, esBackend, queueBackend, blobs.Backend(), redisClient != nil, startedAt))
+	mux.Handle("GET /admin/health", padmin(platformHealthH.Get))
 	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
 	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
 	// §6.12 #188 AI-egress redaction — tenant-admin manages the mask-by-default policy + config-extensible patterns.

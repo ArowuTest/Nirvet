@@ -175,6 +175,7 @@ paths:
         '403': { description: forbidden }
   /healthz: { get: { tags: [health], security: [], summary: Liveness, responses: { '200': { description: ok } } } }
   /readyz: { get: { tags: [health], security: [], summary: Readiness (checks DB), responses: { '200': { description: ready }, '503': { description: db unavailable } } } }
+  /admin/health: { get: { tags: [admin], summary: Platform health snapshot (aggregated liveness + runtime; padmin), responses: { '200': { description: OK }, '401': { description: unauthenticated }, '403': { description: forbidden } } } }
   /metrics: { get: { tags: [health], security: [], summary: Prometheus metrics, responses: { '200': { description: metrics } } } }
   /auth/login:
     post:
