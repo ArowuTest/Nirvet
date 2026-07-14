@@ -1963,6 +1963,36 @@ paths:
         '200': { description: OK }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /customer/soar/approvals:
+    get:
+      tags: [customer]
+      summary: GET /customer/soar/approvals
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /customer/soar/approvals/{id}/approve:
+    post:
+      tags: [customer]
+      summary: POST /customer/soar/approvals/{id}/approve
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: OK }
+        '403': { description: forbidden }
+        '404': { description: not found }
+        '409': { description: conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /customer/soar/approvals/{id}/reject:
+    post:
+      tags: [customer]
+      summary: POST /customer/soar/approvals/{id}/reject
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: OK }
+        '403': { description: forbidden }
+        '404': { description: not found }
+        '409': { description: conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /customer/compliance/{key}:
     get:
       tags: [customer]

@@ -57,6 +57,30 @@ func (h *Handler) RiskScore(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"risk_score": ProjectRiskScoreForCustomer(s)})
 }
 
+// PendingApprovals serves GET /customer/soar/approvals — runs awaiting the customer's approval (SB3). Read-only
+// projection; the approve/reject WRITES live on the soar handler (customer-write gate). Empty when the tenant's
+// authority mode doesn't involve the customer.
+func (h *Handler) PendingApprovals(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.requireAudience(w, r, AudienceCustomer)
+	if !ok {
+		return
+	}
+	if h.soar == nil {
+		httpx.JSON(w, http.StatusOK, map[string]any{"approvals": []CustomerApprovalView{}})
+		return
+	}
+	items, err := h.soar.CustomerPendingApprovals(r.Context(), p.TenantID)
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not load approvals"))
+		return
+	}
+	out := make([]CustomerApprovalView, 0, len(items))
+	for _, it := range items {
+		out = append(out, ProjectApprovalForCustomer(it))
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"approvals": out})
+}
+
 // GetAsset serves GET /customer/assets/{id} — one asset with its blast radius: the open vulnerabilities on it
 // and the alerts that targeted it. All three reads are RLS-scoped to the caller's own tenant and every nested
 // item is a customer *View. An asset that isn't the caller's (or doesn't exist) is a 404 (existence not revealed).

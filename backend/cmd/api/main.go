@@ -419,7 +419,7 @@ func main() {
 
 	// Customer read-side chokepoint (Slice A incidents/alerts + Slice B assets/vulns/compliance/risk-score).
 	// Composes over the tenant's OWN RLS-scoped services; emits only *View projections. See the routes below.
-	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, assetSvc, vulnSvc, complianceSvc, riskSvc, db)
+	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, assetSvc, vulnSvc, complianceSvc, riskSvc, soarSvc, db)
 
 	// --- bootstrap first-run provider tenant + platform admin ---
 	bootstrap(ctx, log, tenantSvc, iamSvc, cfg.BootstrapEmail, cfg.BootstrapPassword)
@@ -506,6 +506,9 @@ func main() {
 	// may be wired to this chain (enforced by scripts/check-audience-projection.sh); a provider handler here would
 	// leak internal data to a customer principal.
 	customerRead := interactive(apiLimit, auth.RoleCustomerAdmin, auth.RoleCustomerViewer)
+	// customerWrite = customer_admin ONLY: the privileged in-portal customer actions (approve/reject a destructive
+	// SOAR run routed to them). customer_viewer can SEE the queue (customerRead) but not act on it (SB3).
+	customerWrite := interactive(apiLimit, auth.RoleCustomerAdmin)
 
 	mux := http.NewServeMux()
 	// health
@@ -942,6 +945,11 @@ func main() {
 	mux.Handle("GET /customer/compliance", customerRead(custReadH.ListCompliance))
 	mux.Handle("GET /customer/compliance/{key}", customerRead(custReadH.GetCompliance))
 	mux.Handle("GET /customer/risk-score", customerRead(custReadH.RiskScore))
+	// SB3: customer SOAR approvals. LIST is a read projection (customerRead → custReadH, fence-safe); APPROVE/REJECT
+	// are the customer-admin-only writes served by the soar handler (customerWrite), reusing the #188 approval gate.
+	mux.Handle("GET /customer/soar/approvals", customerRead(custReadH.PendingApprovals))
+	mux.Handle("POST /customer/soar/approvals/{id}/approve", customerWrite(soarH.CustomerApprove))
+	mux.Handle("POST /customer/soar/approvals/{id}/reject", customerWrite(soarH.CustomerReject))
 	mux.Handle("GET /oversight/incidents-rollup", oversight(custReadH.IncidentRollup))
 	mux.Handle("GET /oversight/alerts-rollup", oversight(custReadH.AlertRollup))
 	// Provider-operator configures what each customer tenant sees (a customer cannot self-widen).

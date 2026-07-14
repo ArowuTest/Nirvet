@@ -85,7 +85,7 @@ func sliceBHandler() *Handler {
 	}
 	cov := &compliance.Coverage{Framework: "cis", Score: 75, Summary: map[string]int{"met": 9, "gap": 3}}
 	return NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{},
-		fakeAssets{list: assets}, fakeVulns{list: vulns}, fakeCompliance{fws, cov}, nil, nil)
+		fakeAssets{list: assets}, fakeVulns{list: vulns}, fakeCompliance{fws, cov}, nil, nil, nil)
 }
 
 func TestSliceB_ProviderAndRegulatorRefused(t *testing.T) {
@@ -124,7 +124,7 @@ func TestSliceB_AssetDetail_BlastRadiusRedacted(t *testing.T) {
 	vulns := []vulnerability.Vuln{{ID: uuid.New(), Ref: "host:FIN-01", CVE: "CVE-2026-0001", Title: "RCE", Severity: "critical", Status: "open"}}
 	als := []alert.Alert{{ID: uuid.New(), Title: "Suspicious login", Severity: "high", Status: "new", TargetRef: "host:FIN-01"}}
 	h := NewHandler(fakeInc{}, fakeAlerts{list: als}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{},
-		fakeAssets{get: &a}, fakeVulns{byRefs: vulns}, fakeCompliance{}, nil, nil)
+		fakeAssets{get: &a}, fakeVulns{byRefs: vulns}, fakeCompliance{}, nil, nil, nil)
 
 	if w := call(h.GetAsset, provider, uuid.NewString()); w.Code != http.StatusForbidden {
 		t.Errorf("provider on GetAsset: got %d, want 403", w.Code)
@@ -143,7 +143,7 @@ func TestSliceB_AssetDetail_BlastRadiusRedacted(t *testing.T) {
 		t.Errorf("SECURITY: internal asset field leaked in detail: %s", body)
 	}
 	// a not-found asset → 404 (fakeAssets.get nil)
-	h2 := NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{}, fakeAssets{}, fakeVulns{}, fakeCompliance{}, nil, nil)
+	h2 := NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{}, fakeAssets{}, fakeVulns{}, fakeCompliance{}, nil, nil, nil)
 	if w := call(h2.GetAsset, custViewer, uuid.NewString()); w.Code != http.StatusNotFound {
 		t.Errorf("missing asset: got %d, want 404", w.Code)
 	}
@@ -194,7 +194,7 @@ func detailHandler() *Handler {
 	}
 	fc := fakeComplianceDetail{fws: fws, cov: cov, ctrls: ctrls}
 	return NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{},
-		fakeAssets{}, fakeVulns{}, fc, nil, nil)
+		fakeAssets{}, fakeVulns{}, fc, nil, nil, nil)
 }
 
 type fakeComplianceDetail struct {

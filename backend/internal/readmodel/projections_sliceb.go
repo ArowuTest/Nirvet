@@ -13,6 +13,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/riskscore"
+	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
@@ -159,6 +160,22 @@ type CustomerComplianceDetailView struct {
 	Score     int                              `json:"score"`
 	Summary   map[string]int                   `json:"summary"`
 	Functions []CustomerComplianceFunctionView `json:"functions"`
+}
+
+// ---- SOAR approvals awaiting the customer (SB3) ----
+
+// CustomerApprovalView is the customer-safe summary of a run awaiting the customer's approval: which playbook, on
+// which of their own incidents, since when. Internal step detail / requester / internal approver are absent.
+type CustomerApprovalView struct {
+	RunID        uuid.UUID  `json:"run_id"`
+	PlaybookName string     `json:"playbook_name"`
+	IncidentID   *uuid.UUID `json:"incident_id,omitempty"`
+	CreatedAt    string     `json:"created_at"`
+}
+
+// ProjectApprovalForCustomer maps the soar summary item to the customer view (both are already allowlists).
+func ProjectApprovalForCustomer(a soar.CustomerApprovalItem) CustomerApprovalView {
+	return CustomerApprovalView{RunID: a.RunID, PlaybookName: a.PlaybookName, IncidentID: a.IncidentID, CreatedAt: a.CreatedAt}
 }
 
 // ---- Risk score (composite posture — aggregate-safe about the customer's OWN estate) ----

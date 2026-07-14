@@ -252,6 +252,39 @@ func (h *Handler) ApproveViaLink(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, run)
 }
 
+// CustomerApprove handles POST /customer/soar/approvals/{id}/approve — the IN-PORTAL authenticated customer
+// approval (SB3). customer_admin only (gated at the route); RLS-scoped to their own tenant.
+func (h *Handler) CustomerApprove(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid run id"))
+		return
+	}
+	run, err := h.svc.ApproveAsCustomer(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, run)
+}
+
+// CustomerReject handles POST /customer/soar/approvals/{id}/reject — the in-portal customer rejection (fail-safe).
+func (h *Handler) CustomerReject(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid run id"))
+		return
+	}
+	run, err := h.svc.RejectAsCustomer(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, run)
+}
+
 // GetCustomerApprovalPolicy handles GET /soar/customer-approval — the tenant's destructive-approval authority (#188).
 func (h *Handler) GetCustomerApprovalPolicy(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

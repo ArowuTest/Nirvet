@@ -90,6 +90,10 @@ func TestCustomerProjections_ExactAllowlist(t *testing.T) {
 	assertExactFields(t, reflect.TypeOf(CustomerRiskScoreView{}), []string{
 		"Composite", "Band", "Tone", "Components",
 	})
+	// Approval queue item — which playbook, on which of the customer's own incidents, since when.
+	assertExactFields(t, reflect.TypeOf(CustomerApprovalView{}), []string{
+		"RunID", "PlaybookName", "IncidentID", "CreatedAt",
+	})
 }
 
 // assertExactFields fails unless the struct's field names are EXACTLY `want` — no more, no fewer.

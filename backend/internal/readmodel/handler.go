@@ -14,6 +14,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/riskscore"
+	"github.com/ArowuTest/nirvet/internal/soar"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -69,6 +70,12 @@ type RiskScorer interface {
 	Compute(ctx context.Context, tenantID uuid.UUID) (*riskscore.Score, error)
 }
 
+// SoarApprovalReader lists the runs awaiting the customer's approval (satisfied by soar.Service). The item is
+// already a customer-safe summary; the read is RLS-scoped to the tenant. Slice B (SB3).
+type SoarApprovalReader interface {
+	CustomerPendingApprovals(ctx context.Context, tenantID uuid.UUID) ([]soar.CustomerApprovalItem, error)
+}
+
 // Handler serves the customer- and regulator-audience read endpoints. It is THE projection chokepoint: it can
 // only ever emit *View / *Rollup projection types — a raw incident/alert entity is never serialized here. A CI
 // fence (scripts/check-audience-projection.sh) forbids a provider handler from being wired to a customer route,
@@ -83,13 +90,14 @@ type Handler struct {
 	vulns  VulnReader
 	compl  ComplianceReader
 	risk   RiskScorer
+	soar   SoarApprovalReader
 	db     *database.DB
 }
 
 // NewHandler builds the read-model handler. assets/vulns/compl are the Slice B customer read surfaces (may be nil
 // in tests that exercise only the Slice A incident/alert paths — the Slice B handlers guard on nil).
-func NewHandler(inc IncidentReader, alerts AlertReader, policy PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver, assets AssetReader, vulns VulnReader, compl ComplianceReader, risk RiskScorer, db *database.DB) *Handler {
-	return &Handler{inc: inc, alerts: alerts, policy: policy, reg: reg, scope: scope, assets: assets, vulns: vulns, compl: compl, risk: risk, db: db}
+func NewHandler(inc IncidentReader, alerts AlertReader, policy PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver, assets AssetReader, vulns VulnReader, compl ComplianceReader, risk RiskScorer, soarR SoarApprovalReader, db *database.DB) *Handler {
+	return &Handler{inc: inc, alerts: alerts, policy: policy, reg: reg, scope: scope, assets: assets, vulns: vulns, compl: compl, risk: risk, soar: soarR, db: db}
 }
 
 // requireAudience resolves the principal and asserts it maps to the expected audience — a defense-in-depth

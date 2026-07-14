@@ -81,7 +81,7 @@ func (f fakeScope) TenantScope(context.Context, auth.Principal) ([]uuid.UUID, er
 func newHandler(inc IncidentReader, al AlertReader, pol PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver) *Handler {
 	// nil db → oversight read-audit is a no-op in tests; nil asset/vuln/compliance readers → Slice B handlers
 	// return empty lists (these Slice A tests don't exercise them; Slice B has its own handler tests).
-	return NewHandler(inc, al, pol, reg, scope, nil, nil, nil, nil, nil)
+	return NewHandler(inc, al, pol, reg, scope, nil, nil, nil, nil, nil, nil)
 }
 
 func call(h func(http.ResponseWriter, *http.Request), p auth.Principal, pathID string) *httptest.ResponseRecorder {
