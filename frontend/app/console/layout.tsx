@@ -49,6 +49,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Tenants", href: "/console/admin/tenants", icon: "box", ready: true },
       { label: "Identity", href: "/console/admin/iam", icon: "users", ready: true },
       { label: "Risk score", href: "/console/admin/risk", icon: "activity", ready: true },
+      { label: "Branding", href: "/console/admin/branding", icon: "settings", ready: true },
       { label: "Billing", href: "/console/admin/billing", icon: "file-text", ready: true },
       { label: "Feature flags", href: "/console/admin/flags", icon: "settings", ready: true },
       { label: "Audit trail", href: "/console/admin/audit", icon: "file-text", ready: true },
