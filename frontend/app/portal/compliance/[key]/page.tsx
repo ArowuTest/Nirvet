@@ -11,7 +11,7 @@ import { apiGet } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, EmptyState } from "@/components/ui";
 
 type Control = { control_ref: string; title: string; description: string; status: string };
-type Fn = { control_ref: string; title: string; status: string; controls: Control[] };
+type Fn = { control_ref: string; title: string; description: string; status: string; controls: Control[] };
 type Detail = { key: string; name: string; version: string; score: number; summary: Record<string, number>; functions: Fn[] };
 
 const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "neutral"> = {
@@ -66,13 +66,14 @@ export default function PortalComplianceDetail() {
         <div className="flex flex-col gap-4">
           {d.functions.map((fn) => (
             <Panel key={fn.control_ref}>
-              <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="mb-1 flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-[11px]" style={{ color: "var(--c-ink-3)" }}>{fn.control_ref}</span>
                   <span className="text-sm font-semibold" style={{ color: "var(--c-ink)" }}>{fn.title}</span>
                 </div>
                 <StatusTag tone={STATUS_TONE[fn.status] ?? "neutral"}>{statusLabel(fn.status)}</StatusTag>
               </div>
+              {fn.description && <p className="mb-3 text-xs leading-relaxed" style={{ color: "var(--c-ink-2)" }}>{fn.description}</p>}
               <div className="flex flex-col divide-y" style={{ borderColor: "var(--c-border)" }}>
                 {fn.controls.map((c) => (
                   <div key={c.control_ref} className="flex items-start justify-between gap-4 py-3">

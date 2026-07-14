@@ -77,7 +77,7 @@ func TestCustomerProjections_ExactAllowlist(t *testing.T) {
 		"ControlRef", "Title", "Description", "Status",
 	})
 	assertExactFields(t, reflect.TypeOf(CustomerComplianceFunctionView{}), []string{
-		"ControlRef", "Title", "Status", "Controls",
+		"ControlRef", "Title", "Description", "Status", "Controls",
 	})
 	assertExactFields(t, reflect.TypeOf(CustomerComplianceDetailView{}), []string{
 		"Key", "Name", "Version", "Score", "Summary", "Functions",

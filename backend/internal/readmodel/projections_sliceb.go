@@ -109,11 +109,14 @@ type CustomerComplianceControlView struct {
 }
 
 // CustomerComplianceFunctionView is a top-level control (function) with its rolled-up status and child controls.
+// Description is populated for FLAT frameworks (a top-level control with no children still describes what it
+// requires); for a true function-with-children it is typically empty and the detail lives on the child controls.
 type CustomerComplianceFunctionView struct {
-	ControlRef string                          `json:"control_ref"`
-	Title      string                          `json:"title"`
-	Status     string                          `json:"status"`
-	Controls   []CustomerComplianceControlView `json:"controls"`
+	ControlRef  string                          `json:"control_ref"`
+	Title       string                          `json:"title"`
+	Description string                          `json:"description"`
+	Status      string                          `json:"status"`
+	Controls    []CustomerComplianceControlView `json:"controls"`
 }
 
 // CustomerComplianceDetailView is the drill-down of one framework: the summary score/counts plus the function→
@@ -144,7 +147,7 @@ func ProjectComplianceDetailForCustomer(f compliance.Framework, cov *compliance.
 		v.Summary[k] = n
 	}
 	for _, fn := range cov.Functions {
-		fv := CustomerComplianceFunctionView{ControlRef: fn.ControlRef, Title: fn.Title, Status: fn.Status, Controls: []CustomerComplianceControlView{}}
+		fv := CustomerComplianceFunctionView{ControlRef: fn.ControlRef, Title: fn.Title, Description: descByRef[fn.ControlRef], Status: fn.Status, Controls: []CustomerComplianceControlView{}}
 		for _, c := range fn.Controls {
 			fv.Controls = append(fv.Controls, CustomerComplianceControlView{
 				ControlRef: c.ControlRef, Title: c.Title, Description: descByRef[c.ControlRef], Status: c.Status,
