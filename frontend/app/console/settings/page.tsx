@@ -7,6 +7,7 @@
 // say so rather than render controls the caller can't use.
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiGet, apiPost, apiPut, getMe, logoutAll, ApiError, type Me } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, Button } from "@/components/ui";
@@ -111,7 +112,13 @@ export default function SettingsPage() {
         </label>
       </Panel>
 
-      <Panel title="Sessions" sub="Tenant-level policies (SLA, correlation, escalation) are managed by your administrators.">
+      <Panel title="Tenant administration" sub="SLA, correlation, session, escalation and authority-to-act policy (tenant-admin)">
+        <Link href="/console/settings/tenant" className="inline-flex rounded-lg px-3.5 py-2 text-sm font-semibold" style={{ border: "1px solid var(--c-border-strong)", color: "var(--c-primary)" }}>
+          Open tenant governance →
+        </Link>
+      </Panel>
+
+      <Panel title="Sessions">
         <div className="flex items-center justify-between">
           <span className="text-sm" style={{ color: "var(--c-ink-2)" }}>Sign out of every device</span>
           <Button variant="danger" size="sm" onClick={signOutAll}>Sign out everywhere</Button>
