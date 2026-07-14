@@ -14,6 +14,7 @@ type Corr = { window_seconds: number; promote_threshold: number; min_alerts_for_
 type Session = { access_ttl_seconds: number; ip_allowlist: string[] | null; geo_anomaly_logging: boolean };
 type Escalation = { id: string; name: string; role: string; min_severity: string; order_index: number; channel: string; address: string; category?: string };
 type Authority = { id: string; action_type: string; mode: string; approver_role: string; business_hours_only: boolean; active: boolean };
+type CustomerApproval = { authority: string; bc_customer_authorizable: boolean; link_ttl_seconds: number; customer_approver_ref: string };
 
 const SEVERITIES = ["critical", "high", "medium", "low", "informational"];
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
@@ -32,17 +33,20 @@ export default function TenantSettingsPage() {
   const [sess, setSess] = useState<Session | null>(null);
   const [esc, setEsc] = useState<Escalation[]>([]);
   const [auth, setAuth] = useState<Authority[]>([]);
+  const [ca, setCa] = useState<CustomerApproval | null>(null);
   const [newEsc, setNewEsc] = useState({ name: "", role: "soc_manager", min_severity: "high", channel: "email", address: "", order_index: 1 });
 
   const base = tid ? `/admin/tenants/${tid}` : "";
 
   const load = useCallback(async (b: string) => {
-    const [s, c, se, e, a] = await Promise.allSettled([
+    const [s, c, se, e, a, ca2] = await Promise.allSettled([
       apiGet<{ policies: SLA[] | null }>(`${b}/sla-policies`),
       apiGet<Corr>(`${b}/correlation-policy`),
       apiGet<Session>(`${b}/session-policy`),
       apiGet<{ contacts: Escalation[] | null }>(`${b}/escalation-contacts`),
       apiGet<{ policies: Authority[] | null }>(`${b}/authority-policies`),
+      // Customer-approval routing is a caller's-own-tenant policy (uses p.TenantID, no path param) — flat route.
+      apiGet<CustomerApproval>(`/soar/customer-approval`),
     ]);
     // Backend envelopes are exact: ListSLA/ListAuthority → {policies}, ListEscalation → {contacts} (governance_handler.go).
     if (s.status === "fulfilled") setSla(s.value.policies ?? []);
@@ -50,6 +54,7 @@ export default function TenantSettingsPage() {
     if (se.status === "fulfilled") setSess(se.value);
     if (e.status === "fulfilled") setEsc(e.value.contacts ?? []);
     if (a.status === "fulfilled") setAuth(a.value.policies ?? []);
+    if (ca2.status === "fulfilled") setCa(ca2.value);
   }, []);
 
   useEffect(() => {
@@ -157,6 +162,38 @@ export default function TenantSettingsPage() {
               </tr>
             ))}
           </Table>
+        )}
+      </Panel>
+
+      <Panel title="Customer approval routing" sub="Who authorises destructive SOAR steps for this tenant (#188). Routes runs to the customer approvals queue.">
+        {ca === null ? <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>Loading…</p> : (
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="text-xs" style={{ color: "var(--c-ink-2)" }}>Authority mode
+              <select value={ca.authority} onChange={(e) => setCa({ ...ca, authority: e.target.value })} className="mt-1 w-full rounded-lg px-3 py-2 text-sm" style={inputStyle}>
+                <option value="platform_analyst">Platform analyst — internal SOC approves (no customer routing)</option>
+                <option value="customer_approver">Customer approver — the customer authorises</option>
+                <option value="both_required">Both required — customer + internal rank</option>
+              </select>
+              <span className="mt-1 block text-[11px]" style={{ color: "var(--c-ink-3)" }}>
+                {ca.authority === "platform_analyst" ? "Runs never route to the customer queue — internal approval only." : "Destructive runs will surface in the customer's approvals queue."}
+              </span>
+            </label>
+            <label className="text-xs" style={{ color: "var(--c-ink-2)" }}>Approval link TTL (minutes)
+              <input type="number" min={5} max={1440} value={Math.round(ca.link_ttl_seconds / 60)} onChange={(e) => setCa({ ...ca, link_ttl_seconds: Math.max(300, Math.min(86400, Number(e.target.value) * 60)) })} className="mt-1 w-40 rounded-lg px-3 py-2 text-sm" style={inputStyle} />
+              <span className="mt-1 block text-[11px]" style={{ color: "var(--c-ink-3)" }}>Single-use approval link validity (5–1440 min).</span>
+            </label>
+            <label className="text-xs" style={{ color: "var(--c-ink-2)" }}>Customer approver ref
+              <input value={ca.customer_approver_ref} onChange={(e) => setCa({ ...ca, customer_approver_ref: e.target.value })} placeholder="customer_admin@… or role ref" className="mt-1 w-full rounded-lg px-3 py-2 text-sm" style={inputStyle} disabled={ca.authority === "platform_analyst"} />
+              <span className="mt-1 block text-[11px]" style={{ color: "var(--c-ink-3)" }}>Identity the customer-side link is issued to.</span>
+            </label>
+            <label className="flex items-center gap-2 self-end pb-2 text-xs" style={{ color: "var(--c-ink-2)" }}>
+              <input type="checkbox" checked={ca.bc_customer_authorizable} onChange={(e) => setCa({ ...ca, bc_customer_authorizable: e.target.checked })} disabled={ca.authority === "platform_analyst"} />
+              Customer may authorise business-continuity (high-blast) steps
+            </label>
+            <div className="md:col-span-2">
+              <Button size="sm" onClick={() => run(() => apiPut(`/soar/customer-approval`, { authority: ca.authority, bc_customer_authorizable: ca.bc_customer_authorizable, link_ttl_seconds: ca.link_ttl_seconds, customer_approver_ref: ca.customer_approver_ref }), "Customer approval routing saved.", "Save")}>Save routing</Button>
+            </div>
+          </div>
         )}
       </Panel>
     </div>
