@@ -21,6 +21,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true },
       { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true },
       { label: "Detections", href: "/console/detections", icon: "target", ready: true },
+      { label: "Assets", href: "/console/assets", icon: "box", ready: true },
     ],
   },
   {
@@ -35,6 +36,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Platform",
     items: [
       { label: "Integrations", href: "/console/integrations", icon: "plug", ready: true },
+      { label: "Threat Intel", href: "/console/threat-intel", icon: "shield", ready: true },
       { label: "Compliance", href: "/console/compliance", icon: "shield", ready: true },
       { label: "Reports", href: "/console/reports", icon: "file-text", ready: true },
     ],
