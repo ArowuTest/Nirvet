@@ -154,6 +154,25 @@ tags:
   - { name: billing }
   - { name: ticketing }
 paths:
+  /admin/audit:
+    get:
+      tags: [admin]
+      summary: Search the tenant immutable audit trail (GOV-001/ADMIN-004)
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /incidents/{id}/alerts:
+    get:
+      tags: [incidents]
+      summary: Alerts promoted into an incident (linked-alerts panel)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
   /healthz: { get: { tags: [health], security: [], summary: Liveness, responses: { '200': { description: ok } } } }
   /readyz: { get: { tags: [health], security: [], summary: Readiness (checks DB), responses: { '200': { description: ready }, '503': { description: db unavailable } } } }
   /metrics: { get: { tags: [health], security: [], summary: Prometheus metrics, responses: { '200': { description: metrics } } } }

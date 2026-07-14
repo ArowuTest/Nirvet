@@ -69,6 +69,7 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [linked, setLinked] = useState<{ id: string; title: string; severity: string; status: string }[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -89,6 +90,8 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       setTasks(t.tasks ?? []);
       const at = await apiGet<{ attachments: Attachment[] | null }>(`/incidents/${id}/attachments`).catch(() => ({ attachments: [] }));
       setAttachments(at.attachments ?? []);
+      const la = await apiGet<{ alerts: { id: string; title: string; severity: string; status: string }[] | null }>(`/incidents/${id}/alerts`).catch(() => ({ alerts: [] }));
+      setLinked(la.alerts ?? []);
       setState("ready");
     } catch {
       setState("notfound");
@@ -217,6 +220,22 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
                   </Button>
                 </div>
               </div>
+            )}
+          </Panel>
+
+          <Panel title="Linked alerts" sub="Alerts promoted into this incident">
+            {linked.length === 0 ? (
+              <EmptyState title="No linked alerts" hint="This incident has no source alerts attached." />
+            ) : (
+              <ul className="space-y-2">
+                {linked.map((a) => (
+                  <li key={a.id} className="flex items-center gap-3">
+                    <SevBadge severity={a.severity} />
+                    <Link href={`/console/alerts/${a.id}`} className="min-w-0 flex-1 truncate text-sm hover:underline" style={{ color: "var(--c-ink)" }}>{a.title}</Link>
+                    <StatusTag tone={a.status === "new" ? "info" : "neutral"}>{a.status}</StatusTag>
+                  </li>
+                ))}
+              </ul>
             )}
           </Panel>
         </div>

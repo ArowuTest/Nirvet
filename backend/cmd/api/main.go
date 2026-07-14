@@ -183,6 +183,7 @@ func main() {
 
 	alertSvc := alert.NewService(alert.NewRepository(db))
 	alertH := alert.NewHandler(alertSvc)
+	auditH := audit.NewHandler(db)
 	// Operator fleet console (Ghana operator seam #1/#3): bounded cross-tenant alert read + write. Scope is
 	// resolved from the principal (provider → whole instance; non-provider → empty); MA-1 SD-fn enforces the
 	// read bound; writes resolve the target from the resource, check fleet scope, and audit in the target tenant.
@@ -611,6 +612,7 @@ func main() {
 	mux.Handle("GET /admin/tenants/{id}/correlation-policy", ssoAdmin(tenantH.GetCorrelation))
 	mux.Handle("PUT /admin/tenants/{id}/correlation-policy", ssoAdmin(tenantH.SetCorrelation))
 	mux.Handle("GET /admin/tenants/{id}/history", ssoAdmin(tenantH.ListHistory))
+	mux.Handle("GET /admin/audit", ssoAdmin(auditH.List)) // immutable audit-trail search (Bucket-2, GOV-001/ADMIN-004)
 	// Service accounts + API keys (§6.2 IAM-001/005/008). Programmatic principals for
 	// connectors/customer scripts; the raw key is shown once at creation.
 	mux.Handle("POST /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.CreateServiceAccount))
@@ -861,6 +863,7 @@ func main() {
 	mux.Handle("GET /incidents", provider(incidentH.List))
 	mux.Handle("GET /incidents/at-risk", provider(incidentH.AtRisk)) // literal beats {id}
 	mux.Handle("GET /incidents/{id}", provider(incidentH.Get))
+	mux.Handle("GET /incidents/{id}/alerts", provider(alertH.ByIncident)) // linked-alerts panel (Bucket-2)
 	mux.Handle("GET /incidents/{id}/evidence-pack", senior(evidenceH.Pack))
 	mux.Handle("GET /evidence/public-key", provider(evidenceH.PublicKey)) // publish for out-of-band verification
 	// Asset inventory (§6.15)

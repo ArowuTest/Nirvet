@@ -14,10 +14,36 @@ type Handler struct{ svc *Service }
 // NewHandler builds the handler.
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-// List handles GET /alerts?status=.
+// List handles GET /alerts?status= or GET /alerts?ref= — the triage queue, optionally filtered to a single
+// entity (actor_ref/target_ref) for the related-alerts panels (Bucket-2 thin route).
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
+	if ref := r.URL.Query().Get("ref"); ref != "" {
+		alerts, err := h.svc.ListByRef(r.Context(), p.TenantID, ref)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+		return
+	}
 	alerts, err := h.svc.List(r.Context(), p.TenantID, r.URL.Query().Get("status"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"alerts": alerts})
+}
+
+// ByIncident handles GET /incidents/{id}/alerts — the alerts promoted into an incident (linked-alerts panel).
+func (h *Handler) ByIncident(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	alerts, err := h.svc.ListByIncident(r.Context(), p.TenantID, id)
 	if err != nil {
 		httpx.Error(w, err)
 		return

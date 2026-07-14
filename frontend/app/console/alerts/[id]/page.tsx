@@ -52,14 +52,21 @@ export default function AlertDetailPage({ params }: { params: Promise<{ id: stri
   const { id } = use(params);
   const router = useRouter();
   const [alert, setAlert] = useState<Alert | null>(null);
+  const [related, setRelated] = useState<{ id: string; title: string; severity: string; status: string }[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setAlert(await apiGet<Alert>(`/alerts/${id}`));
+      const a = await apiGet<Alert>(`/alerts/${id}`);
+      setAlert(a);
       setState("ready");
+      const ref = a.target_ref || a.actor_ref;
+      if (ref) {
+        const r = await apiGet<{ alerts: { id: string; title: string; severity: string; status: string }[] | null }>(`/alerts?ref=${encodeURIComponent(ref)}`).catch(() => ({ alerts: [] }));
+        setRelated((r.alerts ?? []).filter((x) => x.id !== id).slice(0, 8));
+      }
     } catch {
       setState("notfound");
     }
@@ -177,6 +184,20 @@ export default function AlertDetailPage({ params }: { params: Promise<{ id: stri
             </div>
           )}
         </Panel>
+
+        {related.length > 0 && (
+          <Panel title="Related alerts" sub="Other alerts on the same entity">
+            <ul className="space-y-2">
+              {related.map((a) => (
+                <li key={a.id} className="flex items-center gap-3">
+                  <SevBadge severity={a.severity} />
+                  <Link href={`/console/alerts/${a.id}`} className="min-w-0 flex-1 truncate text-sm hover:underline" style={{ color: "var(--c-ink)" }}>{a.title}</Link>
+                  <StatusTag tone={a.status === "new" ? "info" : "neutral"}>{a.status}</StatusTag>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
       </div>
     </div>
   );
