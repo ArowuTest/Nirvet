@@ -6,6 +6,7 @@
 // live probe (senior-gated → surface 403). Capabilities are the honest, backend-advertised set — not aspirational.
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, healthTone, EmptyState, Button } from "@/components/ui";
 
@@ -79,7 +80,7 @@ export default function IntegrationsPage() {
 
   return (
     <div>
-      <PageHeader title="Integrations" sub="Connected telemetry sources and response tools" />
+      <PageHeader title="Integrations" sub="Connected telemetry sources and response tools" actions={<Link href="/console/integrations/new"><Button size="sm">Add connector</Button></Link>} />
 
       {msg && <p className="mb-3 text-[13px]" style={{ color: msg.tone === "ok" ? "var(--c-ok)" : "var(--c-danger)" }}>{msg.text}</p>}
 
