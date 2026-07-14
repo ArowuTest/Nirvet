@@ -18,6 +18,7 @@ export function isCustomerRole(role?: string) {
 
 const NAV = [
   { label: "Overview", href: "/portal", icon: "grid" },
+  { label: "Posture", href: "/portal/posture", icon: "activity" },
   { label: "Incidents", href: "/portal/incidents", icon: "alert-circle" },
   { label: "Alerts", href: "/portal/alerts", icon: "alert-triangle" },
   { label: "Assets", href: "/portal/assets", icon: "box" },
