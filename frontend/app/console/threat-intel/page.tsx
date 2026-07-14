@@ -24,7 +24,17 @@ export default function ThreatIntelPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"watchlist" | "stix">("watchlist");
+  const [selStix, setSelStix] = useState<Record<string, unknown> | null>(null);
   const [show, setShow] = useState(false);
+
+  async function openStix(id: string) {
+    try {
+      const full = await apiGet<Record<string, unknown>>(`/threat-intel/stix/${id}`);
+      setSelStix(full);
+    } catch {
+      /* ignore */
+    }
+  }
   const [form, setForm] = useState({ type: "ip", value: "", tlp: "amber", score: 75 });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
@@ -142,7 +152,7 @@ export default function ThreatIntelPage() {
           ) : (
             <Table head={<><Th>Type</Th><Th>Observable / pattern</Th><Th>Labels</Th><Th>Confidence</Th><Th>TLP</Th><Th>Source</Th></>}>
               {stix.map((o) => (
-                <tr key={o.id}>
+                <tr key={o.id} onClick={() => openStix(o.id)} className="cursor-pointer transition hover:bg-[color:var(--c-surface-2)]">
                   <Td>
                     <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ background: "var(--c-surface-2)", color: "var(--c-ink-2)" }}>{o.type}</span>
                     {o.revoked && <span className="ml-1.5 text-[10px] uppercase" style={{ color: "var(--c-danger)" }}>revoked</span>}
@@ -157,6 +167,36 @@ export default function ThreatIntelPage() {
             </Table>
           )}
         </Panel>
+      )}
+
+      {selStix && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={() => setSelStix(null)}>
+          <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl p-6" style={{ background: "var(--c-surface)", border: "1px solid var(--c-border-strong)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-bold" style={{ color: "var(--c-ink)" }}>{String(selStix.type ?? "STIX object")}</div>
+                <div className="font-mono text-[11px]" style={{ color: "var(--c-ink-3)" }}>{String(selStix.id ?? "")}</div>
+              </div>
+              <button onClick={() => setSelStix(null)} className="rounded-lg px-3 py-1.5 text-xs" style={{ border: "1px solid var(--c-border)", color: "var(--c-ink-2)" }}>Close</button>
+            </div>
+            <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-3">
+              {Object.keys(selStix).map((k) => {
+                const v = selStix[k];
+                if (v == null || typeof v === "object") return null;
+                return (
+                  <div key={k}>
+                    <div className="text-[10px] uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>{k.replace(/_/g, " ")}</div>
+                    <div className="break-words text-sm" style={{ color: "var(--c-ink)" }}>{String(v) || "—"}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>Raw STIX 2.1</div>
+              <pre className="max-h-64 overflow-auto rounded-lg p-3 text-[11px] leading-relaxed" style={{ background: "var(--c-surface-2)", color: "var(--c-ink-2)" }}>{JSON.stringify(selStix, null, 2)}</pre>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
