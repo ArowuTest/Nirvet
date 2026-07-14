@@ -5,10 +5,11 @@
 // absent by construction (CustomerAssetView allowlist).
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { apiGet } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, EmptyState, KpiStrip, Kpi } from "@/components/ui";
 
-type Asset = { ref: string; name: string; kind: string; criticality: string; created_at: string };
+type Asset = { asset_id: string; ref: string; name: string; kind: string; criticality: string; created_at: string };
 
 const CRIT_TONE: Record<string, "danger" | "warn" | "info" | "neutral"> = {
   critical: "danger",
@@ -18,6 +19,7 @@ const CRIT_TONE: Record<string, "danger" | "warn" | "info" | "neutral"> = {
 };
 
 export default function PortalAssets() {
+  const router = useRouter();
   const [items, setItems] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -44,7 +46,7 @@ export default function PortalAssets() {
         ) : (
           <Table head={<><Th>Reference</Th><Th>Name</Th><Th>Kind</Th><Th>Criticality</Th><Th className="text-right">Added</Th></>}>
             {items.map((a) => (
-              <tr key={a.ref}>
+              <tr key={a.asset_id} onClick={() => router.push(`/portal/assets/${a.asset_id}`)} className="cursor-pointer transition hover:bg-[color:var(--c-surface-2)]">
                 <Td className="font-mono text-[11px]">{a.ref}</Td>
                 <Td className="!text-[color:var(--c-ink)] font-medium">{a.name}</Td>
                 <Td className="text-xs uppercase tracking-wide">{a.kind}</Td>

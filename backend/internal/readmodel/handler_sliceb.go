@@ -8,8 +8,11 @@ package readmodel
 import (
 	"net/http"
 
+	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/vulnerability"
+	"github.com/google/uuid"
 )
 
 // ListAssets serves GET /customer/assets — the tenant's own asset inventory as redacted CustomerAssetViews.
@@ -32,6 +35,45 @@ func (h *Handler) ListAssets(w http.ResponseWriter, r *http.Request) {
 		out = append(out, ProjectAssetForCustomer(a))
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"assets": out})
+}
+
+// GetAsset serves GET /customer/assets/{id} — one asset with its blast radius: the open vulnerabilities on it
+// and the alerts that targeted it. All three reads are RLS-scoped to the caller's own tenant and every nested
+// item is a customer *View. An asset that isn't the caller's (or doesn't exist) is a 404 (existence not revealed).
+func (h *Handler) GetAsset(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.requireAudience(w, r, AudienceCustomer)
+	if !ok {
+		return
+	}
+	if h.assets == nil {
+		httpx.Error(w, httpx.ErrNotFound("asset not found"))
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid asset id"))
+		return
+	}
+	a, err := h.assets.Get(r.Context(), p.TenantID, id)
+	if err != nil {
+		httpx.Error(w, err) // typed 404/500 from the service (RLS already tenant-scopes)
+		return
+	}
+	var vulns []vulnerability.Vuln
+	if h.vulns != nil {
+		vulns, _ = h.vulns.FindOpenByRefs(r.Context(), p.TenantID, []string{a.Ref}) // best-effort enrichment
+	}
+	// Alerts that targeted this asset (target_ref == asset.Ref). List is tenant-scoped; filter by ref in-app.
+	var targeting []alert.Alert
+	if h.alerts != nil {
+		als, _ := h.alerts.List(r.Context(), p.TenantID, "")
+		for _, al := range als {
+			if al.TargetRef == a.Ref {
+				targeting = append(targeting, al)
+			}
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"asset": ProjectAssetDetailForCustomer(*a, vulns, targeting)})
 }
 
 // ListVulnerabilities serves GET /customer/vulnerabilities — exposure on the tenant's own estate as redacted

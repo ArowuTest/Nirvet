@@ -10,9 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
+	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
@@ -27,14 +29,29 @@ func reqWithKey(h func(http.ResponseWriter, *http.Request), p auth.Principal, ke
 	return w
 }
 
-type fakeAssets struct{ list []asset.Asset }
+type fakeAssets struct {
+	list []asset.Asset
+	get  *asset.Asset
+}
 
 func (f fakeAssets) List(_ context.Context, _ uuid.UUID) ([]asset.Asset, error) { return f.list, nil }
+func (f fakeAssets) Get(_ context.Context, _, _ uuid.UUID) (*asset.Asset, error) {
+	if f.get == nil {
+		return nil, httpx.ErrNotFound("asset not found")
+	}
+	return f.get, nil
+}
 
-type fakeVulns struct{ list []vulnerability.Vuln }
+type fakeVulns struct {
+	list   []vulnerability.Vuln
+	byRefs []vulnerability.Vuln
+}
 
 func (f fakeVulns) List(_ context.Context, _ uuid.UUID, _, _ string) ([]vulnerability.Vuln, error) {
 	return f.list, nil
+}
+func (f fakeVulns) FindOpenByRefs(_ context.Context, _ uuid.UUID, _ []string) ([]vulnerability.Vuln, error) {
+	return f.byRefs, nil
 }
 
 type fakeCompliance struct {
@@ -68,7 +85,7 @@ func sliceBHandler() *Handler {
 	}
 	cov := &compliance.Coverage{Framework: "cis", Score: 75, Summary: map[string]int{"met": 9, "gap": 3}}
 	return NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{},
-		fakeAssets{assets}, fakeVulns{vulns}, fakeCompliance{fws, cov}, nil)
+		fakeAssets{list: assets}, fakeVulns{list: vulns}, fakeCompliance{fws, cov}, nil)
 }
 
 func TestSliceB_ProviderAndRegulatorRefused(t *testing.T) {
@@ -99,6 +116,36 @@ func TestSliceB_CustomerAssetsRedacted(t *testing.T) {
 	}
 	if strings.Contains(body, "playbook-x") {
 		t.Errorf("SECURITY: internal asset tag leaked to customer: %s", body)
+	}
+}
+
+func TestSliceB_AssetDetail_BlastRadiusRedacted(t *testing.T) {
+	a := asset.Asset{ID: uuid.New(), TenantID: uuid.New(), Ref: "host:FIN-01", Name: "Finance WS", Kind: "host", Criticality: "high", Owner: "internal-pod-3", Tags: []string{"internal:x"}}
+	vulns := []vulnerability.Vuln{{ID: uuid.New(), Ref: "host:FIN-01", CVE: "CVE-2026-0001", Title: "RCE", Severity: "critical", Status: "open"}}
+	als := []alert.Alert{{ID: uuid.New(), Title: "Suspicious login", Severity: "high", Status: "new", TargetRef: "host:FIN-01"}}
+	h := NewHandler(fakeInc{}, fakeAlerts{list: als}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{},
+		fakeAssets{get: &a}, fakeVulns{byRefs: vulns}, fakeCompliance{}, nil)
+
+	if w := call(h.GetAsset, provider, uuid.NewString()); w.Code != http.StatusForbidden {
+		t.Errorf("provider on GetAsset: got %d, want 403", w.Code)
+	}
+	w := call(h.GetAsset, custViewer, uuid.NewString())
+	if w.Code != http.StatusOK {
+		t.Fatalf("customer GetAsset: got %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"host:FIN-01", "CVE-2026-0001", "Suspicious login"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("asset detail missing blast-radius item %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "internal-pod-3") || strings.Contains(body, "internal:x") {
+		t.Errorf("SECURITY: internal asset field leaked in detail: %s", body)
+	}
+	// a not-found asset → 404 (fakeAssets.get nil)
+	h2 := NewHandler(fakeInc{}, fakeAlerts{}, fakePolicy{DefaultDisclosurePolicy()}, fakeReg{}, fakeScope{}, fakeAssets{}, fakeVulns{}, fakeCompliance{}, nil)
+	if w := call(h2.GetAsset, custViewer, uuid.NewString()); w.Code != http.StatusNotFound {
+		t.Errorf("missing asset: got %d, want 404", w.Code)
 	}
 }
 

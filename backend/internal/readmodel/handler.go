@@ -46,11 +46,13 @@ type RegulatorMetaReader interface {
 // AssetReader is the narrow customer-asset read surface (satisfied by asset.Service). Slice B.
 type AssetReader interface {
 	List(ctx context.Context, tenantID uuid.UUID) ([]asset.Asset, error)
+	Get(ctx context.Context, tenantID, id uuid.UUID) (*asset.Asset, error)
 }
 
 // VulnReader is the narrow customer-vulnerability read surface (satisfied by vulnerability.Service). Slice B.
 type VulnReader interface {
 	List(ctx context.Context, tenantID uuid.UUID, status, ref string) ([]vulnerability.Vuln, error)
+	FindOpenByRefs(ctx context.Context, tenantID uuid.UUID, refs []string) ([]vulnerability.Vuln, error)
 }
 
 // ComplianceReader is the narrow customer-compliance read surface (satisfied by compliance.Service). Slice B.

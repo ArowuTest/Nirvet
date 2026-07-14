@@ -63,7 +63,11 @@ func TestCustomerProjections_ExactAllowlist(t *testing.T) {
 	// Slice B customer views — same allowlist discipline: name ONLY customer-safe fields. If someone adds an
 	// internal field to one of these structs (or projects the raw entity), this test fails before it can ship.
 	assertExactFields(t, reflect.TypeOf(CustomerAssetView{}), []string{
-		"Ref", "Name", "Kind", "Criticality", "CreatedAt",
+		"AssetID", "Ref", "Name", "Kind", "Criticality", "CreatedAt",
+	})
+	// Asset detail embeds the asset view + its blast radius (each a customer *View, no raw entity).
+	assertExactFields(t, reflect.TypeOf(CustomerAssetDetailView{}), []string{
+		"CustomerAssetView", "Vulnerabilities", "Alerts",
 	})
 	assertExactFields(t, reflect.TypeOf(CustomerVulnerabilityView{}), []string{
 		"Ref", "CVE", "Title", "Severity", "CVSS", "Exploited", "Status", "RemediationDue", "CreatedAt",

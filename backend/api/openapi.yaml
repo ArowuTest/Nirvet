@@ -1901,6 +1901,18 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /customer/assets/{id}:
+    get:
+      tags: [customer]
+      summary: GET /customer/assets/{id}
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '404': { description: not found }
   /customer/vulnerabilities:
     get:
       tags: [customer]

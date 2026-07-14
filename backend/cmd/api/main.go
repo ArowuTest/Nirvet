@@ -925,6 +925,7 @@ func main() {
 	mux.Handle("GET /customer/alerts", customerRead(custReadH.ListAlerts))
 	// Slice B: audience-projected posture reads over the customer's own estate (assets/vulns/compliance).
 	mux.Handle("GET /customer/assets", customerRead(custReadH.ListAssets))
+	mux.Handle("GET /customer/assets/{id}", customerRead(custReadH.GetAsset))
 	mux.Handle("GET /customer/vulnerabilities", customerRead(custReadH.ListVulnerabilities))
 	mux.Handle("GET /customer/compliance", customerRead(custReadH.ListCompliance))
 	mux.Handle("GET /customer/compliance/{key}", customerRead(custReadH.GetCompliance))

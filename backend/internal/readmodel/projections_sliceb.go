@@ -9,17 +9,21 @@ package readmodel
 import (
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
+	"github.com/google/uuid"
 )
 
 // ---- Assets (customer sees their own inventory: what/where/how-critical) ----
 
 // CustomerAssetView is the allowlist projection of an asset. It exposes the customer-facing identity and
-// business criticality of their own asset. WITHHELD by construction: Owner (an internal assignment an MSSP may
-// use operationally), Tags (may carry internal pod/playbook labels), TenantID, and the internal row ID.
+// business criticality of their own asset. AssetID is the customer's OWN asset handle (used only to open the
+// detail view — not an internal secret). WITHHELD by construction: Owner (an internal assignment an MSSP may use
+// operationally), Tags (may carry internal pod/playbook labels), TenantID.
 type CustomerAssetView struct {
+	AssetID     uuid.UUID `json:"asset_id"`
 	Ref         string    `json:"ref"` // canonical reference, e.g. host:FIN-01
 	Name        string    `json:"name"`
 	Kind        string    `json:"kind"`
@@ -30,12 +34,38 @@ type CustomerAssetView struct {
 // ProjectAssetForCustomer builds the customer asset view.
 func ProjectAssetForCustomer(a asset.Asset) CustomerAssetView {
 	return CustomerAssetView{
+		AssetID:     a.ID,
 		Ref:         a.Ref,
 		Name:        a.Name,
 		Kind:        a.Kind,
 		Criticality: a.Criticality,
 		CreatedAt:   a.CreatedAt,
 	}
+}
+
+// CustomerAssetDetailView is the drill-down for one asset: its identity/criticality plus its blast radius —
+// the open vulnerabilities on it and the alerts that targeted it. Composed from three RLS-scoped reads over the
+// customer's own tenant; every nested item is itself a customer *View (no internal field can appear).
+type CustomerAssetDetailView struct {
+	CustomerAssetView
+	Vulnerabilities []CustomerVulnerabilityView `json:"vulnerabilities"`
+	Alerts          []CustomerAlertView         `json:"alerts"`
+}
+
+// ProjectAssetDetailForCustomer composes the asset view with its open vulns + targeting alerts, each projected.
+func ProjectAssetDetailForCustomer(a asset.Asset, vulns []vulnerability.Vuln, alerts []alert.Alert) CustomerAssetDetailView {
+	d := CustomerAssetDetailView{
+		CustomerAssetView: ProjectAssetForCustomer(a),
+		Vulnerabilities:   []CustomerVulnerabilityView{},
+		Alerts:            []CustomerAlertView{},
+	}
+	for _, v := range vulns {
+		d.Vulnerabilities = append(d.Vulnerabilities, ProjectVulnForCustomer(v))
+	}
+	for _, al := range alerts {
+		d.Alerts = append(d.Alerts, ProjectAlertForCustomer(al))
+	}
+	return d
 }
 
 // ---- Vulnerabilities (customer sees exposure on their own estate) ----
