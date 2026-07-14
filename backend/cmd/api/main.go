@@ -240,9 +240,9 @@ func main() {
 	incidentSvc := incident.NewService(incident.NewRepository(db), alertSvc, notifySvc).
 		WithAssignees(iamSvc).WithTicketer(ticketingSvc).WithEnqueuer(outboxRepo).WithEscalation(tenantSvc).WithSLA(tenantSvc).WithBlobStore(blobs)
 	incidentH := incident.NewHandler(incidentSvc)
-	// Customer read-side (Slice A): the audience-projection chokepoint. THE ONLY handler wired to the customer/
-	// oversight read chains — a raw entity never reaches a customer principal (check-audience-projection.sh).
-	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, db)
+	// Customer read-side (Slice A + B): the audience-projection chokepoint. THE ONLY handler wired to the customer/
+	// oversight read chains — a raw entity never reaches a customer principal (check-audience-projection.sh). It is
+	// constructed further below, after the asset/vuln/compliance services it composes over for the Slice B views.
 	// High-risk correlation clusters auto-open an incident (§6.7); window/thresholds are the
 	// tenant's admin-configurable correlation policy (Phase 0-D no-hardcoding).
 	correlationSvc.WithIncidenter(incidentSvc).WithPolicy(tenantSvc)
@@ -406,7 +406,12 @@ func main() {
 	// blob) + events only; ClickHouse ages out via its own TTL.
 	retentionSvc := retention.NewService(db, blobs)
 	retentionH := retention.NewHandler(retentionSvc)
-	complianceH := compliance.NewHandler(compliance.NewService(compliance.NewRepository(db)))
+	complianceSvc := compliance.NewService(compliance.NewRepository(db))
+	complianceH := compliance.NewHandler(complianceSvc)
+
+	// Customer read-side chokepoint (Slice A incidents/alerts + Slice B assets/vulns/compliance). Composes over the
+	// tenant's OWN RLS-scoped services; emits only *View projections. See the customer/oversight routes below.
+	custReadH := readmodel.NewHandler(incidentSvc, alertSvc, readmodel.NewPolicyStore(db), readmodel.NewRegulatorRepo(db), postureSvc, assetSvc, vulnSvc, complianceSvc, db)
 
 	// --- bootstrap first-run provider tenant + platform admin ---
 	bootstrap(ctx, log, tenantSvc, iamSvc, cfg.BootstrapEmail, cfg.BootstrapPassword)
@@ -918,6 +923,10 @@ func main() {
 	mux.Handle("GET /customer/incidents", customerRead(custReadH.ListIncidents))
 	mux.Handle("GET /customer/incidents/{id}", customerRead(custReadH.GetIncident))
 	mux.Handle("GET /customer/alerts", customerRead(custReadH.ListAlerts))
+	// Slice B: audience-projected posture reads over the customer's own estate (assets/vulns/compliance).
+	mux.Handle("GET /customer/assets", customerRead(custReadH.ListAssets))
+	mux.Handle("GET /customer/vulnerabilities", customerRead(custReadH.ListVulnerabilities))
+	mux.Handle("GET /customer/compliance", customerRead(custReadH.ListCompliance))
 	mux.Handle("GET /oversight/incidents-rollup", oversight(custReadH.IncidentRollup))
 	mux.Handle("GET /oversight/alerts-rollup", oversight(custReadH.AlertRollup))
 	// Provider-operator configures what each customer tenant sees (a customer cannot self-widen).

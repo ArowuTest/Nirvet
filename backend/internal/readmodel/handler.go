@@ -6,11 +6,14 @@ import (
 	"sort"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
+	"github.com/ArowuTest/nirvet/internal/asset"
+	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -40,6 +43,22 @@ type RegulatorMetaReader interface {
 	AlertMetaForTenants(ctx context.Context, tenantIDs []uuid.UUID) ([]AlertMeta, error)
 }
 
+// AssetReader is the narrow customer-asset read surface (satisfied by asset.Service). Slice B.
+type AssetReader interface {
+	List(ctx context.Context, tenantID uuid.UUID) ([]asset.Asset, error)
+}
+
+// VulnReader is the narrow customer-vulnerability read surface (satisfied by vulnerability.Service). Slice B.
+type VulnReader interface {
+	List(ctx context.Context, tenantID uuid.UUID, status, ref string) ([]vulnerability.Vuln, error)
+}
+
+// ComplianceReader is the narrow customer-compliance read surface (satisfied by compliance.Service). Slice B.
+type ComplianceReader interface {
+	ListFrameworks(ctx context.Context, tenantID uuid.UUID) ([]compliance.Framework, error)
+	Assess(ctx context.Context, tenantID uuid.UUID, frameworkKey string) (*compliance.Coverage, error)
+}
+
 // Handler serves the customer- and regulator-audience read endpoints. It is THE projection chokepoint: it can
 // only ever emit *View / *Rollup projection types — a raw incident/alert entity is never serialized here. A CI
 // fence (scripts/check-audience-projection.sh) forbids a provider handler from being wired to a customer route,
@@ -50,12 +69,16 @@ type Handler struct {
 	policy PolicyAPI
 	reg    RegulatorMetaReader
 	scope  ScopeResolver
+	assets AssetReader
+	vulns  VulnReader
+	compl  ComplianceReader
 	db     *database.DB
 }
 
-// NewHandler builds the read-model handler.
-func NewHandler(inc IncidentReader, alerts AlertReader, policy PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver, db *database.DB) *Handler {
-	return &Handler{inc: inc, alerts: alerts, policy: policy, reg: reg, scope: scope, db: db}
+// NewHandler builds the read-model handler. assets/vulns/compl are the Slice B customer read surfaces (may be nil
+// in tests that exercise only the Slice A incident/alert paths — the Slice B handlers guard on nil).
+func NewHandler(inc IncidentReader, alerts AlertReader, policy PolicyAPI, reg RegulatorMetaReader, scope ScopeResolver, assets AssetReader, vulns VulnReader, compl ComplianceReader, db *database.DB) *Handler {
+	return &Handler{inc: inc, alerts: alerts, policy: policy, reg: reg, scope: scope, assets: assets, vulns: vulns, compl: compl, db: db}
 }
 
 // requireAudience resolves the principal and asserts it maps to the expected audience — a defense-in-depth
