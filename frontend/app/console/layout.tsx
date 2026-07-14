@@ -27,7 +27,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Response",
     items: [
       { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true },
-      { label: "Evidence", href: "/console/evidence", icon: "server", ready: false },
+      { label: "Evidence", href: "/console/evidence", icon: "server", ready: true },
       { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true },
     ],
   },
