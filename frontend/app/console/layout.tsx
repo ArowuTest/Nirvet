@@ -17,6 +17,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Operations",
     items: [
       { label: "Dashboard", href: "/console", icon: "grid", ready: true },
+      { label: "Executive", href: "/console/exec", icon: "activity", ready: true },
       { label: "Incidents", href: "/console/incidents", icon: "alert-circle", badge: "incidents", ready: true },
       { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true },
       { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true },
