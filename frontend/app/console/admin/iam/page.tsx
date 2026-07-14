@@ -28,6 +28,7 @@ export default function IamAdminPage() {
   const [keys, setKeys] = useState<Record<string, APIKey[]>>({});
   const [inv, setInv] = useState({ email: "", role: "analyst_t1" });
   const [sa, setSa] = useState({ name: "", role: "analyst_t1" });
+  const [disableU, setDisableU] = useState<User | null>(null); // confirm target for the destructive kill-switch
 
   const base = tid ? `/admin/tenants/${tid}` : "";
 
@@ -98,7 +99,7 @@ export default function IamAdminPage() {
                 <div className="flex justify-end gap-1.5">
                   <Button size="sm" variant="ghost" onClick={() => run(() => apiPost(`${base}/users/${u.id}/reset-password`), "Reset link issued.")}>Reset</Button>
                   {u.status === "active" ? (
-                    <Button size="sm" variant="danger" onClick={() => run(() => apiPost(`${base}/users/${u.id}/disable`), "User disabled.")}>Disable</Button>
+                    <Button size="sm" variant="danger" onClick={() => setDisableU(u)}>Disable</Button>
                   ) : (
                     <Button size="sm" variant="ghost" onClick={() => run(() => apiPost(`${base}/users/${u.id}/reactivate`), "User reactivated.")}>Reactivate</Button>
                   )}
@@ -165,6 +166,22 @@ export default function IamAdminPage() {
           <Button size="sm" disabled={!sa.name} onClick={() => run(() => apiPost(`${base}/service-accounts`, sa).then(() => setSa({ ...sa, name: "" })), "Service account created.")}>Create</Button>
         </div>
       </Panel>
+
+      {disableU && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)" }} onClick={() => setDisableU(null)}>
+          <div className="w-full max-w-md rounded-2xl p-6" style={{ background: "var(--c-surface)", border: "1px solid var(--c-border-strong)" }} onClick={(ev) => ev.stopPropagation()}>
+            <div className="mb-2 text-lg font-bold" style={{ color: "var(--c-ink)" }}>Disable user</div>
+            <p className="mb-4 text-sm" style={{ color: "var(--c-ink-2)" }}>
+              Disabling <span className="font-semibold">{disableU.email}</span> immediately revokes their live sessions on every device and
+              blocks sign-in until reactivated. Continue?
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setDisableU(null)}>Cancel</Button>
+              <Button size="sm" variant="danger" onClick={() => { const id = disableU.id; setDisableU(null); run(() => apiPost(`${base}/users/${id}/disable`), "User disabled — live sessions revoked."); }}>Disable &amp; revoke sessions</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
