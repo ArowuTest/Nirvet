@@ -1941,6 +1941,13 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /auth/csrf:
+    get:
+      tags: [auth]
+      summary: GET /auth/csrf — double-submit CSRF token value for the cross-site SPA
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
   /auth/refresh:
     post:
       tags: [auth]

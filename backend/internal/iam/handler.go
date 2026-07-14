@@ -42,6 +42,16 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, res)
 }
 
+// CSRFToken handles GET /auth/csrf — returns the double-submit CSRF token in the body so a cross-site SPA (served
+// from a different registrable domain than the API, which therefore cannot READ the __Host- CSRF cookie) can echo
+// it in the X-CSRF-Token header on writes. Mints + sets one if the session has none. The cookie itself is still
+// sent to the API automatically for the server-side double-submit compare; CORS restricts who can read this
+// response body to the trusted SPA origin, so the token value is not exposed to a cross-site attacker.
+func (h *Handler) CSRFToken(w http.ResponseWriter, r *http.Request) {
+	tok := h.cookies.EnsureCSRF(w, r, refreshTokenTTL)
+	httpx.JSON(w, http.StatusOK, map[string]string{"csrf_token": tok})
+}
+
 // issueSessionCookies mints a refresh-token family + CSRF token and sets all three cookies. Best-effort on the
 // refresh side: if refresh issuance fails the access cookie is still set (the user is logged in, just without
 // silent refresh — they re-login when the short access token expires).

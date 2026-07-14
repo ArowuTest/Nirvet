@@ -102,6 +102,24 @@ func (o CookieOpts) SetSessionCookies(w http.ResponseWriter, access, refresh, cs
 	}
 }
 
+// EnsureCSRF returns the request's double-submit CSRF token, minting + setting a fresh cookie when the session
+// has none. Cross-site (SPA and API on different registrable domains), the SPA CANNOT read the __Host- CSRF
+// cookie to echo it, so it fetches the value here (GET /auth/csrf) and holds it in memory; the cookie is still
+// sent automatically to the API on writes for the server-side double-submit compare. The value is not a secret
+// (double-submit relies on same-origin read + custom-header, both of which a cross-site attacker still lacks;
+// CORS restricts who can read this response to the trusted SPA origin).
+func (o CookieOpts) EnsureCSRF(w http.ResponseWriter, r *http.Request, ttl time.Duration) string {
+	if tok := csrfTokenFromCookie(r); tok != "" {
+		return tok
+	}
+	tok, err := NewCSRFToken()
+	if err != nil {
+		return ""
+	}
+	http.SetCookie(w, o.base(o.csrfName(), tok, "/", ttl, false)) // readable by JS on same-origin; JS-value via body cross-site
+	return tok
+}
+
 // ClearSessionCookies expires the session cookies (logout). It clears BOTH the prefixed and plain names so a
 // logout is effective regardless of which the browser holds (e.g. across a config flip).
 func (o CookieOpts) ClearSessionCookies(w http.ResponseWriter) {

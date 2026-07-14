@@ -35,6 +35,33 @@ function readCookie(names: string[]): string {
   return "";
 }
 
+// Cross-site CSRF: in production the SPA and API are on different registrable domains, so the __Host- CSRF cookie
+// the API sets is NOT readable by the SPA (document.cookie is per-origin). Double-submit still works — the cookie
+// is sent to the API automatically — but the SPA must obtain the token VALUE to echo in X-CSRF-Token. It fetches
+// that value from GET /auth/csrf and holds it in memory. On same-site dev the cookie IS readable, so we prefer
+// that (no round-trip). Without this, every write 403s with "CSRF token missing or invalid".
+let csrfToken = "";
+async function ensureCsrf(): Promise<string> {
+  const fromCookie = readCookie(CSRF_COOKIE_NAMES);
+  if (fromCookie) return fromCookie; // same-site (dev): cookie readable directly
+  if (csrfToken) return csrfToken;
+  try {
+    const res = await fetch(`${API_BASE}/auth/csrf`, { credentials: "include" });
+    if (res.ok) {
+      const j = await res.json();
+      csrfToken = j?.csrf_token || "";
+    }
+  } catch {
+    /* offline or not yet authenticated — the next write after login will retry */
+  }
+  return csrfToken;
+}
+
+/** resetCsrf drops the cached token so the next write re-fetches it (call after login/logout — the cookie rotates). */
+export function resetCsrf(): void {
+  csrfToken = "";
+}
+
 export class ApiError extends Error {
   status: number;
   code: string;
@@ -64,6 +91,13 @@ async function parseError(res: Response): Promise<ApiError> {
 // lifecycle themselves, and a 401 from them is a real answer (bad creds, mfa_required, no refresh cookie).
 function isAuthEndpoint(path: string): boolean {
   return path.startsWith("/auth/");
+}
+
+// preAuthWrite marks the writes that run BEFORE a session exists, so they carry no auth cookie and the backend
+// does not require CSRF on them. Every other write (incl. logout / logout-all, which ARE cookie-authed) needs the
+// double-submit token. Fetching a token for these pre-auth writes would just 401 on GET /auth/csrf, so we skip it.
+function preAuthWrite(path: string): boolean {
+  return path === "/auth/login" || path === "/auth/invitations/accept" || path === "/auth/password-reset/confirm";
 }
 
 // Cross-tab freshness hint: after any tab successfully refreshes, it stamps `now` here. A tab that acquires the
@@ -100,9 +134,10 @@ async function refreshOnce(): Promise<boolean> {
   const timer = setTimeout(() => ctl.abort(), REFRESH_TIMEOUT_MS);
   try {
     // /auth/refresh is a cookie-authenticated POST, so it is CSRF-protected like any other write — echo the
-    // double-submit token. (Missing this → 403 and a spurious logout.)
+    // double-submit token. Cross-site the SPA can't read the cookie, so obtain the value via ensureCsrf().
+    // (Missing this → 403 and a spurious logout.)
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const csrf = readCookie(CSRF_COOKIE_NAMES);
+    const csrf = await ensureCsrf();
     if (csrf) headers[CSRF_HEADER] = csrf;
     const res = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
@@ -154,14 +189,16 @@ interface RequestOpts {
   body?: unknown;
   /** internal: prevents infinite refresh recursion */
   _retried?: boolean;
+  /** internal: prevents infinite CSRF-refetch recursion */
+  _csrfRetried?: boolean;
 }
 
 async function request<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   const method = (opts.method || "GET").toUpperCase();
   const headers: Record<string, string> = {};
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
-  if (UNSAFE.has(method)) {
-    const csrf = readCookie(CSRF_COOKIE_NAMES);
+  if (UNSAFE.has(method) && !preAuthWrite(path)) {
+    const csrf = await ensureCsrf();
     if (csrf) headers[CSRF_HEADER] = csrf;
   }
 
@@ -176,6 +213,15 @@ async function request<T>(path: string, opts: RequestOpts = {}): Promise<T> {
   if (res.status === 401 && !opts._retried && !isAuthEndpoint(path)) {
     if (await doRefresh()) {
       return request<T>(path, { ...opts, _retried: true });
+    }
+  }
+
+  // A 403 on a write may be a stale/rotated CSRF token (or a first write before the token was fetched): drop the
+  // cached value, re-fetch it, and retry once. A genuine role/permission 403 simply 403s again on the retry.
+  if (res.status === 403 && UNSAFE.has(method) && !opts._csrfRetried && !isAuthEndpoint(path)) {
+    resetCsrf();
+    if (await ensureCsrf()) {
+      return request<T>(path, { ...opts, _csrfRetried: true });
     }
   }
 
@@ -224,6 +270,9 @@ export async function login(email: string, password: string, mfaCode?: string): 
       method: "POST",
       body: { email, password, ...(mfaCode ? { mfa_code: mfaCode } : {}) },
     });
+    // Login rotated the CSRF cookie — drop any stale in-memory token and prime a fresh one so the first write works.
+    resetCsrf();
+    await ensureCsrf();
     return { ok: true };
   } catch (e) {
     if (e instanceof ApiError && e.status === 401 && e.code === "mfa_required") {
@@ -238,13 +287,21 @@ export function getMe(): Promise<Me> {
 }
 
 /** logout revokes THIS session's refresh token and clears cookies. */
-export function logout(): Promise<void> {
-  return apiPost<void>("/auth/logout");
+export async function logout(): Promise<void> {
+  try {
+    await apiPost<void>("/auth/logout");
+  } finally {
+    resetCsrf();
+  }
 }
 
 /** logoutAll ends every session on every device (bumps the user's session generation) + clears cookies. */
-export function logoutAll(): Promise<void> {
-  return apiPost<void>("/auth/logout-all");
+export async function logoutAll(): Promise<void> {
+  try {
+    await apiPost<void>("/auth/logout-all");
+  } finally {
+    resetCsrf();
+  }
 }
 
 // SSO / SAML are top-level browser navigations (the IdP round-trip needs the address bar), not fetches.
