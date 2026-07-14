@@ -16,7 +16,8 @@ type Invitation = { id: string; email: string; role: Role; expires_at: string; a
 type APIKey = { id: string; prefix: string; label: string; role: Role; expires_at?: string; last_used_at?: string; revoked_at?: string };
 type Review = { users: User[] | null; service_accounts: ServiceAccount[] | null; pending_invitations: Invitation[] | null };
 
-const ROLES = ["tenant_admin", "soc_manager", "analyst_t1", "analyst_t2", "analyst_t3", "detection_engineer", "threat_intel_analyst", "compliance_manager", "customer_admin", "customer_viewer"];
+// Grantable roles — exactly auth.knownRoles minus platform_admin (non-grantable). Invalid values 400 at the backend.
+const ROLES = ["soc_manager", "analyst_t1", "analyst_t2", "analyst_t3", "detection_engineer", "customer_admin", "customer_viewer"];
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
 export default function IamAdminPage() {
@@ -26,7 +27,7 @@ export default function IamAdminPage() {
   const [secret, setSecret] = useState<string | null>(null);
   const [keys, setKeys] = useState<Record<string, APIKey[]>>({});
   const [inv, setInv] = useState({ email: "", role: "analyst_t1" });
-  const [sa, setSa] = useState({ name: "", role: "api_client" });
+  const [sa, setSa] = useState({ name: "", role: "analyst_t1" });
 
   const base = tid ? `/admin/tenants/${tid}` : "";
 
@@ -66,8 +67,8 @@ export default function IamAdminPage() {
     setMsg(null);
     setSecret(null);
     try {
-      const r = await apiPost<{ secret?: string; key?: string; token?: string }>(`${base}/service-accounts/${said}/keys`, { label: "console-issued", role: "api_client" });
-      setSecret(r.secret ?? r.key ?? r.token ?? "(created — copy from the API response)");
+      const r = await apiPost<{ api_key?: unknown; key?: string }>(`${base}/service-accounts/${said}/keys`, { label: "console-issued" });
+      setSecret(r.key ?? "(created — copy from the API response)"); // backend returns the one-time secret under `key`
       await loadKeys(said);
     } catch (e) {
       setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "Requires tenant-admin." : "Could not create key." });
@@ -158,6 +159,9 @@ export default function IamAdminPage() {
         </ul>
         <div className="mt-3 flex gap-2">
           <input value={sa.name} onChange={(e) => setSa({ ...sa, name: e.target.value })} placeholder="Service account name" className="flex-1 rounded-lg px-3 py-1.5 text-sm outline-none" style={inputStyle} />
+          <select value={sa.role} onChange={(e) => setSa({ ...sa, role: e.target.value })} className="rounded-lg px-2 py-1.5 text-sm outline-none" style={inputStyle} title="Role granted to keys issued for this service account">
+            {ROLES.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
+          </select>
           <Button size="sm" disabled={!sa.name} onClick={() => run(() => apiPost(`${base}/service-accounts`, sa).then(() => setSa({ ...sa, name: "" })), "Service account created.")}>Create</Button>
         </div>
       </Panel>

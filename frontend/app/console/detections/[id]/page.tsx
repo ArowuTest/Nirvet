@@ -32,7 +32,7 @@ type Rule = {
 };
 type Version = { version: number; stage?: string; note?: string; at?: string; created_at?: string } & Record<string, unknown>;
 type Feedback = { total: number; by_disposition: Record<string, number> | null; false_positives: number; fp_rate: number; tuning_recommended: boolean };
-type TestCase = { id: string; name?: string; expect_match?: boolean } & Record<string, unknown>;
+type TestCase = { id: string; name?: string; expected_match?: boolean } & Record<string, unknown>;
 
 // Forward lifecycle (SRS §9.4). Any active stage may also retire.
 const NEXT: Record<string, string[]> = {
@@ -80,11 +80,11 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
       const [v, f, t] = await Promise.allSettled([
         apiGet<{ versions: Version[] | null }>(`/detections/${id}/versions`),
         apiGet<Feedback>(`/detections/${id}/feedback`),
-        apiGet<{ test_cases?: TestCase[] | null; tests?: TestCase[] | null }>(`/detections/${id}/tests`),
+        apiGet<{ test_cases: TestCase[] | null }>(`/detections/${id}/tests`),
       ]);
       if (v.status === "fulfilled") setVersions(v.value.versions ?? []);
       if (f.status === "fulfilled") setFeedback(f.value);
-      if (t.status === "fulfilled") setTests(t.value.test_cases ?? t.value.tests ?? []);
+      if (t.status === "fulfilled") setTests(t.value.test_cases ?? []); // backend tag is test_cases (detection handler)
     } catch {
       setState("notfound");
     }
@@ -171,7 +171,7 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
               <ul className="space-y-2">
                 {tests.map((t) => (
                   <li key={t.id} className="flex items-center gap-2 text-sm" style={{ color: "var(--c-ink-2)" }}>
-                    <StatusTag tone={t.expect_match ? "danger" : "neutral"}>{t.expect_match ? "should fire" : "should not fire"}</StatusTag>
+                    <StatusTag tone={t.expected_match ? "danger" : "neutral"}>{t.expected_match ? "should fire" : "should not fire"}</StatusTag>
                     {t.name ?? t.id}
                   </li>
                 ))}

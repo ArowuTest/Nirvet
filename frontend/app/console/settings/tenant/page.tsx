@@ -38,17 +38,18 @@ export default function TenantSettingsPage() {
 
   const load = useCallback(async (b: string) => {
     const [s, c, se, e, a] = await Promise.allSettled([
-      apiGet<{ policies?: SLA[] } | SLA[]>(`${b}/sla-policies`),
+      apiGet<{ policies: SLA[] | null }>(`${b}/sla-policies`),
       apiGet<Corr>(`${b}/correlation-policy`),
       apiGet<Session>(`${b}/session-policy`),
-      apiGet<{ contacts?: Escalation[] } | Escalation[]>(`${b}/escalation-contacts`),
-      apiGet<{ policies?: Authority[] } | Authority[]>(`${b}/authority-policies`),
+      apiGet<{ contacts: Escalation[] | null }>(`${b}/escalation-contacts`),
+      apiGet<{ policies: Authority[] | null }>(`${b}/authority-policies`),
     ]);
-    if (s.status === "fulfilled") setSla(Array.isArray(s.value) ? s.value : s.value.policies ?? []);
+    // Backend envelopes are exact: ListSLA/ListAuthority → {policies}, ListEscalation → {contacts} (governance_handler.go).
+    if (s.status === "fulfilled") setSla(s.value.policies ?? []);
     if (c.status === "fulfilled") setCorr(c.value);
     if (se.status === "fulfilled") setSess(se.value);
-    if (e.status === "fulfilled") setEsc(Array.isArray(e.value) ? e.value : e.value.contacts ?? []);
-    if (a.status === "fulfilled") setAuth(Array.isArray(a.value) ? a.value : a.value.policies ?? []);
+    if (e.status === "fulfilled") setEsc(e.value.contacts ?? []);
+    if (a.status === "fulfilled") setAuth(a.value.policies ?? []);
   }, []);
 
   useEffect(() => {
@@ -147,7 +148,7 @@ export default function TenantSettingsPage() {
                 <Td className="!text-[color:var(--c-ink)] font-mono text-xs">{p.action_type}</Td>
                 <Td>
                   <select value={p.mode} onChange={(e) => setAuth((a) => a.map((x, idx) => (idx === i ? { ...x, mode: e.target.value } : x)))} className="rounded px-2 py-1 text-xs" style={inputStyle}>
-                    {["deny", "approval", "auto"].map((m) => <option key={m} value={m}>{m}</option>)}
+                    {["observe", "approval", "pre_authorized", "emergency"].map((m) => <option key={m} value={m}>{m.replace(/_/g, " ")}</option>)}
                   </select>
                 </Td>
                 <Td className="text-xs capitalize">{p.approver_role.replace(/_/g, " ")}</Td>

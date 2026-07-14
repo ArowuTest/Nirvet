@@ -12,7 +12,7 @@ import Link from "next/link";
 import { apiGet, apiPost, ApiError } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, Button } from "@/components/ui";
 
-type CatalogAction = { connector_key: string; action: string; risk_class?: string; risk?: string; label?: string; description?: string };
+type CatalogAction = { connector_key: string; action_key: string; title: string; risk_class?: string };
 type Step = { name: string; connector_key: string; action: string; risk: string; requires_approval: boolean; target: string };
 
 const RISK_TONE: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = {
@@ -41,8 +41,8 @@ export default function NewPlaybookPage() {
   const input = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
   function addStep(a: CatalogAction) {
-    const risk = a.risk_class ?? a.risk ?? "informational";
-    setSteps((s) => [...s, { name: a.label ?? a.action, connector_key: a.connector_key, action: a.action, risk, requires_approval: ["medium", "high", "business_critical"].includes(risk), target: "" }]);
+    const risk = a.risk_class ?? "informational";
+    setSteps((s) => [...s, { name: a.title ?? a.action_key, connector_key: a.connector_key, action: a.action_key, risk, requires_approval: ["medium", "high", "business_critical"].includes(risk), target: "" }]);
   }
   function setStep(i: number, patch: Partial<Step>) {
     setSteps((s) => s.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
@@ -131,12 +131,12 @@ export default function NewPlaybookPage() {
             ) : (
               <ul className="space-y-1.5">
                 {catalog.map((a, i) => {
-                  const risk = a.risk_class ?? a.risk ?? "informational";
+                  const risk = a.risk_class ?? "informational";
                   return (
                     <li key={i}>
                       <button onClick={() => addStep(a)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition hover:bg-white/5">
                         <span className="flex-1">
-                          <span className="block text-sm" style={{ color: "var(--c-ink)" }}>{a.label ?? a.action}</span>
+                          <span className="block text-sm" style={{ color: "var(--c-ink)" }}>{a.title ?? a.action_key}</span>
                           <span className="block font-mono text-[10px]" style={{ color: "var(--c-ink-3)" }}>{a.connector_key}</span>
                         </span>
                         <StatusTag tone={RISK_TONE[risk] ?? "neutral"}>{risk.replace(/_/g, " ")}</StatusTag>

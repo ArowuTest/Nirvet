@@ -22,7 +22,7 @@ type Flag = {
 };
 
 const classTone: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = {
-  standard: "neutral",
+  open: "neutral",
   guarded: "info",
   protected: "warn",
   immutable: "danger",

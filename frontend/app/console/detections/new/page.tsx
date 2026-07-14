@@ -89,7 +89,7 @@ export default function NewDetectionPage() {
             <label className="block text-[12px]" style={{ color: "var(--c-ink-3)" }}>
               Initial stage
               <select value={stage} onChange={(e) => setStage(e.target.value)} className="mt-1 w-full rounded-lg px-3 py-2 text-sm capitalize" style={input}>
-                {["draft", "pilot", "production"].map((s) => <option key={s} value={s}>{s}</option>)}
+                {["draft", "production"].map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </label>
           </div>

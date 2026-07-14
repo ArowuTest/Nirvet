@@ -15,7 +15,7 @@ type Exposure = { by_severity: Record<string, number> | null; open_total: number
 
 const CRITICALITIES = ["low", "medium", "high", "critical"];
 const critTone: Record<string, "ok" | "warn" | "danger" | "neutral"> = { low: "neutral", medium: "warn", high: "danger", critical: "danger" };
-const vulnStatusTone: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = { open: "danger", in_progress: "warn", remediated: "ok", accepted: "neutral", false_positive: "neutral" };
+const vulnStatusTone: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = { open: "danger", remediating: "warn", accepted: "neutral", resolved: "ok" };
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
 export default function AssetsPage() {
@@ -152,7 +152,7 @@ export default function AssetsPage() {
           <div className="mb-3 flex items-center gap-2">
             <span className="text-[11px] uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>Status</span>
             <select className="rounded-lg px-2.5 py-1.5 text-xs" style={inputStyle} value={vulnStatus} onChange={(e) => changeVulnStatus(e.target.value)}>
-              {["open", "in_progress", "remediated", "accepted", "false_positive", ""].map((s) => <option key={s || "all"} value={s}>{s || "all"}</option>)}
+              {["open", "remediating", "accepted", "resolved", ""].map((s) => <option key={s || "all"} value={s}>{s || "all"}</option>)}
             </select>
           </div>
           <Panel bodyStyle={{ padding: vulns.length ? 0 : undefined }}>

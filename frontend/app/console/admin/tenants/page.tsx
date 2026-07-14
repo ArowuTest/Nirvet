@@ -20,7 +20,7 @@ export default function AdminTenantsPage() {
   const [state, setState] = useState<"loading" | "ready" | "forbidden">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [show, setShow] = useState(false);
-  const [nt, setNt] = useState({ name: "", sector: "", country: "", service_tier: "standard", isolation_tier: "shared" });
+  const [nt, setNt] = useState({ name: "", sector: "", country: "", service_tier: "standard", isolation_tier: "pooled" });
 
   const load = useCallback(async () => {
     try {
@@ -64,7 +64,9 @@ export default function AdminTenantsPage() {
             <input value={nt.service_tier} onChange={(e) => setNt({ ...nt, service_tier: e.target.value })} placeholder="service tier" className="rounded px-2 py-1.5 text-sm" style={inputStyle} />
           </div>
           <div className="mt-2 flex items-center gap-2">
-            <input value={nt.isolation_tier} onChange={(e) => setNt({ ...nt, isolation_tier: e.target.value })} placeholder="isolation tier (shared/dedicated/sovereign)" className="w-72 rounded px-2 py-1.5 text-sm" style={inputStyle} />
+            <select value={nt.isolation_tier} onChange={(e) => setNt({ ...nt, isolation_tier: e.target.value })} className="w-72 rounded px-2 py-1.5 text-sm" style={inputStyle} title="Data-isolation tier">
+              {["pooled", "dedicated", "sovereign"].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
             <Button size="sm" disabled={!nt.name} onClick={() => run(() => apiPost("/admin/tenants", nt).then(() => { setShow(false); setNt({ ...nt, name: "", sector: "", country: "" }); }), "Tenant created.")}>Create</Button>
           </div>
         </Panel>

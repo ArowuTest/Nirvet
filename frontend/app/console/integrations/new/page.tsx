@@ -37,14 +37,14 @@ export default function NewConnectorPage() {
     const config: Record<string, string> = {};
     cfg.forEach(({ k, v }) => { if (k.trim()) config[k.trim()] = v; });
     try {
-      const r = await apiPost<{ source_key?: string; key?: string; id?: string; connector?: { id: string } }>("/connectors", {
+      const r = await apiPost<{ connector?: { id: string }; source_key?: string; ingest_url?: string }>("/connectors", {
         kind: kind.key,
         name: name || kind.name,
         direction: kind.direction,
         secret: secret || undefined,
         config,
       });
-      setResult({ source_key: r.source_key ?? r.key, id: r.id ?? r.connector?.id });
+      setResult({ source_key: r.source_key, id: r.connector?.id });
     } catch (e) {
       setErr(e instanceof ApiError && e.status === 403 ? "Adding a connector requires a senior analyst role." : e instanceof Error ? e.message : "Create failed.");
     } finally {

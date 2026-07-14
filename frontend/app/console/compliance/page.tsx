@@ -62,7 +62,7 @@ export default function CompliancePage() {
   async function attest(control_ref: string, status: string) {
     setMsg(null);
     try {
-      await apiPut("/compliance/status", { framework: fw, control_ref, status });
+      await apiPut("/compliance/status", { framework_key: fw, control_ref, status });
       setMsg({ tone: "ok", text: `${control_ref} attested ${status.replace(/_/g, " ")}.` });
       await load(fw);
     } catch (e) {
@@ -129,7 +129,7 @@ export default function CompliancePage() {
                             title="Attest a manual status (manager)"
                           >
                             <option value="">attest…</option>
-                            {["met", "partial", "not_met", "not_applicable"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+                            {["met", "partial", "gap", "not_applicable"].map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
                           </select>
                         </li>
                       ))}

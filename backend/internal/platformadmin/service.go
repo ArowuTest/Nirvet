@@ -54,13 +54,13 @@ func (s *Service) WithSessionRevoker(r SessionRevoker) *Service { s.revoker = r;
 
 // SetFlagInput is a flag mutation request. ApprovedBy is the four-eyes co-signer required to weaken a protected flag.
 type SetFlagInput struct {
-	Key        string
-	Scope      string
-	ScopeRef   string
-	Enabled    bool
-	Reason     string
-	ApprovedBy *uuid.UUID
-	ExpiresAt  *time.Time // Reinf-B: requested time-box for a protected weakening (capped; defaulted if nil)
+	Key        string     `json:"key"`
+	Scope      string     `json:"scope"`
+	ScopeRef   string     `json:"scope_ref"`
+	Enabled    bool       `json:"enabled"`
+	Reason     string     `json:"reason"`
+	ApprovedBy *uuid.UUID `json:"approved_by"`
+	ExpiresAt  *time.Time `json:"expires_at"` // Reinf-B: requested time-box for a protected weakening (capped; defaulted if nil)
 }
 
 // SetResult reports what happened, including the security delta (surfaced for rollback previews + audit legibility).

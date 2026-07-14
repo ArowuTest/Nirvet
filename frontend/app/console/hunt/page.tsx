@@ -23,11 +23,21 @@ const FIELDS = [
   { key: "vendor", label: "Vendor", enum: false },
   { key: "product", label: "Product", enum: false },
 ];
-const OPS = [
+// Ops are constrained by the field's registry type (investigation/fields.go opsByType): text supports
+// eq/neq/contains; enum (severity/outcome) only eq/neq — offering `contains` on an enum 400s. We expose exactly
+// the valid set per field so no rejected combo is selectable.
+const OPS_TEXT = [
   { key: "eq", label: "equals" },
   { key: "neq", label: "not equals" },
   { key: "contains", label: "contains" },
 ];
+const OPS_ENUM = [
+  { key: "eq", label: "equals" },
+  { key: "neq", label: "not equals" },
+];
+function opsFor(fieldKey: string) {
+  return FIELDS.find((f) => f.key === fieldKey)?.enum ? OPS_ENUM : OPS_TEXT;
+}
 
 type Predicate = { field: string; op: string; value: string };
 type EventRow = {
@@ -108,11 +118,11 @@ export default function HuntPage() {
         <div className="space-y-2">
           {preds.map((p, i) => (
             <div key={i} className="flex items-center gap-2">
-              <select value={p.field} onChange={(e) => setPred(i, { field: e.target.value })} className="rounded-lg px-2.5 py-2 text-sm" style={field}>
+              <select value={p.field} onChange={(e) => { const nf = e.target.value; const valid = opsFor(nf).some((o) => o.key === p.op); setPred(i, { field: nf, ...(valid ? {} : { op: "eq" }) }); }} className="rounded-lg px-2.5 py-2 text-sm" style={field}>
                 {FIELDS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
               </select>
               <select value={p.op} onChange={(e) => setPred(i, { op: e.target.value })} className="rounded-lg px-2.5 py-2 text-sm" style={field}>
-                {OPS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                {opsFor(p.field).map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
               </select>
               <input value={p.value} onChange={(e) => setPred(i, { value: e.target.value })} placeholder="value…" className="flex-1 rounded-lg px-3 py-2 text-sm outline-none" style={field} />
               {preds.length > 1 && (

@@ -24,7 +24,7 @@ type Rule = {
   kind: string;
   created_at: string;
 };
-type Gap = { rule_id?: string; rule_name?: string; source?: string; missing?: string } & Record<string, unknown>;
+type Gap = { rule_id?: string; name?: string; stage?: string; missing_deps?: string[] } & Record<string, unknown>;
 
 const ACTIVE = new Set(["pilot", "production", "tuned"]);
 function stageToneOf(s: string): "ok" | "warn" | "danger" | "info" | "neutral" {
@@ -119,9 +119,9 @@ export default function DetectionsPage() {
               {gaps.map((g, i) => (
                 <li key={i} className="flex items-center gap-2 text-[13px]" style={{ color: "var(--c-ink-2)" }}>
                   <StatusTag tone="warn">gap</StatusTag>
-                  <span>{g.rule_name ?? g.rule_id ?? "rule"}</span>
-                  {g.missing && <span style={{ color: "var(--c-ink-3)" }}>— needs {String(g.missing)}</span>}
-                  {!g.missing && g.source && <span style={{ color: "var(--c-ink-3)" }}>— {String(g.source)}</span>}
+                  <span>{g.name ?? g.rule_id ?? "rule"}</span>
+                  {g.missing_deps && g.missing_deps.length > 0 && <span style={{ color: "var(--c-ink-3)" }}>— needs {g.missing_deps.join(", ")}</span>}
+                  {g.stage && <span className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>({g.stage})</span>}
                 </li>
               ))}
             </ul>
