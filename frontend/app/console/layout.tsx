@@ -39,6 +39,13 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Reports", href: "/console/reports", icon: "file-text", ready: true },
     ],
   },
+  {
+    section: "Administration",
+    items: [
+      { label: "Tenants", href: "/console/admin/tenants", icon: "box", ready: true },
+      { label: "Identity", href: "/console/admin/iam", icon: "users", ready: true },
+    ],
+  },
 ];
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
