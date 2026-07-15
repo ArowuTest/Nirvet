@@ -8,7 +8,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { getMe, logout, logoutAll, apiGet, apiGetCached, type Me } from "@/lib/api";
+import { getMe, logout, logoutAll, apiGet, apiGetCached, ApiError, type Me } from "@/lib/api";
 import { Icon, NirvetMark } from "@/components/icons";
 
 // F1 — role-aware nav (hide, don't deny). `roles` lists who may SEE an item; undefined = every internal role.
@@ -18,40 +18,46 @@ import { Icon, NirvetMark } from "@/components/icons";
 const PADMIN = ["platform_admin"]; // Administration section — platform-admin only
 const MANAGER = ["platform_admin", "soc_manager"]; // manager surfaces (Team workload)
 const OVERSIGHT = ["platform_admin", "org_sub_admin", "payer"]; // fleet oversight audience
+// The internal SOC roles (auth.ProviderRoles). Every Operations/Response/Platform route is provider-gated, so
+// the oversight-only roles (org_sub_admin / payer) must not see those items — they can reach just three
+// rollup routes and would 403 on everything else (F4).
+const PROVIDER = ["platform_admin", "soc_manager", "analyst_t1", "analyst_t2", "analyst_t3", "detection_engineer"];
+// Roles that live in the console but are NOT SOC operators: they get the oversight landing, not the SOC dashboard.
+const OVERSIGHT_ONLY = ["org_sub_admin", "payer"];
 type NavItem = { label: string; href: string; icon: string; badge?: "incidents" | "alerts"; ready: boolean; roles?: string[] };
 const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: "Operations",
     items: [
-      { label: "Dashboard", href: "/console", icon: "grid", ready: true },
-      { label: "Executive", href: "/console/exec", icon: "activity", ready: true },
-      { label: "Incidents", href: "/console/incidents", icon: "alert-circle", badge: "incidents", ready: true },
-      { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true },
-      { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true },
-      { label: "Notebooks", href: "/console/notebooks", icon: "file-text", ready: true },
-      { label: "Detections", href: "/console/detections", icon: "target", ready: true },
-      { label: "Assets", href: "/console/assets", icon: "box", ready: true },
-      { label: "Entity graph", href: "/console/entities", icon: "share-2", ready: true },
-      { label: "AI Copilot", href: "/console/copilot", icon: "activity", ready: true },
+      { label: "Dashboard", href: "/console", icon: "grid", ready: true, roles: PROVIDER },
+      { label: "Executive", href: "/console/exec", icon: "activity", ready: true, roles: PROVIDER },
+      { label: "Incidents", href: "/console/incidents", icon: "alert-circle", badge: "incidents", ready: true, roles: PROVIDER },
+      { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true, roles: PROVIDER },
+      { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true, roles: PROVIDER },
+      { label: "Notebooks", href: "/console/notebooks", icon: "file-text", ready: true, roles: PROVIDER },
+      { label: "Detections", href: "/console/detections", icon: "target", ready: true, roles: PROVIDER },
+      { label: "Assets", href: "/console/assets", icon: "box", ready: true, roles: PROVIDER },
+      { label: "Entity graph", href: "/console/entities", icon: "share-2", ready: true, roles: PROVIDER },
+      { label: "AI Copilot", href: "/console/copilot", icon: "activity", ready: true, roles: PROVIDER },
     ],
   },
   {
     section: "Response",
     items: [
-      { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true },
-      { label: "Privileged access", href: "/console/pam", icon: "shield", ready: true },
+      { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true, roles: PROVIDER },
+      { label: "Privileged access", href: "/console/pam", icon: "shield", ready: true, roles: PROVIDER },
       { label: "Team workload", href: "/console/workload", icon: "users", ready: true, roles: MANAGER },
-      { label: "Evidence", href: "/console/evidence", icon: "server", ready: true },
-      { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true },
+      { label: "Evidence", href: "/console/evidence", icon: "server", ready: true, roles: PROVIDER },
+      { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true, roles: PROVIDER },
     ],
   },
   {
     section: "Platform",
     items: [
-      { label: "Integrations", href: "/console/integrations", icon: "plug", ready: true },
-      { label: "Threat Intel", href: "/console/threat-intel", icon: "shield", ready: true },
-      { label: "Compliance", href: "/console/compliance", icon: "shield", ready: true },
-      { label: "Reports", href: "/console/reports", icon: "file-text", ready: true },
+      { label: "Integrations", href: "/console/integrations", icon: "plug", ready: true, roles: PROVIDER },
+      { label: "Threat Intel", href: "/console/threat-intel", icon: "shield", ready: true, roles: PROVIDER },
+      { label: "Compliance", href: "/console/compliance", icon: "shield", ready: true, roles: PROVIDER },
+      { label: "Reports", href: "/console/reports", icon: "file-text", ready: true, roles: PROVIDER },
     ],
   },
   {
@@ -90,7 +96,18 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
 
   useEffect(() => {
     let alive = true;
-    getMe()
+    // BUG-3: a transient /me failure (cold start, flaky link) used to bounce a valid session straight to /login.
+    // Retry once before giving up — only a genuine 401 (or two failures) ends the session.
+    async function verify(): Promise<Me> {
+      try {
+        return await getMe();
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) throw e; // definitively signed out — don't retry
+        await new Promise((r) => setTimeout(r, 1200));
+        return getMe();
+      }
+    }
+    verify()
       .then((u) => {
         if (!alive) return;
         if (u.role?.startsWith("customer")) {
@@ -99,18 +116,30 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         }
         setMe(u);
         setState("ready");
-        apiGetCached<{ open_incidents: number; open_alerts: number }>("/reports/summary")
-          .then((s) => alive && setCounts({ incidents: s.open_incidents, alerts: s.open_alerts }))
-          .catch(() => {});
-        apiGet<{ unread_count: number }>("/notify/inbox/unread-count")
-          .then((n) => alive && setUnread(n.unread_count))
-          .catch(() => {});
+        if (!OVERSIGHT_ONLY.includes(u.role ?? "")) {
+          // Provider-only badge counts; an oversight role would just 403 on these.
+          apiGetCached<{ open_incidents: number; open_alerts: number }>("/reports/summary")
+            .then((s) => alive && setCounts({ incidents: s.open_incidents, alerts: s.open_alerts }))
+            .catch(() => {});
+          apiGet<{ unread_count: number }>("/notify/inbox/unread-count")
+            .then((n) => alive && setUnread(n.unread_count))
+            .catch(() => {});
+        }
       })
       .catch(() => alive && router.replace("/login"));
     return () => {
       alive = false;
     };
   }, [router]);
+
+  // F4: the oversight roles are not SOC operators — every provider route 403s for them. Land them on their own
+  // surface (fleet oversight) rather than the SOC dashboard they cannot read. Kept out of the verify effect so
+  // navigating does not re-probe /me.
+  useEffect(() => {
+    if (me && OVERSIGHT_ONLY.includes(me.role ?? "") && pathname === "/console") {
+      router.replace("/console/oversight");
+    }
+  }, [me, pathname, router]);
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -139,6 +168,11 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
 
   const initials = (me?.email ?? "?").slice(0, 2).toUpperCase();
   const role = me?.role?.replace(/_/g, " ") ?? "";
+  // MFA nudge for platform admins. Deliberately a prompt, NOT a hard block: there is no server-side force-MFA
+  // policy yet (login only demands a code when the account already has MFA enabled), so a client-side gate would
+  // be theatre — bypassable, and it would lock out an admin who hasn't enrolled. Enforcing this properly means an
+  // admin-config policy record + server-side enforcement (no-hardcoding rule); tracked, not faked here.
+  const mfaNudge = me?.role === "platform_admin" && me?.mfa_enabled === false && !pathname.startsWith("/console/settings");
 
   return (
     <div className="flex h-screen flex-col overflow-hidden" style={{ background: "var(--c-bg)" }}>
@@ -301,9 +335,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         </aside>
 
         <main className="flex-1 overflow-y-auto p-8">
-          {/* Enforce MFA for platform admins: a persistent, non-dismissible prompt until enrolled (a hard block
-              is avoided so a not-yet-enrolled admin can't be locked out — enrollment lives one click away). */}
-          {me?.role === "platform_admin" && me?.mfa_enabled === false && pathname !== "/console/settings" && (
+          {mfaNudge && (
             <div className="mb-6 flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm" style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid var(--c-border)" }}>
               <span>Multi-factor authentication is required for platform-admin accounts and is not yet enabled on yours.</span>
               <Link href="/console/settings" className="shrink-0 rounded-lg px-3 py-1.5 font-semibold" style={{ background: "#ef4444", color: "#fff" }}>Enable MFA</Link>
