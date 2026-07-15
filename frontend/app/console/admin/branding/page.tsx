@@ -31,7 +31,11 @@ function BrandingPage() {
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
 
   useEffect(() => {
-    apiGet<Branding>("/branding").then(setB).catch(() => setB({ operator_name: "", logo_url: "", primary_color: "#2563eb", support_email: "" }));
+    // BUG-7: an unconfigured instance returns an empty primary_color, which failed the HEX check and left "Save
+    // branding" disabled on load (the colour swatch already falls back to #2563eb, so the form looked valid).
+    // Normalise a missing/invalid colour to the fallback in state so the control and validation agree.
+    const norm = (r: Branding): Branding => ({ ...r, primary_color: HEX.test(r.primary_color) ? r.primary_color : "#2563eb" });
+    apiGet<Branding>("/branding").then((r) => setB(norm(r))).catch(() => setB({ operator_name: "", logo_url: "", primary_color: "#2563eb", support_email: "" }));
   }, []);
 
   if (!b) return <div className="p-6 text-sm" style={{ color: "var(--c-ink-3)" }}>Loading…</div>;
