@@ -21,6 +21,11 @@ export default function AdminTenantsPage() {
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [show, setShow] = useState(false);
   const [nt, setNt] = useState({ name: "", sector: "", country: "", service_tier: "standard", isolation_tier: "pooled" });
+  // F3 — per-tenant onboarding: invite the tenant's first admin. inviteFor = the open tenant row; inviteToken =
+  // the one-time link the backend returns (shown once, cannot be retrieved again).
+  const [inviteFor, setInviteFor] = useState<string | null>(null);
+  const [invite, setInvite] = useState({ email: "", role: "customer_admin" });
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +49,21 @@ export default function AdminTenantsPage() {
       await load();
     } catch (e) {
       setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "This requires a platform-admin role." : e instanceof Error ? e.message : "Failed." });
+    }
+  }
+
+  // Create an invitation for the tenant's admin and surface the one-time link (not reloaded — the token is
+  // returned once and never retrievable again, so we keep it in state until the operator dismisses it).
+  async function sendInvite(tenantID: string) {
+    setMsg(null);
+    setInviteToken(null);
+    try {
+      const r = await apiPost<{ token: string }>(`/admin/tenants/${tenantID}/invitations`, { email: invite.email.trim(), role: invite.role, expires_in_hours: 168 });
+      setInviteToken(r.token);
+      setMsg({ tone: "ok", text: "Invitation created — share the one-time link below with the tenant admin (valid 7 days)." });
+      setInvite({ email: "", role: "customer_admin" });
+    } catch (e) {
+      setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "This requires a platform-admin role." : e instanceof Error ? e.message : "Could not create invitation." });
     }
   }
 
@@ -94,12 +114,41 @@ export default function AdminTenantsPage() {
                 </Td>
                 <Td className="text-right">
                   <div className="flex justify-end gap-1.5">
+                    <Button size="sm" onClick={() => { setInviteFor(inviteFor === t.id ? null : t.id); setInviteToken(null); }}>{inviteFor === t.id ? "Close" : "Invite admin"}</Button>
                     <Button size="sm" variant="ghost" onClick={() => run(() => apiPost(`/admin/tenants/${t.id}/legal-hold`), "Legal hold set.")}>Hold</Button>
                     <Button size="sm" variant="ghost" onClick={() => run(() => apiDelete(`/admin/tenants/${t.id}/legal-hold`), "Legal hold cleared.")}>Release</Button>
                   </div>
                 </Td>
               </tr>
-            ))}
+            )).flatMap((row, i) => {
+              const t = tenants[i];
+              if (inviteFor !== t.id) return [row];
+              return [row, (
+                <tr key={`${t.id}-onboard`}>
+                  <td colSpan={5} style={{ borderTop: "1px solid var(--c-border)", background: "var(--c-surface-2)" }} className="px-4 py-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>Onboard {t.name} — invite its admin</div>
+                    <div className="mt-2 flex flex-wrap items-end gap-2">
+                      <label className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>Admin email
+                        <input type="email" value={invite.email} onChange={(e) => setInvite({ ...invite, email: e.target.value })} placeholder="admin@customer.example" className="mt-1 block w-64 rounded-lg px-3 py-1.5 text-sm" style={inputStyle} />
+                      </label>
+                      <label className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>Role
+                        <select value={invite.role} onChange={(e) => setInvite({ ...invite, role: e.target.value })} className="mt-1 block w-40 rounded-lg px-2 py-1.5 text-sm" style={inputStyle}>
+                          <option value="customer_admin">customer_admin</option>
+                          <option value="customer_viewer">customer_viewer</option>
+                        </select>
+                      </label>
+                      <Button size="sm" disabled={!invite.email.includes("@")} onClick={() => sendInvite(t.id)}>Send invitation</Button>
+                    </div>
+                    {inviteToken && (
+                      <div className="mt-3 rounded-lg p-2.5" style={{ background: "var(--c-surface)", border: "1px solid var(--c-border)" }}>
+                        <div className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>One-time invitation token (share securely — it cannot be retrieved again):</div>
+                        <code className="mt-1 block break-all text-[11px]" style={{ color: "var(--c-primary)" }}>{inviteToken}</code>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )];
+            })}
           </Table>
         )}
       </Panel>
