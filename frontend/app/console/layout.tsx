@@ -11,7 +11,14 @@ import { useEffect, useRef, useState } from "react";
 import { getMe, logout, logoutAll, apiGet, apiGetCached, type Me } from "@/lib/api";
 import { Icon, NirvetMark } from "@/components/icons";
 
-type NavItem = { label: string; href: string; icon: string; badge?: "incidents" | "alerts"; ready: boolean };
+// F1 — role-aware nav (hide, don't deny). `roles` lists who may SEE an item; undefined = every internal role.
+// This mirrors the backend gate tiers so a role never sees a link it would only get a 403 from; the backend
+// RLS + route middleware remain the real access control (this is UX only). Customer roles never reach the
+// console (redirected to /portal below), so ssoAdmin surfaces are effectively platform_admin here.
+const PADMIN = ["platform_admin"]; // Administration section — platform-admin only
+const MANAGER = ["platform_admin", "soc_manager"]; // manager surfaces (Team workload)
+const OVERSIGHT = ["platform_admin", "org_sub_admin", "payer"]; // fleet oversight audience
+type NavItem = { label: string; href: string; icon: string; badge?: "incidents" | "alerts"; ready: boolean; roles?: string[] };
 const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: "Operations",
@@ -33,7 +40,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true },
       { label: "Privileged access", href: "/console/pam", icon: "shield", ready: true },
-      { label: "Team workload", href: "/console/workload", icon: "users", ready: true },
+      { label: "Team workload", href: "/console/workload", icon: "users", ready: true, roles: MANAGER },
       { label: "Evidence", href: "/console/evidence", icon: "server", ready: true },
       { label: "Notifications", href: "/console/notifications", icon: "bell", ready: true },
     ],
@@ -48,21 +55,28 @@ const NAV: { section: string; items: NavItem[] }[] = [
     ],
   },
   {
+    // Administration — platform-admin only (all /console/admin/* routes are padmin/ssoAdmin-gated). Fleet
+    // oversight also admits the oversight audience (org_sub_admin / payer).
     section: "Administration",
     items: [
-      { label: "Tenants", href: "/console/admin/tenants", icon: "box", ready: true },
-      { label: "Identity", href: "/console/admin/iam", icon: "users", ready: true },
-      { label: "Risk score", href: "/console/admin/risk", icon: "activity", ready: true },
-      { label: "Branding", href: "/console/admin/branding", icon: "settings", ready: true },
-      { label: "AI config", href: "/console/admin/ai", icon: "activity", ready: true },
-      { label: "Billing", href: "/console/admin/billing", icon: "file-text", ready: true },
-      { label: "Feature flags", href: "/console/admin/flags", icon: "settings", ready: true },
-      { label: "Audit trail", href: "/console/admin/audit", icon: "file-text", ready: true },
-      { label: "Fleet oversight", href: "/console/oversight", icon: "grid", ready: true },
-      { label: "Platform health", href: "/console/admin/health", icon: "server", ready: true },
+      { label: "Tenants", href: "/console/admin/tenants", icon: "box", ready: true, roles: PADMIN },
+      { label: "Identity", href: "/console/admin/iam", icon: "users", ready: true, roles: PADMIN },
+      { label: "Risk score", href: "/console/admin/risk", icon: "activity", ready: true, roles: PADMIN },
+      { label: "Branding", href: "/console/admin/branding", icon: "settings", ready: true, roles: PADMIN },
+      { label: "AI config", href: "/console/admin/ai", icon: "activity", ready: true, roles: PADMIN },
+      { label: "Billing", href: "/console/admin/billing", icon: "file-text", ready: true, roles: PADMIN },
+      { label: "Feature flags", href: "/console/admin/flags", icon: "settings", ready: true, roles: PADMIN },
+      { label: "Audit trail", href: "/console/admin/audit", icon: "file-text", ready: true, roles: PADMIN },
+      { label: "Fleet oversight", href: "/console/oversight", icon: "grid", ready: true, roles: OVERSIGHT },
+      { label: "Platform health", href: "/console/admin/health", icon: "server", ready: true, roles: PADMIN },
     ],
   },
 ];
+
+// A nav item is visible when it declares no role restriction or when the current role is allowed.
+function canSee(item: NavItem, role?: string): boolean {
+  return !item.roles || (!!role && item.roles.includes(role));
+}
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -221,12 +235,15 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
           style={{ background: "var(--c-surface)", borderRight: "1px solid var(--c-border)" }}
           aria-label="Application navigation"
         >
-          {NAV.map((group) => (
+          {NAV.map((group) => {
+            const items = group.items.filter((i) => canSee(i, me?.role));
+            if (items.length === 0) return null; // hide the whole section when the role sees nothing in it
+            return (
             <div key={group.section} className="mb-1">
               <div className="px-2 pb-1.5 pt-3 text-[10px] font-bold uppercase tracking-[0.1em]" style={{ color: "var(--c-ink-3)" }}>
                 {group.section}
               </div>
-              {group.items.map((item) => {
+              {items.map((item) => {
                 const active = item.href === "/console" ? pathname === item.href : pathname.startsWith(item.href);
                 const count = item.badge ? counts[item.badge] : undefined;
                 const inner = (
@@ -267,7 +284,8 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
                 );
               })}
             </div>
-          ))}
+            );
+          })}
 
           <div className="mt-auto pt-3" style={{ borderTop: "1px solid var(--c-border)" }}>
             <Link

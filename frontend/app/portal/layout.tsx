@@ -16,10 +16,12 @@ export function isCustomerRole(role?: string) {
   return !!role && role.startsWith("customer");
 }
 
-const NAV = [
+// F2 — Approvals is a WRITE surface (authorising a SOAR run is customer_admin only, customerWrite-gated
+// server-side). A customer_viewer is read-only, so we hide it rather than show a control they'd 403 on.
+const NAV: { label: string; href: string; icon: string; adminOnly?: boolean }[] = [
   { label: "Overview", href: "/portal", icon: "grid" },
   { label: "Posture", href: "/portal/posture", icon: "activity" },
-  { label: "Approvals", href: "/portal/approvals", icon: "shield" },
+  { label: "Approvals", href: "/portal/approvals", icon: "shield", adminOnly: true },
   { label: "Incidents", href: "/portal/incidents", icon: "alert-circle" },
   { label: "Alerts", href: "/portal/alerts", icon: "alert-triangle" },
   { label: "Assets", href: "/portal/assets", icon: "box" },
@@ -73,7 +75,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
         </Link>
         <span className="ml-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: "rgba(6,182,212,0.1)", color: "var(--c-accent)", border: "1px solid var(--c-border-strong)" }}>Customer portal</span>
         <nav className="ml-6 hidden items-center gap-1 md:flex">
-          {NAV.map((n) => {
+          {NAV.filter((n) => !n.adminOnly || me?.role === "customer_admin").map((n) => {
             const active = n.href === "/portal" ? pathname === n.href : pathname.startsWith(n.href);
             return (
               <Link key={n.href} href={n.href} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition" style={active ? { background: "rgba(14,165,233,0.1)", color: "var(--c-ink)" } : { color: "var(--c-ink-2)" }}>

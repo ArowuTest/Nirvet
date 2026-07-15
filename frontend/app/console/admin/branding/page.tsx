@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPut, ApiError } from "@/lib/api";
 import { PageHeader, Panel, Button } from "@/components/ui";
+import { RoleGate } from "@/components/role-gate";
 
 type Branding = { operator_name: string; logo_url: string; primary_color: string; support_email: string; updated_at?: string };
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
@@ -15,7 +16,17 @@ const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--
 const HEX = /^#[0-9a-fA-F]{6}$/;
 function logoOk(s: string) { return s === "" || (s.startsWith("/") && !s.startsWith("//")) || /^https:\/\/.+/.test(s); }
 
-export default function BrandingPage() {
+export default function Page() {
+  // White-label branding is platform-admin only (PUT /admin/branding is padmin). Gate the page so a non-admin
+  // sees a denial rather than the Save-branding form (BUG-2).
+  return (
+    <RoleGate allow={["platform_admin"]} title="Branding">
+      <BrandingPage />
+    </RoleGate>
+  );
+}
+
+function BrandingPage() {
   const [b, setB] = useState<Branding | null>(null);
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
 

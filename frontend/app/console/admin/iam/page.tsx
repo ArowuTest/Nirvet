@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete, getMe, ApiError } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button } from "@/components/ui";
+import { RoleGate } from "@/components/role-gate";
 
 type Role = string;
 type User = { id: string; email: string; role: Role; status: string; mfa_enabled: boolean; last_login_at?: string };
@@ -20,7 +21,17 @@ type Review = { users: User[] | null; service_accounts: ServiceAccount[] | null;
 const ROLES = ["soc_manager", "analyst_t1", "analyst_t2", "analyst_t3", "detection_engineer", "customer_admin", "customer_viewer"];
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
-export default function IamAdminPage() {
+export default function Page() {
+  // Identity/IAM management is platform-admin only (ssoAdmin routes → platform_admin in the console). Gate the
+  // whole page so a non-admin who navigates straight here sees a denial, not the Invite/Create controls (BUG-2).
+  return (
+    <RoleGate allow={["platform_admin"]} title="Identity & access">
+      <IamAdminPage />
+    </RoleGate>
+  );
+}
+
+function IamAdminPage() {
   const [tid, setTid] = useState<string | null>(null);
   const [rev, setRev] = useState<Review>({ users: [], service_accounts: [], pending_invitations: [] });
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPut, apiPost, apiDelete, ApiError } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button, EmptyState } from "@/components/ui";
+import { RoleGate } from "@/components/role-gate";
 
 type ProviderView = { kind: string; base_url?: string; model: string; has_key: boolean; global: boolean };
 type SaveResult = { provider: ProviderView; warnings?: string[] };
@@ -20,7 +21,17 @@ type Tenant = { id: string; name: string };
 const KINDS = ["anthropic", "openai_compatible", "disabled"];
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
-export default function AiConfigPage() {
+export default function Page() {
+  // AI provider/allowlist config is platform-admin only (/admin/ai/* is padmin). Gate the page so a non-admin
+  // hitting the URL sees a denial rather than the Save-provider / Add-endpoint form (BUG-2).
+  return (
+    <RoleGate allow={["platform_admin"]} title="AI configuration">
+      <AiConfigPage />
+    </RoleGate>
+  );
+}
+
+function AiConfigPage() {
   const [prov, setProv] = useState<ProviderView | null>(null);
   const [notConfigured, setNotConfigured] = useState(false);
   // provider form
