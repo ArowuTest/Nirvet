@@ -1,6 +1,7 @@
 package soar
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -252,8 +253,38 @@ func (h *Handler) ApproveViaLink(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, run)
 }
 
+// customerSafeError enforces the AUDIENCE BOUNDARY on SOAR refusals (J3).
+//
+// The approval gate refuses in prose that names internal SOC state: whether the internal approver is still
+// employed ("the internal approver is no longer active"), the internal role taxonomy and a named analyst's tier
+// ("approver role 'analyst_t2' is insufficient to approve a high-risk action"), requester attribution and
+// four-eyes mechanics. Those are exactly the facts the read-model withholds from a customer audience — and prose
+// crosses that boundary as easily as a count did in BUG-10. Fixing this in the portal UI would not do: the text
+// still ships in the HTTP body, one devtools panel away.
+//
+// Positive allowlist, fail-closed — the same shape as the read-model projection: refusals ABOUT THE CUSTOMER'S OWN
+// request or their own tenant policy pass through; everything else collapses to a generic notice. A refusal we
+// have not explicitly classified as customer-safe is treated as internal.
+func customerSafeError(err error) error {
+	var ae *httpx.APIError
+	if !errors.As(err, &ae) {
+		return httpx.ErrInternal("could not record your decision")
+	}
+	switch ae.Code {
+	case "bad_request", "not_found", "conflict":
+		return ae // about the caller's own request (bad id, stale run) — safe and actionable
+	}
+	if ae.Status == http.StatusForbidden && ae.Message == MsgCustomerApprovalDisabled {
+		return ae // about the customer's OWN tenant policy — safe and actionable
+	}
+	// Everything else at this boundary is internal gate state. Say only what the customer can act on; the real
+	// reason stays server-side (the run's approval trail already records it for the SOC).
+	return httpx.ErrForbidden("this action can no longer be authorised from the portal — please contact your SOC")
+}
+
 // CustomerApprove handles POST /customer/soar/approvals/{id}/approve — the IN-PORTAL authenticated customer
-// approval (SB3). customer_admin only (gated at the route); RLS-scoped to their own tenant.
+// approval (SB3). customer_admin only (gated at the route); RLS-scoped to their own tenant. Refusals pass through
+// customerSafeError so the gate's internal reasoning never reaches the customer (J3).
 func (h *Handler) CustomerApprove(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -263,7 +294,7 @@ func (h *Handler) CustomerApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := h.svc.ApproveAsCustomer(r.Context(), p, id)
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.Error(w, customerSafeError(err))
 		return
 	}
 	httpx.JSON(w, http.StatusOK, run)
@@ -279,7 +310,7 @@ func (h *Handler) CustomerReject(w http.ResponseWriter, r *http.Request) {
 	}
 	run, err := h.svc.RejectAsCustomer(r.Context(), p, id)
 	if err != nil {
-		httpx.Error(w, err)
+		httpx.Error(w, customerSafeError(err)) // J3: same audience boundary as approve
 		return
 	}
 	httpx.JSON(w, http.StatusOK, run)

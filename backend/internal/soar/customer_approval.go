@@ -23,6 +23,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// MsgCustomerApprovalDisabled is the one 403 on the customer approval path that is ABOUT THE CUSTOMER'S OWN tenant
+// policy, so it is the only one the audience boundary lets through verbatim (see customerSafeError in handler.go).
+// It is a const rather than a literal precisely so the emit site and the allowlist cannot drift apart.
+const MsgCustomerApprovalDisabled = "customer approval is not enabled for this tenant"
+
 // Authority modes (source of truth for the customer_approval_policy.authority CHECK).
 const (
 	AuthorityPlatformAnalyst  = "platform_analyst"
@@ -205,7 +210,7 @@ func (s *Service) ApproveViaLink(ctx context.Context, rawToken string) (*Playboo
 	}
 	policy := s.resolveCustomerPolicy(ctx, tenantID)
 	if policy.Authority == AuthorityPlatformAnalyst {
-		return nil, httpx.ErrForbidden("customer approval is not enabled for this tenant")
+		return nil, httpx.ErrForbidden(MsgCustomerApprovalDisabled)
 	}
 	ref := policy.CustomerApproverRef
 	if ref == "" {
