@@ -33,6 +33,19 @@ type Incident = {
 type TimelineEntry = { id: string; at: string; author: string; kind: string; visibility: string; note: string };
 type Task = { id: string; title: string; status: string; created_at: string };
 type Attachment = { id: string; filename: string; content_type: string; size_bytes: number; sha256: string; uploaded_at: string };
+// SOAR response (§6.11): playbook library + runs launched against this case. Mirrors the shapes on the
+// Playbooks screen so the two views agree; the run/approve/reject contracts live in soar/handler.go.
+type Playbook = { id: string; name: string; description: string; trigger_category: string; steps: unknown[] | null; enabled: boolean };
+type StepResult = { name: string; connector_key: string; action: string; risk: string; status: string; note: string };
+type Run = { id: string; playbook_id: string; incident_id?: string; status: string; steps: StepResult[] | null; created_at: string; completed_at?: string };
+
+const runTone: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = {
+  completed: "ok",
+  running: "info",
+  pending_approval: "warn",
+  failed: "danger",
+  rejected: "neutral",
+};
 
 // Mirrors backend stageTransitions (transitions.go). We omit "closed" — closing is the criteria-gated /close flow.
 const TRANSITIONS: Record<string, string[]> = {
@@ -70,6 +83,8 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
   const [tasks, setTasks] = useState<Task[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [linked, setLinked] = useState<{ id: string; title: string; severity: string; status: string }[]>([]);
+  const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -78,6 +93,7 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
   const [note, setNote] = useState("");
   const [noteVis, setNoteVis] = useState<"internal" | "customer">("internal");
   const [newTask, setNewTask] = useState("");
+  const [selectedPb, setSelectedPb] = useState("");
   const [showClose, setShowClose] = useState(false);
   const [closure, setClosure] = useState({ disposition: "true_positive", root_cause: "", impact: "", actions_taken: "", lessons_learned: "", customer_ack: false });
 
@@ -92,6 +108,11 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       setAttachments(at.attachments ?? []);
       const la = await apiGet<{ alerts: { id: string; title: string; severity: string; status: string }[] | null }>(`/incidents/${id}/alerts`).catch(() => ({ alerts: [] }));
       setLinked(la.alerts ?? []);
+      // SOAR response context (§6.11): the enabled playbook library + any runs already launched against this case.
+      const pb = await apiGet<{ playbooks: Playbook[] | null }>(`/playbooks`).catch(() => ({ playbooks: [] }));
+      setPlaybooks((pb.playbooks ?? []).filter((p) => p.enabled));
+      const rn = await apiGet<{ runs: Run[] | null }>(`/soar/runs`).catch(() => ({ runs: [] }));
+      setRuns((rn.runs ?? []).filter((r) => r.incident_id === id));
       setState("ready");
     } catch {
       setState("notfound");
@@ -113,6 +134,23 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       const forbidden = e instanceof ApiError && e.status === 403;
       const m = e instanceof Error ? e.message : "Action failed";
       setMsg({ tone: "danger", text: forbidden ? "That action requires a senior analyst role." : m });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Approve/reject a pending SOAR run inline. Distinct from act() because the 403 here means "not an approver"
+  // (soarApprover — soc_manager/platform_admin), not "not senior". Self-approval is also blocked server-side.
+  async function decide(runId: string, action: "approve" | "reject") {
+    setMsg(null);
+    setBusy(true);
+    try {
+      await apiPost(`/soar/runs/${runId}/${action}`);
+      setMsg({ tone: "ok", text: `Run ${action === "approve" ? "approved" : "rejected"}.` });
+      await load();
+    } catch (e) {
+      const forbidden = e instanceof ApiError && e.status === 403;
+      setMsg({ tone: "danger", text: forbidden ? "Approving or rejecting a run requires an approver role (SOC manager)." : e instanceof Error ? e.message : "Action failed." });
     } finally {
       setBusy(false);
     }
@@ -256,6 +294,81 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
                 <span style={{ color: "var(--c-ink-3)" }}>Resolve due</span>
                 <span>{inc.resolve_breached ? <StatusTag tone="danger">Breached</StatusTag> : <span style={{ color: "var(--c-ink-2)" }}>{fmt(inc.resolve_due_at)}</span>}</span>
               </div>
+            </div>
+          </Panel>
+
+          {/* SOAR response (§6.11, journey J1) — launch a playbook against this case and act on pending approvals.
+              Running is senior-gated; approve/reject is approver-gated. Both 403s surface inline. */}
+          <Panel title="Response" sub="Run a playbook to contain or remediate this case">
+            {!closed && (
+              <div className="flex items-end gap-2">
+                <label className="flex-1 text-[12px]" style={{ color: "var(--c-ink-3)" }}>
+                  Playbook
+                  <select
+                    value={selectedPb}
+                    onChange={(e) => setSelectedPb(e.target.value)}
+                    disabled={busy || playbooks.length === 0}
+                    className="mt-1 w-full rounded-lg px-3 py-2 text-sm"
+                    style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" }}
+                  >
+                    <option value="">{playbooks.length === 0 ? "No enabled playbooks" : "Select a playbook…"}</option>
+                    {playbooks.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </label>
+                <Button
+                  size="sm"
+                  disabled={busy || !selectedPb}
+                  onClick={() => act(() => apiPost(`/playbooks/${selectedPb}/run`, { incident_id: id }).then(() => setSelectedPb("")), "Playbook run started.")}
+                >
+                  Run playbook
+                </Button>
+              </div>
+            )}
+            {playbooks.length === 0 && !closed && (
+              <p className="mt-2 text-[11px]" style={{ color: "var(--c-ink-3)" }}>
+                No enabled response playbooks for your tenant. An author can create one under <Link href="/console/playbooks" style={{ color: "var(--c-primary)" }}>Playbooks</Link>.
+              </p>
+            )}
+
+            <div className={runs.length > 0 || closed ? "mt-4 border-t pt-3" : "mt-3"} style={{ borderColor: "var(--c-border)" }}>
+              {runs.length === 0 ? (
+                <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>No playbook runs on this case yet.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {runs.map((r) => {
+                    const steps = r.steps ?? [];
+                    const executed = steps.filter((s) => s.status === "executed").length;
+                    const pb = playbooks.find((p) => p.id === r.playbook_id);
+                    return (
+                      <li key={r.id} className="rounded-lg p-3" style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)" }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 truncate text-[13px]" style={{ color: "var(--c-ink)" }}>{pb?.name ?? "Playbook run"}</span>
+                          <StatusTag tone={runTone[r.status] ?? "neutral"}>{r.status.replace(/_/g, " ")}</StatusTag>
+                        </div>
+                        <div className="mt-1 text-[11px]" style={{ color: "var(--c-ink-3)" }}>
+                          {executed}/{steps.length} step{steps.length === 1 ? "" : "s"} executed · {fmt(r.created_at)}
+                        </div>
+                        {steps.length > 0 && (
+                          <ul className="mt-2 space-y-1">
+                            {steps.map((s, i) => (
+                              <li key={i} className="flex items-center gap-2 text-[11px]" style={{ color: "var(--c-ink-2)" }}>
+                                <span className="font-mono">{s.connector_key || "internal"}·{s.action}</span>
+                                <StatusTag tone={s.status === "executed" ? "ok" : s.status === "awaiting_approval" ? "warn" : "neutral"}>{s.status.replace(/_/g, " ")}</StatusTag>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {r.status === "pending_approval" && (
+                          <div className="mt-2 flex gap-2">
+                            <Button size="sm" disabled={busy} onClick={() => decide(r.id, "approve")}>Approve</Button>
+                            <Button size="sm" variant="danger" disabled={busy} onClick={() => decide(r.id, "reject")}>Reject</Button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
           </Panel>
 
