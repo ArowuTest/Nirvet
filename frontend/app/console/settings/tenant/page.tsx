@@ -6,7 +6,7 @@
 // ssoAdmin-gated server-side → 403 surfaced. Everything is a real config record (no hardcoding).
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPut, apiPost, apiDelete, getMe, ApiError } from "@/lib/api";
+import { apiGet, apiPut, apiPost, apiDelete, getMe, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button } from "@/components/ui";
 
 type SLA = { severity: string; ack_seconds: number; resolve_seconds: number };
@@ -20,8 +20,7 @@ const SEVERITIES = ["critical", "high", "medium", "low", "informational"];
 const inputStyle = { background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" } as const;
 
 function err403(e: unknown, what: string) {
-  const forbidden = e instanceof ApiError && e.status === 403;
-  return forbidden ? "This requires a tenant-admin role." : e instanceof Error ? e.message : `${what} failed.`;
+  return errorText(e, "This requires a tenant-admin role.", `${what} failed.`);
 }
 
 export default function TenantSettingsPage() {

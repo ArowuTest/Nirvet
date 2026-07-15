@@ -7,7 +7,7 @@
 // the server 403 is surfaced honestly rather than hidden. "immutable" flags cannot be changed at all.
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPut, ApiError } from "@/lib/api";
+import { apiGet, apiPut, ApiError, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button, EmptyState } from "@/components/ui";
 
 type Flag = {
@@ -71,7 +71,7 @@ export default function AdminFlagsPage() {
       await load();
     } catch (e) {
       const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Rejected: this change needs a platform-admin and, for a protected weakening, a distinct four-eyes approver." : e instanceof Error ? e.message : "Change failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Rejected: this change needs a platform-admin and, for a protected weakening, a distinct four-eyes approver.", "Change failed.") });
     } finally {
       setBusy(null);
     }

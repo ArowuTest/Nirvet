@@ -6,7 +6,7 @@
 // GET /admin/billing/accounts are padmin server-side → non-admins get 403, surfaced as an access notice.
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, ApiError, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button, EmptyState } from "@/components/ui";
 
 // The metered dimensions a rate line can price (mirrors billing.Metric — the backend rejects any other value).
@@ -85,7 +85,7 @@ export default function AdminBillingPage() {
       await load();
     } catch (e) {
       const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "This action requires the platform super-admin." : e instanceof Error ? e.message : "Action failed." });
+      setMsg({ tone: "danger", text: errorText(e, "This action requires the platform super-admin.", "Action failed.") });
     } finally {
       setBusy(false);
     }

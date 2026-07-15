@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, ApiError, API_BASE } from "@/lib/api";
+import { apiGet, ApiError, API_BASE, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, SevBadge, StatusTag, stageTone, EmptyState, Button } from "@/components/ui";
 
 type Incident = { id: string; title: string; severity: string; stage: string; created_at: string };
@@ -61,7 +61,7 @@ export default function EvidencePage() {
       setMsg({ tone: "ok", text: `Evidence pack for "${inc.title}" exported.` });
     } catch (e) {
       const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Exporting an evidence pack requires a senior analyst role." : e instanceof Error ? e.message : "Export failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Exporting an evidence pack requires a senior analyst role.", "Export failed.") });
     } finally {
       setBusy(null);
     }

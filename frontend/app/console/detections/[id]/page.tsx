@@ -7,7 +7,7 @@
 
 import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, ApiError, errorText } from "@/lib/api";
 import { PageHeader, Panel, SevBadge, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Predicate = { field: string; op: string; value: string };
@@ -112,8 +112,7 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
       setMsg({ tone: "ok", text: ok });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "This requires a detection-engineer role." : e instanceof Error ? e.message : "Action failed." });
+      setMsg({ tone: "danger", text: errorText(e, "This requires a detection-engineer role.", "Action failed.") });
     } finally {
       setBusy(false);
     }
@@ -125,7 +124,7 @@ export default function DetectionDetailPage({ params }: { params: Promise<{ id: 
       const r = await apiPost<TestRun>(`/detections/${id}/tests/run`, {});
       setRun(r); setRunLabel("Test suite");
     } catch (e) {
-      setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "This requires a detection-engineer role." : e instanceof Error ? e.message : "Run failed." });
+      setMsg({ tone: "danger", text: errorText(e, "This requires a detection-engineer role.", "Run failed.") });
     } finally { setBusy(false); }
   }
 

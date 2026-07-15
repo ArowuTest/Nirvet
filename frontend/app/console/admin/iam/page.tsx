@@ -6,7 +6,7 @@
 // mint/revoke their API keys (secret shown once). All ssoAdmin-gated server-side → 403 surfaced.
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, apiDelete, getMe, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiDelete, getMe, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button } from "@/components/ui";
 import { RoleGate } from "@/components/role-gate";
 
@@ -62,8 +62,7 @@ function IamAdminPage() {
       setMsg({ tone: "ok", text: ok });
       if (base) await load(base);
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "This requires a tenant-admin role." : e instanceof Error ? e.message : "Failed." });
+      setMsg({ tone: "danger", text: errorText(e, "This requires a tenant-admin role.", "Failed.") });
     }
   }
 
@@ -83,7 +82,7 @@ function IamAdminPage() {
       setSecret(r.key ?? "(created — copy from the API response)"); // backend returns the one-time secret under `key`
       await loadKeys(said);
     } catch (e) {
-      setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "Requires tenant-admin." : "Could not create key." });
+      setMsg({ tone: "danger", text: errorText(e, "Requires tenant-admin.", "Could not create key.") });
     }
   }
 

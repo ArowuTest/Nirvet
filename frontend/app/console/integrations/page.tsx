@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, apiPut, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPut, errorText } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, healthTone, EmptyState, Button } from "@/components/ui";
 
 type Connector = {
@@ -70,8 +70,7 @@ export default function IntegrationsPage() {
       setMsg({ tone: ok ? "ok" : "danger", text: ok ? "Connection healthy." : `Probe ${res.status}${res.detail ? `: ${res.detail}` : ""}.` });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Testing a connector requires a senior analyst role." : e instanceof Error ? e.message : "Probe failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Testing a connector requires a senior analyst role.", "Probe failed.") });
     } finally {
       setBusy(null);
     }
@@ -87,8 +86,7 @@ export default function IntegrationsPage() {
       setMsg({ tone: "ok", text: c.enabled ? "Connector disabled — ingestion paused." : "Connector enabled." });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Changing a connector requires a senior analyst role." : e instanceof Error ? e.message : "Update failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Changing a connector requires a senior analyst role.", "Update failed.") });
     } finally {
       setBusy(null);
     }

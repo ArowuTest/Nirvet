@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, SevBadge, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Alert = {
@@ -69,9 +69,7 @@ export default function AlertsPage() {
       setMsg({ tone: "ok", text: "Alert promoted to an incident." });
       await load(filter);
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      const m = e instanceof Error ? e.message : "Promote failed";
-      setMsg({ tone: "danger", text: forbidden ? "Promoting to an incident requires a senior analyst role." : m });
+      setMsg({ tone: "danger", text: errorText(e, "Promoting to an incident requires a senior analyst role.") });
     } finally {
       setBusy(null);
     }

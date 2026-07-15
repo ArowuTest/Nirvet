@@ -24,7 +24,15 @@ const OVERSIGHT = ["platform_admin", "org_sub_admin", "payer"]; // fleet oversig
 const PROVIDER = ["platform_admin", "soc_manager", "analyst_t1", "analyst_t2", "analyst_t3", "detection_engineer"];
 // Roles that live in the console but are NOT SOC operators: they get the oversight landing, not the SOC dashboard.
 const OVERSIGHT_ONLY = ["org_sub_admin", "payer"];
-type NavItem = { label: string; href: string; icon: string; badge?: "incidents" | "alerts"; ready: boolean; roles?: string[] };
+// ALL_INTERNAL = every role that can reach the console. Say this explicitly when an item really is for everyone;
+// it must never be expressed by leaving `roles` off (see NavItem).
+const ALL_INTERNAL = [...PROVIDER, ...OVERSIGHT_ONLY];
+// `roles` is REQUIRED, not optional. It was optional, with canSee() defaulting an unmarked item to visible-to-all —
+// which is exactly how F4 happened: the oversight roles were shown a full SOC nav where every link 403s, because
+// nobody remembered to mark the Operations items. A fail-OPEN default in a visibility rule will eventually be
+// forgotten by someone; making it required moves that from "remember" to "the compiler won't let you forget".
+// Use ALL_INTERNAL to say "everyone in the console" deliberately, rather than by omission.
+type NavItem = { label: string; href: string; icon: string; badge?: "incidents" | "alerts"; ready: boolean; roles: readonly string[] };
 const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: "Operations",
@@ -80,9 +88,10 @@ const NAV: { section: string; items: NavItem[] }[] = [
   },
 ];
 
-// A nav item is visible when it declares no role restriction or when the current role is allowed.
+// A nav item is visible only when the current role is on its allow-list. Fail-CLOSED: no role, no item — there is
+// no "unmarked means everyone" path any more (see NavItem.roles).
 function canSee(item: NavItem, role?: string): boolean {
-  return !item.roles || (!!role && item.roles.includes(role));
+  return !!role && item.roles.includes(role);
 }
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {

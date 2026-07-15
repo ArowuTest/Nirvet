@@ -6,7 +6,7 @@
 // surface as an access notice rather than a broken page.
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, apiDelete, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiDelete, ApiError, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button, EmptyState } from "@/components/ui";
 
 type Tenant = { id: string; name: string; sector: string; country: string; service_tier: string; isolation_tier: string; status: string; external_ref?: string; created_at: string };
@@ -48,7 +48,7 @@ export default function AdminTenantsPage() {
       setMsg({ tone: "ok", text: ok });
       await load();
     } catch (e) {
-      setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "This requires a platform-admin role." : e instanceof Error ? e.message : "Failed." });
+      setMsg({ tone: "danger", text: errorText(e, "This requires a platform-admin role.", "Failed.") });
     }
   }
 
@@ -63,7 +63,7 @@ export default function AdminTenantsPage() {
       setMsg({ tone: "ok", text: "Invitation created — share the one-time link below with the tenant admin (valid 7 days)." });
       setInvite({ email: "", role: "customer_admin" });
     } catch (e) {
-      setMsg({ tone: "danger", text: e instanceof ApiError && e.status === 403 ? "This requires a platform-admin role." : e instanceof Error ? e.message : "Could not create invitation." });
+      setMsg({ tone: "danger", text: errorText(e, "This requires a platform-admin role.", "Could not create invitation.") });
     }
   }
 

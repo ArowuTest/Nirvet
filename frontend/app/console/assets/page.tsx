@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, KpiStrip, Kpi, Table, Th, Td, SevBadge, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Asset = { id: string; ref: string; name: string; kind: string; criticality: string; owner: string; tags: string[] | null; created_at: string };
@@ -67,8 +67,7 @@ export default function AssetsPage() {
       setShow(false);
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Registering an asset requires a manager role." : e instanceof Error ? e.message : "Failed to register." });
+      setMsg({ tone: "danger", text: errorText(e, "Registering an asset requires a manager role.", "Failed to register.") });
     } finally {
       setBusy(false);
     }

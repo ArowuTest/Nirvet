@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, Button } from "@/components/ui";
 
 type Descriptor = { key: string; name: string; category: string; direction: string; phase: string };
@@ -46,7 +46,7 @@ export default function NewConnectorPage() {
       });
       setResult({ source_key: r.source_key, id: r.connector?.id });
     } catch (e) {
-      setErr(e instanceof ApiError && e.status === 403 ? "Adding a connector requires a senior analyst role." : e instanceof Error ? e.message : "Create failed.");
+      setErr(errorText(e, "Adding a connector requires a senior analyst role.", "Create failed."));
     } finally {
       setBusy(false);
     }

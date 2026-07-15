@@ -6,7 +6,7 @@
 // 403 surfaced. These feed alert enrichment (the alert-detail "Threat intelligence" panel matches against this).
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Indicator = { id: string; type: string; value: string; tlp: string; score: number; tags: string[] | null; created_at: string };
@@ -70,8 +70,7 @@ export default function ThreatIntelPage() {
       setShow(false);
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Adding an indicator requires a senior analyst role." : e instanceof Error ? e.message : "Failed to add." });
+      setMsg({ tone: "danger", text: errorText(e, "Adding an indicator requires a senior analyst role.", "Failed to add.") });
     } finally {
       setBusy(false);
     }

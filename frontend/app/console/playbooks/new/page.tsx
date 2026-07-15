@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, Button } from "@/components/ui";
 
 type CatalogAction = { connector_key: string; action_key: string; title: string; risk_class?: string };
@@ -62,8 +62,7 @@ export default function NewPlaybookPage() {
       });
       router.push(`/console/playbooks${pb?.id ? `` : ``}`);
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setErr(forbidden ? "Authoring a playbook requires a SOAR-author role." : e instanceof Error ? e.message : "Create failed.");
+      setErr(errorText(e, "Authoring a playbook requires a SOAR-author role.", "Create failed."));
       setBusy(false);
     }
   }

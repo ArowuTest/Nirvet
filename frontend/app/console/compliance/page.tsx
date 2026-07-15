@@ -6,7 +6,7 @@
 // a manual status (PUT /compliance/status → manager-gated; 403 surfaced). Read for everyone else.
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPut, ApiError } from "@/lib/api";
+import { apiGet, apiPut, errorText } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, Kpi, KpiStrip, Button } from "@/components/ui";
 
 type Framework = { key: string; name: string; version: string; enabled: boolean };
@@ -66,8 +66,7 @@ export default function CompliancePage() {
       setMsg({ tone: "ok", text: `${control_ref} attested ${status.replace(/_/g, " ")}.` });
       await load(fw);
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Attesting a control requires a manager role." : e instanceof Error ? e.message : "Failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Attesting a control requires a manager role.", "Failed.") });
     }
   }
 

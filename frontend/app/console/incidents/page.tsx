@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, SevBadge, StatusTag, stageTone, EmptyState, Button } from "@/components/ui";
 
 type Incident = {
@@ -64,8 +64,7 @@ export default function IncidentsPage() {
       const inc = await apiPost<Incident>("/incidents", { title: form.title.trim(), severity: form.severity, category: form.category.trim() });
       router.push(`/console/incidents/${inc.id}`);
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Declaring an incident requires a senior analyst role." : e instanceof Error ? e.message : "Could not declare incident." });
+      setMsg({ tone: "danger", text: errorText(e, "Declaring an incident requires a senior analyst role.", "Could not declare incident.") });
       setBusy(false);
     }
   }

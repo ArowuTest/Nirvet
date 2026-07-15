@@ -7,7 +7,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, SevBadge, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Alert = {
@@ -90,9 +90,8 @@ export default function AlertDetailPage({ params }: { params: Promise<{ id: stri
       setMsg({ tone: "ok", text: ok });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
       const m = e instanceof Error ? e.message : "Action failed";
-      setMsg({ tone: "danger", text: forbidden ? "That action requires a senior analyst role." : m });
+      setMsg({ tone: "danger", text: errorText(e, "That action requires a senior analyst role.") });
     } finally {
       setBusy(false);
     }

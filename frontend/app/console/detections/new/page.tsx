@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { apiPost, ApiError } from "@/lib/api";
+import { apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, Button } from "@/components/ui";
 
 const FIELDS = ["class_name", "activity_name", "severity", "source", "actor_ref", "target_ref", "action", "outcome", "confidence"];
@@ -54,8 +54,7 @@ export default function NewDetectionPage() {
       });
       router.push(`/console/detections/${rule.id}`);
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setErr(forbidden ? "Creating a rule requires a detection-engineer role." : e instanceof Error ? e.message : "Create failed.");
+      setErr(errorText(e, "Creating a rule requires a detection-engineer role.", "Create failed."));
       setBusy(false);
     }
   }
