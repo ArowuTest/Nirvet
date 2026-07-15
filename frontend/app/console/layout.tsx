@@ -67,6 +67,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { label: "Tenants", href: "/console/admin/tenants", icon: "box", ready: true, roles: PADMIN },
       { label: "Identity", href: "/console/admin/iam", icon: "users", ready: true, roles: PADMIN },
+      { label: "Policies", href: "/console/admin/policies", icon: "shield", ready: true, roles: PADMIN },
       { label: "Risk score", href: "/console/admin/risk", icon: "activity", ready: true, roles: PADMIN },
       { label: "Branding", href: "/console/admin/branding", icon: "settings", ready: true, roles: PADMIN },
       { label: "AI config", href: "/console/admin/ai", icon: "activity", ready: true, roles: PADMIN },

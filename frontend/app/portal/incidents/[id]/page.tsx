@@ -36,6 +36,10 @@ export default function PortalIncidentDetail({ params }: { params: Promise<{ id:
   const summary = [
     ["Impact", inc.impact], ["Actions taken", inc.actions_taken], ["Root cause", inc.root_cause], ["Lessons learned", inc.lessons_learned],
   ].filter(([, v]) => v);
+  // Evidence shared with the customer = the evidence-kind entries of the customer-visible timeline (the
+  // projection already excludes internal ones). The full signed pack is a provider export by design, so we
+  // state honestly where it lives rather than offering a download the customer cannot have.
+  const evidence = (inc.timeline ?? []).filter((e) => e.kind === "evidence");
 
   return (
     <div>
@@ -61,6 +65,28 @@ export default function PortalIncidentDetail({ params }: { params: Promise<{ id:
                   </li>
                 ))}
               </ol>
+            )}
+          </Panel>
+
+          <Panel title="Evidence & chain of custody" sub="Artifacts your SOC has shared for this case">
+            {evidence.length === 0 ? (
+              <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>
+                No evidence artifacts have been shared with you for this case yet. Your SOC maintains a signed
+                evidence pack and an unbroken chain of custody for every case — ask your service contact if you
+                need it for an audit, claim or regulator submission.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {evidence.map((e, i) => (
+                  <li key={i} className="rounded-lg p-2.5" style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)" }}>
+                    <div className="flex items-center gap-2">
+                      <StatusTag tone="ok">evidence</StatusTag>
+                      <span className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>{fmt(e.at)}</span>
+                    </div>
+                    {e.note && <p className="mt-1 text-sm" style={{ color: "var(--c-ink-2)" }}>{e.note}</p>}
+                  </li>
+                ))}
+              </ul>
             )}
           </Panel>
 
