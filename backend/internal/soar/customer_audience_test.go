@@ -28,7 +28,7 @@ func TestCustomerSafeError_WithholdsInternalSOCState(t *testing.T) {
 		{"requester attribution", httpx.ErrForbidden("run has no requester; cannot be approved in this flow"), "requester"},
 		{"separation of duties", httpx.ErrForbidden("separation of duties: the requester may not approve"), "separation of duties"},
 		{"internal role taxonomy + tier", httpx.ErrForbidden("approver role 'analyst_t2' is insufficient to approve a high-risk action"), "analyst_t2"},
-		{"generic role gate", httpx.ErrForbidden("insufficient role"), "insufficient role"},
+		{"generic role gate", httpx.ErrInsufficientRole(), "insufficient role"},
 	}
 
 	for _, tc := range internal {
@@ -50,13 +50,14 @@ func TestCustomerSafeError_WithholdsInternalSOCState(t *testing.T) {
 
 func TestCustomerSafeError_LetsThroughWhatTheCustomerCanActOn(t *testing.T) {
 	// A refusal about the customer's OWN tenant policy is safe and useful — withholding it would just confuse.
-	out := customerSafeError(httpx.ErrForbidden(MsgCustomerApprovalDisabled))
+	// Allowlisted by CODE, so rewording the message cannot change what the boundary discloses.
+	out := customerSafeError(ErrCustomerApprovalDisabled())
 	var ae *httpx.APIError
 	if !asAPIError(out, &ae) {
 		t.Fatalf("expected an APIError, got %T", out)
 	}
-	if ae.Message != MsgCustomerApprovalDisabled {
-		t.Fatalf("message = %q, want the tenant-policy refusal passed through verbatim", ae.Message)
+	if ae.Code != CodeCustomerApprovalDisabled {
+		t.Fatalf("code = %q, want the tenant-policy refusal passed through", ae.Code)
 	}
 
 	// Errors about the caller's own request stay verbatim too (a stale run must say so, or the portal lies).

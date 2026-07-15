@@ -15,6 +15,7 @@ package soar
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -23,10 +24,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// MsgCustomerApprovalDisabled is the one 403 on the customer approval path that is ABOUT THE CUSTOMER'S OWN tenant
-// policy, so it is the only one the audience boundary lets through verbatim (see customerSafeError in handler.go).
-// It is a const rather than a literal precisely so the emit site and the allowlist cannot drift apart.
-const MsgCustomerApprovalDisabled = "customer approval is not enabled for this tenant"
+// CodeCustomerApprovalDisabled marks the one 403 on the customer approval path that is ABOUT THE CUSTOMER'S OWN
+// tenant policy — so it is the only refusal the audience boundary lets through verbatim (customerSafeError in
+// handler.go allowlists it by CODE, never by matching its prose).
+const CodeCustomerApprovalDisabled = "customer_approval_disabled"
+
+// ErrCustomerApprovalDisabled is returned when a customer tries to approve while their tenant still routes
+// authority to the platform analyst (the fail-safe default).
+func ErrCustomerApprovalDisabled() *httpx.APIError {
+	return &httpx.APIError{Status: http.StatusForbidden, Code: CodeCustomerApprovalDisabled,
+		Message: "customer approval is not enabled for this tenant"}
+}
 
 // Authority modes (source of truth for the customer_approval_policy.authority CHECK).
 const (
@@ -210,7 +218,7 @@ func (s *Service) ApproveViaLink(ctx context.Context, rawToken string) (*Playboo
 	}
 	policy := s.resolveCustomerPolicy(ctx, tenantID)
 	if policy.Authority == AuthorityPlatformAnalyst {
-		return nil, httpx.ErrForbidden(MsgCustomerApprovalDisabled)
+		return nil, ErrCustomerApprovalDisabled()
 	}
 	ref := policy.CustomerApproverRef
 	if ref == "" {

@@ -270,11 +270,12 @@ func customerSafeError(err error) error {
 	if !errors.As(err, &ae) {
 		return httpx.ErrInternal("could not record your decision")
 	}
+	// Allowlist by CODE, never by matching prose: a reworded message must not silently change what the boundary
+	// discloses (the same reason errorText dispatches on code in the SPA).
 	switch ae.Code {
 	case "bad_request", "not_found", "conflict":
 		return ae // about the caller's own request (bad id, stale run) — safe and actionable
-	}
-	if ae.Status == http.StatusForbidden && ae.Message == MsgCustomerApprovalDisabled {
+	case CodeCustomerApprovalDisabled:
 		return ae // about the customer's OWN tenant policy — safe and actionable
 	}
 	// Everything else at this boundary is internal gate state. Say only what the customer can act on; the real

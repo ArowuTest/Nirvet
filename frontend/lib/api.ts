@@ -72,10 +72,12 @@ export class ApiError extends Error {
   }
 }
 
-// GENERIC_DENIALS are the auth middleware's role-gate refusals (RequireRole → ErrForbidden("insufficient role")).
-// They carry no information beyond "your role is not on the allow-list", so for these — and only these — a caller's
-// contextual hint beats the server's own wording.
-const GENERIC_DENIALS = new Set(["insufficient role", "forbidden"]);
+/**
+ * CODE_INSUFFICIENT_ROLE mirrors httpx.CodeInsufficientRole — the auth middleware's role-gate refusal. It is the
+ * one 403 that carries no reason beyond "your role is not on the allow-list", so it is the one case where a
+ * caller's contextual hint beats the server's own wording.
+ */
+const CODE_INSUFFICIENT_ROLE = "insufficient_role";
 
 /**
  * errorText turns a failed request into the sentence an operator should actually read.
@@ -86,16 +88,19 @@ const GENERIC_DENIALS = new Set(["insufficient role", "forbidden"]);
  * platform an approver was told "requires an approver role" — false, they ARE one — and pointed at the wrong
  * remedy: escalate privileges. The true remedy was "a second person must approve" (J2).
  *
- * Rule: the server's reason wins, EXCEPT when it is the middleware's generic role sentinel, where `roleHint` is
- * genuinely more useful than "insufficient role". Never guess a reason the server did not give.
+ * Rule: the server's reason wins, EXCEPT for the role gate, where `roleHint` is genuinely more useful than
+ * "insufficient role". Never guess a reason the server did not give.
+ *
+ * We dispatch on `code`, not on the message text: Code is the contract's machine-readable channel (the same one
+ * the login flow uses for `mfa_required`), so rewording a message can never silently change behaviour here.
  */
 export function errorText(e: unknown, roleHint: string, fallback = "Action failed."): string {
   if (e instanceof ApiError) {
+    if (e.code === CODE_INSUFFICIENT_ROLE) return roleHint;
     const msg = (e.message ?? "").trim();
-    const generic = msg === "" || GENERIC_DENIALS.has(msg.toLowerCase()) || /^HTTP \d+$/.test(msg);
-    if (e.status === 403) return generic ? roleHint : msg;
-    if (!generic) return msg;
-    return fallback;
+    const useless = msg === "" || /^HTTP \d+$/.test(msg);
+    if (e.status === 403) return useless ? roleHint : msg;
+    return useless ? fallback : msg;
   }
   return e instanceof Error && e.message ? e.message : fallback;
 }

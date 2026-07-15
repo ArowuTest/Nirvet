@@ -24,8 +24,23 @@ func ErrUnauthorized(msg string) *APIError {
 	return &APIError{http.StatusUnauthorized, "unauthorized", msg}
 }
 func ErrForbidden(msg string) *APIError { return &APIError{http.StatusForbidden, "forbidden", msg} }
-func ErrNotFound(msg string) *APIError  { return &APIError{http.StatusNotFound, "not_found", msg} }
-func ErrConflict(msg string) *APIError  { return &APIError{http.StatusConflict, "conflict", msg} }
+
+// CodeInsufficientRole distinguishes the auth middleware's ROLE-gate refusal from every other 403. The two are
+// not alike: a domain refusal states a real, actionable reason ("separation of duties: the requester of a playbook
+// run may not approve it", "alert is not within your fleet scope"), whereas the role gate can only say "your role
+// is not on the allow-list" — true, and useless to an operator. Clients need to tell them apart to decide whether
+// to show the server's reason or their own contextual hint; Code is the machine-readable channel for exactly that
+// (the SPA already dispatches on `mfa_required` this way). Without it, clients are reduced to matching prose, and
+// a reworded message silently changes behaviour.
+const CodeInsufficientRole = "insufficient_role"
+
+// ErrInsufficientRole is the role-gate refusal. Use ONLY where the caller's ROLE is the whole reason; a domain
+// rule that merely involves a role (approver rank, four-eyes) must keep ErrForbidden and say what it means.
+func ErrInsufficientRole() *APIError {
+	return &APIError{http.StatusForbidden, CodeInsufficientRole, "insufficient role"}
+}
+func ErrNotFound(msg string) *APIError { return &APIError{http.StatusNotFound, "not_found", msg} }
+func ErrConflict(msg string) *APIError { return &APIError{http.StatusConflict, "conflict", msg} }
 func ErrInternal(msg string) *APIError {
 	return &APIError{http.StatusInternalServerError, "internal", msg}
 }

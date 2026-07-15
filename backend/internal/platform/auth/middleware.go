@@ -143,7 +143,9 @@ func RequireRole(roles ...Role) httpx.Middleware {
 				return
 			}
 			if !allowed[p.Role] {
-				httpx.Error(w, httpx.ErrForbidden("insufficient role"))
+				// Carries CodeInsufficientRole so a client can tell this apart from a domain refusal that also
+				// returns 403 and states a real reason (J2). Never widen this to domain rules.
+				httpx.Error(w, httpx.ErrInsufficientRole())
 				return
 			}
 			next.ServeHTTP(w, r)
