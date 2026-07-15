@@ -45,8 +45,31 @@ func NewService(exposure ExposureReader, compliance ComplianceReader, operationa
 	return &Service{exposure: exposure, compliance: compliance, operational: operational, cfg: cfg}
 }
 
-// Compute builds the tenant's current composite score from live signals + resolved config.
+// Compute builds the tenant's current composite score from live signals + resolved config. The operational
+// signal is the provider-wide SLA posture (every incident in the tenant).
 func (s *Service) Compute(ctx context.Context, tenantID uuid.UUID) (*Score, error) {
+	op := OperationalInput{}
+	if s.operational != nil {
+		if sm, err := s.operational.Summary(ctx, tenantID); err == nil && sm != nil {
+			op.OpenIncidents = sm.SLA.OpenIncidents
+			op.AckBreaching = sm.SLA.AckBreaching
+			op.ResolveBreaching = sm.SLA.ResolveBreaching
+			op.ResolvedLate = sm.SLA.ResolvedLate
+		}
+	}
+	return s.computeWith(ctx, tenantID, op)
+}
+
+// ComputeScoped builds the score with a caller-supplied operational input instead of the provider-wide SLA
+// summary. The customer read-model uses this so a customer's posture is derived only from the incidents that
+// audience can actually see: counting incidents still at a pre-customer-visible stage both contradicted the
+// customer's own incident list (posture said "3 open", the list showed none) and leaked the existence of cases
+// the customer is not cleared to see. Exposure/compliance signals and config are gathered as usual.
+func (s *Service) ComputeScoped(ctx context.Context, tenantID uuid.UUID, op OperationalInput) (*Score, error) {
+	return s.computeWith(ctx, tenantID, op)
+}
+
+func (s *Service) computeWith(ctx context.Context, tenantID uuid.UUID, op OperationalInput) (*Score, error) {
 	cfg, _ := s.cfg.Resolve(ctx, tenantID) // Resolve returns DefaultConfig on error (fail-safe)
 
 	ex := ExposureInput{BySeverity: map[string]int{}}
@@ -79,16 +102,6 @@ func (s *Service) Compute(ctx context.Context, tenantID uuid.UUID) (*Score, erro
 				cp.Present = true
 				cp.AvgCoveragePct = sum / n
 			}
-		}
-	}
-
-	op := OperationalInput{}
-	if s.operational != nil {
-		if sm, err := s.operational.Summary(ctx, tenantID); err == nil && sm != nil {
-			op.OpenIncidents = sm.SLA.OpenIncidents
-			op.AckBreaching = sm.SLA.AckBreaching
-			op.ResolveBreaching = sm.SLA.ResolveBreaching
-			op.ResolvedLate = sm.SLA.ResolvedLate
 		}
 	}
 

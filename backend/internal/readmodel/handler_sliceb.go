@@ -7,10 +7,12 @@ package readmodel
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/compliance"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
+	"github.com/ArowuTest/nirvet/internal/riskscore"
 	"github.com/ArowuTest/nirvet/internal/vulnerability"
 	"github.com/google/uuid"
 )
@@ -49,7 +51,15 @@ func (h *Handler) RiskScore(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusOK, map[string]any{"risk_score": ProjectRiskScoreForCustomer(nil)})
 		return
 	}
-	s, err := h.risk.Compute(r.Context(), p.TenantID)
+	// BUG-10: derive the operational signal from the incidents THIS audience can see, so the posture agrees with
+	// the customer's own incident list and never leaks the count of cases held at a pre-customer-visible stage.
+	// Best-effort like the service's other signals: a failed read contributes zero rather than failing the score.
+	pol, _ := h.policy.Resolve(r.Context(), p.TenantID) // fail-closed default on error
+	op := riskscore.OperationalInput{}
+	if incs, err := h.inc.List(r.Context(), p.TenantID); err == nil {
+		op = CustomerOperationalInput(incs, pol, time.Now())
+	}
+	s, err := h.risk.ComputeScoped(r.Context(), p.TenantID, op)
 	if err != nil {
 		httpx.Error(w, httpx.ErrInternal("could not compute risk score"))
 		return

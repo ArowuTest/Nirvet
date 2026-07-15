@@ -68,6 +68,9 @@ type ComplianceReader interface {
 // aggregate about the customer's OWN estate (counts + labels only) — customer-safe by construction. Slice B.
 type RiskScorer interface {
 	Compute(ctx context.Context, tenantID uuid.UUID) (*riskscore.Score, error)
+	// ComputeScoped takes the operational signal from the caller so the customer's posture can be derived from
+	// only the incidents that audience can see (BUG-10) — see CustomerOperationalInput.
+	ComputeScoped(ctx context.Context, tenantID uuid.UUID, op riskscore.OperationalInput) (*riskscore.Score, error)
 }
 
 // SoarApprovalReader lists the runs awaiting the customer's approval (satisfied by soar.Service). The item is

@@ -5,6 +5,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/incident"
+	"github.com/ArowuTest/nirvet/internal/riskscore"
 	"github.com/google/uuid"
 )
 
@@ -30,6 +31,35 @@ type DisclosurePolicy struct {
 // This is the row-scope gate; a false result means the incident is not returned to a customer at all.
 func (p DisclosurePolicy) IncidentCustomerVisible(inc incident.Incident) bool {
 	return p.CustomerVisibleStages[inc.Stage]
+}
+
+// CustomerOperationalInput derives the risk-score operational signal from ONLY the incidents this customer
+// audience can see (BUG-10). The provider score counts every incident in the tenant via the reporting SLA
+// summary; reusing that for the customer was wrong twice over: the posture contradicted the customer's own
+// incident list (which row-gates on stage), and the count leaked how many cases exist at stages the customer
+// is not cleared to see. The per-incident predicates below mirror reporting's SLA SQL exactly — the ONLY
+// difference is the IncidentCustomerVisible filter, so provider and customer stay consistent by construction.
+func CustomerOperationalInput(incs []incident.Incident, pol DisclosurePolicy, now time.Time) riskscore.OperationalInput {
+	op := riskscore.OperationalInput{}
+	for _, inc := range incs {
+		if !pol.IncidentCustomerVisible(inc) {
+			continue // row-gate: same filter ListIncidents applies
+		}
+		if inc.ClosedAt == nil { // open := closed_at IS NULL
+			op.OpenIncidents++
+			if inc.AckDueAt != nil && inc.AckDueAt.Before(now) && inc.AcknowledgedAt == nil {
+				op.AckBreaching++
+			}
+			if inc.ResolveDueAt != nil && inc.ResolveDueAt.Before(now) {
+				op.ResolveBreaching++
+			}
+			continue
+		}
+		if inc.ResolveDueAt != nil && inc.ClosedAt.After(*inc.ResolveDueAt) {
+			op.ResolvedLate++
+		}
+	}
+	return op
 }
 
 // ---- Customer audience (redacted projection of the tenant's own work-products) ----
