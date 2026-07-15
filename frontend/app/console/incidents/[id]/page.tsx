@@ -8,7 +8,7 @@
 
 import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, apiPut, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPut, errorText } from "@/lib/api";
 import { PageHeader, Panel, SevBadge, StatusTag, stageTone, EmptyState, Button } from "@/components/ui";
 
 type Incident = {
@@ -131,16 +131,16 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       setMsg({ tone: "ok", text: ok });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      const m = e instanceof Error ? e.message : "Action failed";
-      setMsg({ tone: "danger", text: forbidden ? "That action requires a senior analyst role." : m });
+      setMsg({ tone: "danger", text: errorText(e, "That action requires a senior analyst role.") });
     } finally {
       setBusy(false);
     }
   }
 
-  // Approve/reject a pending SOAR run inline. Distinct from act() because the 403 here means "not an approver"
-  // (soarApprover — soc_manager/platform_admin), not "not senior". Self-approval is also blocked server-side.
+  // Approve/reject a pending SOAR run inline. A 403 here is usually NOT about role: the commonest refusal is
+  // separation of duties (the requester may not approve their own run), and the server says so precisely. errorText
+  // surfaces the server's reason and only falls back to the role hint when the server gave the generic sentinel —
+  // otherwise an approver gets told they lack a role they hold, and goes hunting for privileges they don't need (J2).
   async function decide(runId: string, action: "approve" | "reject") {
     setMsg(null);
     setBusy(true);
@@ -149,8 +149,7 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       setMsg({ tone: "ok", text: `Run ${action === "approve" ? "approved" : "rejected"}.` });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Approving or rejecting a run requires an approver role (SOC manager)." : e instanceof Error ? e.message : "Action failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Approving or rejecting a run requires an approver role (SOC manager).") });
     } finally {
       setBusy(false);
     }
@@ -170,8 +169,7 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       URL.revokeObjectURL(url);
       setMsg({ tone: "ok", text: "Signed evidence pack downloaded." });
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Exporting an evidence pack requires a senior analyst role." : e instanceof Error ? e.message : "Export failed." });
+      setMsg({ tone: "danger", text: errorText(e, "Exporting an evidence pack requires a senior analyst role.", "Export failed.") });
     } finally {
       setBusy(false);
     }

@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, errorText } from "@/lib/api";
 import { PageHeader, Panel, StatusTag, EmptyState, Button } from "@/components/ui";
 
 type Step = { name?: string; connector_key?: string; action?: string };
@@ -52,8 +52,8 @@ export default function PlaybooksPage() {
       setMsg({ tone: "ok", text: `Run ${action === "approve" ? "approved" : "rejected"}.` });
       await load();
     } catch (e) {
-      const forbidden = e instanceof ApiError && e.status === 403;
-      setMsg({ tone: "danger", text: forbidden ? "Approving a run requires an approver role." : e instanceof Error ? e.message : "Action failed." });
+      // The commonest refusal here is separation of duties, not role — surface the server's reason (J2).
+      setMsg({ tone: "danger", text: errorText(e, "Approving a run requires an approver role.") });
     } finally {
       setBusy(null);
     }

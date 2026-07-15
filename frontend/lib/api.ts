@@ -72,6 +72,34 @@ export class ApiError extends Error {
   }
 }
 
+// GENERIC_DENIALS are the auth middleware's role-gate refusals (RequireRole → ErrForbidden("insufficient role")).
+// They carry no information beyond "your role is not on the allow-list", so for these — and only these — a caller's
+// contextual hint beats the server's own wording.
+const GENERIC_DENIALS = new Set(["insufficient role", "forbidden"]);
+
+/**
+ * errorText turns a failed request into the sentence an operator should actually read.
+ *
+ * Every DOMAIN refusal in this API states its real reason — "separation of duties: the requester of a playbook run
+ * may not approve it", "alert is not within your fleet scope", "break-glass may elevate at most one tier above your
+ * base role". Screens used to discard that and guess a ROLE cause, so at the most consequential moment in the
+ * platform an approver was told "requires an approver role" — false, they ARE one — and pointed at the wrong
+ * remedy: escalate privileges. The true remedy was "a second person must approve" (J2).
+ *
+ * Rule: the server's reason wins, EXCEPT when it is the middleware's generic role sentinel, where `roleHint` is
+ * genuinely more useful than "insufficient role". Never guess a reason the server did not give.
+ */
+export function errorText(e: unknown, roleHint: string, fallback = "Action failed."): string {
+  if (e instanceof ApiError) {
+    const msg = (e.message ?? "").trim();
+    const generic = msg === "" || GENERIC_DENIALS.has(msg.toLowerCase()) || /^HTTP \d+$/.test(msg);
+    if (e.status === 403) return generic ? roleHint : msg;
+    if (!generic) return msg;
+    return fallback;
+  }
+  return e instanceof Error && e.message ? e.message : fallback;
+}
+
 async function parseError(res: Response): Promise<ApiError> {
   let code = "error";
   let message = res.statusText || `HTTP ${res.status}`;
