@@ -90,7 +90,7 @@ func newFleetFixture(t *testing.T, mode string) *fleetFixture {
 // the TARGET tenant's, never the operator's. isolate is emergency-authorized (auto-eligible) so the fire
 // reaches the supervisor gate directly.
 func TestRunForTarget_AuthorityResolvesInTarget(t *testing.T) {
-	fx := newFleetFixture(t, "emergency")
+	fx := newFleetFixture(t, "contractual_auto")
 	ctx := context.Background()
 
 	// The operator's OWN tenant has the destructive gate ON — this must be irrelevant to a fire on the target.

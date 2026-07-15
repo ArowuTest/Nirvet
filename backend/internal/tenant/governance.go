@@ -112,7 +112,11 @@ type ChangeHistoryEntry struct {
 
 var validSeverity = map[string]bool{"informational": true, "low": true, "medium": true, "high": true, "critical": true}
 var validChannel = map[string]bool{"email": true, "sms": true, "webhook": true, "teams": true, "slack": true}
-var validAuthorityMode = map[string]bool{"observe": true, "approval": true, "pre_authorized": true, "emergency": true}
+
+// "contractual_auto" was called "emergency" until migration 0127 — a name that read as an emergency STOP while
+// being the most permissive mode in the system (it auto-runs everything below business_critical). Renamed so an
+// operator cannot reach for the brakes and hit the accelerator; the actual stop is "observe".
+var validAuthorityMode = map[string]bool{"observe": true, "approval": true, "pre_authorized": true, "contractual_auto": true}
 
 // validateEscalationAddress checks an escalation-contact address for its channel (Round-4 L4). The
 // URL channels (webhook/teams/slack) must be https and must NOT target an internal/loopback/link-
@@ -467,17 +471,17 @@ func (s *Service) SetAuthorityPolicy(ctx context.Context, p auth.Principal, tena
 		return nil, httpx.ErrBadRequest("invalid mode: observe|approval|pre_authorized|emergency")
 	}
 	// Round-4 L3: the blanket '*' catch-all may only set a RESTRICTIVE mode (observe|approval).
-	// Permissive modes (pre_authorized|emergency) auto-run actions, so they must be scoped to a
+	// Permissive modes (pre_authorized|contractual_auto) auto-run actions, so they must be scoped to a
 	// specific action_type — a single customer-side change must not drop the response gate for EVERY
 	// action at once.
-	if in.ActionType == "*" && (in.Mode == "pre_authorized" || in.Mode == "emergency") {
-		return nil, httpx.ErrBadRequest("the '*' catch-all may only be 'observe' or 'approval'; scope pre_authorized/emergency to a specific action_type")
+	if in.ActionType == "*" && (in.Mode == "pre_authorized" || in.Mode == "contractual_auto") {
+		return nil, httpx.ErrBadRequest("the '*' catch-all may only be 'observe' or 'approval'; scope pre_authorized/contractual_auto to a specific action_type")
 	}
 	// Round-4 R-3: a PERMISSIVE mode (auto-runs the action) requires a provider platform_admin —
 	// a customer_admin may only TIGHTEN (observe|approval), never unilaterally enable autonomous
-	// containment for a specific action (e.g. isolate_endpoint → emergency). Overrides tighten only.
-	if (in.Mode == "pre_authorized" || in.Mode == "emergency") && p.Role != auth.RolePlatformAdmin {
-		return nil, httpx.ErrForbidden("a permissive authority mode (pre_authorized/emergency) may only be set by a platform_admin")
+	// containment for a specific action (e.g. isolate_endpoint → contractual_auto). Overrides tighten only.
+	if (in.Mode == "pre_authorized" || in.Mode == "contractual_auto") && p.Role != auth.RolePlatformAdmin {
+		return nil, httpx.ErrForbidden("a permissive authority mode (pre_authorized/contractual_auto) may only be set by a platform_admin")
 	}
 	ap := &AuthorityPolicy{ID: uuid.New(), TenantID: tenantID, ActionType: in.ActionType, Mode: in.Mode,
 		ApproverRole: in.ApproverRole, BusinessHoursOnly: in.BusinessHoursOnly, Active: true}

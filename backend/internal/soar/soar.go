@@ -20,10 +20,14 @@ import (
 type AuthorityMode string
 
 const (
-	AuthorityObserve   AuthorityMode = "observe"        // recommend only
-	AuthorityApproval  AuthorityMode = "approval"       // customer/SOC approves
-	AuthorityPreAuth   AuthorityMode = "pre_authorized" // agreed low-risk actions auto-run
-	AuthorityEmergency AuthorityMode = "emergency"      // critical-tier, contractual
+	AuthorityObserve  AuthorityMode = "observe"        // recommend only — nothing auto-runs. THIS is the fail-closed stop.
+	AuthorityApproval AuthorityMode = "approval"       // customer/SOC approves
+	AuthorityPreAuth  AuthorityMode = "pre_authorized" // agreed low-risk actions auto-run
+	// AuthorityContractualAuto is the MOST PERMISSIVE mode: every risk class except business_critical auto-runs
+	// with no human approval (see Allowed). It was called "emergency" until 0127 — a name that reads as an
+	// emergency STOP and is the exact opposite of what it does. Renamed because it misled a reviewer of this very
+	// package, and would mislead a platform_admin reaching for the brakes at 2am. The brake is AuthorityObserve.
+	AuthorityContractualAuto AuthorityMode = "contractual_auto" // contractually pre-agreed autonomous execution
 	// NOTE: spelling unified on "pre_authorized" (American) to match the per-action
 	// authority policy store (tenant.authority_policies) that SOAR now consumes (Phase 0).
 )
@@ -172,10 +176,11 @@ type PlaybookRun struct {
 // approval) under the tenant's authority-to-act mode. The rule set (SOAR-004/005, §9.5):
 //   - business_critical (Class 4) NEVER auto-executes under ANY mode — the §9.5 "no full autonomous
 //     execution in MVP/V1" guarantee, enforced in code so no misconfiguration can bypass it.
-//   - observe: nothing auto-runs (recommend-only) — fully fail-closed.
+//   - observe: nothing auto-runs (recommend-only) — fully fail-closed. THIS is the stop.
 //   - approval: only informational + low auto-run; medium/high await approval.
 //   - pre_authorized: informational + low + medium auto-run (agreed lower-risk containment).
-//   - emergency: everything except business_critical auto-runs (contractual high-impact response).
+//   - contractual_auto: everything except business_critical auto-runs (contractual high-impact response) — the
+//     MOST PERMISSIVE mode. Named "emergency" until 0127, which read as its own opposite.
 func Allowed(mode AuthorityMode, risk RiskClass) bool {
 	if risk == RiskBusinessCritical {
 		return false // Class 4: incident-commander + customer authority only, never autonomous
@@ -187,7 +192,7 @@ func Allowed(mode AuthorityMode, risk RiskClass) bool {
 		return risk == RiskInformational || risk == RiskLow
 	case AuthorityPreAuth:
 		return risk == RiskInformational || risk == RiskLow || risk == RiskMedium
-	case AuthorityEmergency:
+	case AuthorityContractualAuto:
 		return true // all but business_critical (handled above)
 	default:
 		return false

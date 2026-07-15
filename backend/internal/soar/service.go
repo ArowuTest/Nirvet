@@ -98,7 +98,7 @@ func stepParams(incidentID *uuid.UUID, playbook, step string) map[string]any {
 }
 
 var validModes = map[AuthorityMode]bool{
-	AuthorityObserve: true, AuthorityApproval: true, AuthorityPreAuth: true, AuthorityEmergency: true,
+	AuthorityObserve: true, AuthorityApproval: true, AuthorityPreAuth: true, AuthorityContractualAuto: true,
 }
 
 // resolveDecision returns the effective authority mode + approver-role floor + business-hours-only

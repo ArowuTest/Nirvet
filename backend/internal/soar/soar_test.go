@@ -48,8 +48,8 @@ func TestAuthorityMatrix(t *testing.T) {
 		{AuthorityPreAuth, RiskLow, true}, // pre-auth: informational + low + medium
 		{AuthorityPreAuth, RiskMedium, true},
 		{AuthorityPreAuth, RiskHigh, false},
-		{AuthorityEmergency, RiskHigh, true}, // emergency: up to high
-		{"bogus", RiskLow, false},            // unknown mode denies
+		{AuthorityContractualAuto, RiskHigh, true}, // contractual_auto: up to high
+		{"bogus", RiskLow, false},                  // unknown mode denies
 	}
 	for _, c := range cases {
 		if got := Allowed(c.mode, c.risk); got != c.want {
@@ -61,7 +61,7 @@ func TestAuthorityMatrix(t *testing.T) {
 // TestBusinessCriticalNeverAutonomous locks the §9.5 Class-4 guarantee: a business_critical action
 // NEVER auto-executes under ANY authority mode — including emergency.
 func TestBusinessCriticalNeverAutonomous(t *testing.T) {
-	for _, mode := range []AuthorityMode{AuthorityObserve, AuthorityApproval, AuthorityPreAuth, AuthorityEmergency} {
+	for _, mode := range []AuthorityMode{AuthorityObserve, AuthorityApproval, AuthorityPreAuth, AuthorityContractualAuto} {
 		if Allowed(mode, RiskBusinessCritical) {
 			t.Fatalf("business_critical must never auto-run, but Allowed(%s, business_critical)=true", mode)
 		}
