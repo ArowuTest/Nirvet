@@ -235,6 +235,21 @@ export function apiGet<T = unknown>(path: string): Promise<T> {
   return request<T>(path, { method: "GET" });
 }
 
+// apiGetCached dedupes a GET across near-simultaneous callers: it shares the in-flight promise and briefly caches
+// the resolved value (default 10s TTL) keyed by path. Used for hot, cheap read endpoints fetched by both the shell
+// and a page on the same render (e.g. /reports/summary → nav badges + dashboard KPIs) so they hit the API once.
+// A rejection is never cached. Callers wanting a forced refresh can pass ttlMs=0.
+const _getCache = new Map<string, { at: number; p: Promise<unknown> }>();
+export function apiGetCached<T = unknown>(path: string, ttlMs = 10000): Promise<T> {
+  const now = Date.now();
+  const hit = _getCache.get(path);
+  if (hit && now - hit.at < ttlMs) return hit.p as Promise<T>;
+  const p = request<T>(path, { method: "GET" });
+  _getCache.set(path, { at: now, p });
+  p.catch(() => { if (_getCache.get(path)?.p === p) _getCache.delete(path); }); // never cache a failure
+  return p;
+}
+
 export function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
   return request<T>(path, { method: "POST", body });
 }

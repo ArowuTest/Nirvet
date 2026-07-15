@@ -8,7 +8,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { getMe, logout, logoutAll, apiGet, type Me } from "@/lib/api";
+import { getMe, logout, logoutAll, apiGet, apiGetCached, type Me } from "@/lib/api";
 import { Icon, NirvetMark } from "@/components/icons";
 
 type NavItem = { label: string; href: string; icon: string; badge?: "incidents" | "alerts"; ready: boolean };
@@ -85,7 +85,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         }
         setMe(u);
         setState("ready");
-        apiGet<{ open_incidents: number; open_alerts: number }>("/reports/summary")
+        apiGetCached<{ open_incidents: number; open_alerts: number }>("/reports/summary")
           .then((s) => alive && setCounts({ incidents: s.open_incidents, alerts: s.open_alerts }))
           .catch(() => {});
         apiGet<{ unread_count: number }>("/notify/inbox/unread-count")
@@ -282,7 +282,17 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
           </div>
         </aside>
 
-        <main className="flex-1 overflow-y-auto p-8">{children}</main>
+        <main className="flex-1 overflow-y-auto p-8">
+          {/* Enforce MFA for platform admins: a persistent, non-dismissible prompt until enrolled (a hard block
+              is avoided so a not-yet-enrolled admin can't be locked out — enrollment lives one click away). */}
+          {me?.role === "platform_admin" && me?.mfa_enabled === false && pathname !== "/console/settings" && (
+            <div className="mb-6 flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm" style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid var(--c-border)" }}>
+              <span>Multi-factor authentication is required for platform-admin accounts and is not yet enabled on yours.</span>
+              <Link href="/console/settings" className="shrink-0 rounded-lg px-3 py-1.5 font-semibold" style={{ background: "#ef4444", color: "#fff" }}>Enable MFA</Link>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
     </div>
   );

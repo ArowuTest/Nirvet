@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiGetCached } from "@/lib/api";
 import { Panel, KpiStrip, Kpi, SevBadge, StatusTag, stageTone, PageHeader, Table, Th, Td, EmptyState } from "@/components/ui";
 
 type Summary = {
@@ -34,7 +34,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     Promise.allSettled([
-      apiGet<Summary>("/reports/summary"),
+      apiGetCached<Summary>("/reports/summary"),
       apiGet<{ incidents: Incident[] | null }>("/incidents/at-risk"),
       apiGet<{ alerts: Alert[] | null }>("/alerts"),
     ]).then(([s, i, a]) => {

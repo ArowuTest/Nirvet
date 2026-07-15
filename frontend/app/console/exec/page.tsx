@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiGetCached } from "@/lib/api";
 import { PageHeader, Panel, KpiStrip, Kpi, StatusTag, EmptyState } from "@/components/ui";
 
 type MeanTimes = { window_days: number; mtta_seconds: number | null; mttr_seconds: number | null; acknowledged_count: number; resolved_count: number };
@@ -52,7 +52,7 @@ export default function ExecPage() {
   useEffect(() => {
     (async () => {
       const [s, e, r] = await Promise.allSettled([
-        apiGet<Summary>("/reports/summary"),
+        apiGetCached<Summary>("/reports/summary"),
         apiGet<Exposure>("/exposure/summary"),
         apiGet<RiskScore>("/risk-score"),
       ]);

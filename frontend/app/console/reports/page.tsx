@@ -7,7 +7,7 @@
 // are tracked in-session with their download links.
 
 import { useEffect, useRef, useState } from "react";
-import { apiGet, apiPost, API_BASE, ApiError } from "@/lib/api";
+import { apiGet, apiGetCached, apiPost, API_BASE, ApiError } from "@/lib/api";
 import { PageHeader, Panel, KpiStrip, Kpi, StatusTag, Button } from "@/components/ui";
 
 type Summary = {
@@ -39,7 +39,7 @@ export default function ReportsPage() {
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
-    apiGet<Summary>("/reports/summary").then(setSum).catch(() => {});
+    apiGetCached<Summary>("/reports/summary").then(setSum).catch(() => {});
     return () => {
       Object.values(timers.current).forEach(clearTimeout);
     };
