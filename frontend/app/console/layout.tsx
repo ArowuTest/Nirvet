@@ -21,6 +21,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Incidents", href: "/console/incidents", icon: "alert-circle", badge: "incidents", ready: true },
       { label: "Alerts", href: "/console/alerts", icon: "alert-triangle", badge: "alerts", ready: true },
       { label: "Threat Hunt", href: "/console/hunt", icon: "shield", ready: true },
+      { label: "Notebooks", href: "/console/notebooks", icon: "file-text", ready: true },
       { label: "Detections", href: "/console/detections", icon: "target", ready: true },
       { label: "Assets", href: "/console/assets", icon: "box", ready: true },
       { label: "Entity graph", href: "/console/entities", icon: "share-2", ready: true },

@@ -742,6 +742,16 @@ func main() {
 	// §6.9 #124 I-1 investigation hunt-query (INV-006 / API-INV-006 + API-INV-001). Provider-gated (analyst_t1+);
 	// allow-listed predicates compile to bound-param SQL under the tenant's RLS context, every run read-audited.
 	mux.Handle("POST /investigation/run-hunt-query", provider(investigationH.RunHunt))
+
+	// §6.9 slice B / B2: investigation notebooks — private per-analyst working notebooks of ordered cells
+	// (note markdown / saved hunt-query text). A query cell only STORES text; execution stays run-hunt-query.
+	mux.Handle("POST /investigation/notebooks", provider(investigationH.CreateNotebook))
+	mux.Handle("GET /investigation/notebooks", provider(investigationH.ListNotebooks))
+	mux.Handle("GET /investigation/notebooks/{id}", provider(investigationH.GetNotebook))
+	mux.Handle("POST /investigation/notebooks/{id}/cells", provider(investigationH.AddCell))
+	mux.Handle("PUT /investigation/notebooks/{id}/cells/{cid}", provider(investigationH.UpdateCell))
+	mux.Handle("DELETE /investigation/notebooks/{id}/cells/{cid}", provider(investigationH.DeleteCell))
+	mux.Handle("POST /investigation/notebooks/{id}/cells/{cid}/move", provider(investigationH.MoveCell))
 	mux.Handle("PATCH /investigation/search-events", provider(investigationH.RunHunt))
 	// §6.9 #124 I-3 typed entity profile + pivot (INV-003/004 / API-INV-002/003). Composes the tenant-scoped
 	// entitygraph service; a pivot neighbor is derived from the tenant's own alerts, never a cross-tenant ref.

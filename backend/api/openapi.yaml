@@ -1434,6 +1434,18 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /investigation/notebooks:
+    get: { tags: [investigation], summary: List the caller's investigation notebooks, responses: { '200': { description: notebooks } } }
+    post: { tags: [investigation], summary: Create an investigation notebook, requestBody: { content: { application/json: { schema: { type: object, properties: { title: { type: string }, incident_ref: { type: string } } } } } }, responses: { '201': { description: notebook }, '400': { description: bad request } } }
+  /investigation/notebooks/{id}:
+    get: { tags: [investigation], summary: Get a notebook + cells, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: notebook and cells }, '404': { description: not found } } }
+  /investigation/notebooks/{id}/cells:
+    post: { tags: [investigation], summary: Append a cell (note or query), parameters: [{ name: id, in: path, required: true, schema: { type: string } }], requestBody: { required: true, content: { application/json: { schema: { type: object, required: [kind], properties: { kind: { type: string, enum: [note, query] }, content: { type: string } } } } } }, responses: { '201': { description: cell }, '400': { description: bad request }, '404': { description: not found } } }
+  /investigation/notebooks/{id}/cells/{cid}:
+    put: { tags: [investigation], summary: Update a cell's content, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: updated }, '404': { description: not found } } }
+    delete: { tags: [investigation], summary: Delete a cell, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted }, '404': { description: not found } } }
+  /investigation/notebooks/{id}/cells/{cid}/move:
+    post: { tags: [investigation], summary: Move a cell up or down, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }], requestBody: { content: { application/json: { schema: { type: object, properties: { dir: { type: string, enum: [up, down] } } } } } }, responses: { '200': { description: moved }, '404': { description: not found } } }
   /investigation/search-events:
     patch:
       tags: [investigation]
