@@ -110,6 +110,18 @@ export default function CompliancePage() {
                     <span className="text-xs tabular-nums" style={{ color: "var(--c-ink-2)" }}>{fn.score}%</span>
                     <span style={{ color: "var(--c-ink-3)" }}>{isOpen ? "▲" : "▼"}</span>
                   </button>
+                  {isOpen && (fn.controls ?? []).length === 0 && (
+                    // BUG-6: some functions have no broken-out sub-controls; expanding must still reveal detail
+                    // (the aggregate assessment) rather than collapsing to a blank panel.
+                    <div className="px-5 py-4" style={{ borderTop: "1px solid var(--c-border)" }}>
+                      <p className="text-sm" style={{ color: "var(--c-ink-2)" }}>
+                        Assessed as <b>{fn.status.replace(/_/g, " ")}</b> at {fn.score}% coverage.
+                      </p>
+                      <p className="mt-1 text-[12px]" style={{ color: "var(--c-ink-3)" }}>
+                        No individual sub-controls are broken out for this function — the score aggregates its measured signals across the framework.
+                      </p>
+                    </div>
+                  )}
                   {isOpen && (fn.controls ?? []).length > 0 && (
                     <ul style={{ borderTop: "1px solid var(--c-border)" }}>
                       {(fn.controls ?? []).map((c) => (
