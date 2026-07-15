@@ -31,7 +31,13 @@ services:
     dockerfilePath: backend/Dockerfile
     dockerContext: backend
     healthCheckPath: /healthz
-    preDeployCommand: /app/migrate      # applies migrations as the DB owner (before boot)
+    # preDeployCommand runs migrations before boot on paid instances — BUT Render FREE web services do NOT execute
+    # preDeployCommand (the field is silently empty on the live free service), which left the DB behind on
+    # 0121-0126 (Copilot/Notebooks/Risk-config 500). The API now ALSO self-migrates on boot when
+    # NIRVET_MIGRATE_DATABASE_URL is set (cmd/api/main.go → dbmigrate.Run, idempotent + advisory-locked), so the
+    # schema self-heals on every deploy regardless of plan. This preDeployCommand is kept for paid tiers (harmless
+    # double-cover: boot-migrate then finds everything already applied).
+    preDeployCommand: /app/migrate
     disk:
       name: nirvet-blobs
       mountPath: /data

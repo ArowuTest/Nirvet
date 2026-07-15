@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -46,6 +47,7 @@ import (
 	"github.com/ArowuTest/nirvet/internal/platform/config"
 	"github.com/ArowuTest/nirvet/internal/platform/crypto"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
+	"github.com/ArowuTest/nirvet/internal/platform/dbmigrate"
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/ArowuTest/nirvet/internal/platform/logger"
@@ -120,6 +122,20 @@ func main() {
 	defer func() { _ = traceShutdown(context.Background()) }()
 	if cfg.OTLPEndpoint != "" {
 		log.Info("tracing enabled", "otlp_endpoint", cfg.OTLPEndpoint)
+	}
+
+	// Boot-time self-migration (fixes the class where the host's pre-deploy hook doesn't run — e.g. Render free web
+	// services don't execute preDeployCommand, which silently left the live DB behind on 0121-0126). When the OWNER
+	// migrate URL is set, apply pending migrations as the owner BEFORE the app connects as the non-owner nirvet_app.
+	// Idempotent + advisory-locked (multi-instance safe); fail-closed — a DB we can't migrate must not serve a
+	// half-applied schema.
+	if migrateURL := os.Getenv("NIRVET_MIGRATE_DATABASE_URL"); migrateURL != "" {
+		n, err := dbmigrate.Run(ctx, migrateURL, func(f string, a ...any) { log.Info(fmt.Sprintf(f, a...)) })
+		if err != nil {
+			log.Error("boot migration failed", "err", err)
+			os.Exit(1)
+		}
+		log.Info("boot migration complete", "applied", n)
 	}
 
 	db, err := database.Connect(ctx, cfg.DatabaseURL)
