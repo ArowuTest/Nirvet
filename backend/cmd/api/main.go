@@ -635,7 +635,12 @@ func main() {
 	mux.Handle("GET /admin/tenants/{id}/correlation-policy", ssoAdmin(tenantH.GetCorrelation))
 	mux.Handle("PUT /admin/tenants/{id}/correlation-policy", ssoAdmin(tenantH.SetCorrelation))
 	mux.Handle("GET /admin/tenants/{id}/history", ssoAdmin(tenantH.ListHistory))
-	mux.Handle("GET /admin/audit", ssoAdmin(auditH.List)) // immutable audit-trail search (Bucket-2, GOV-001/ADMIN-004)
+	// GOV-001/ADMIN-004: the immutable audit-trail search returns the RAW audit_log for the caller's tenant, which
+	// mixes OPERATOR/MSSP actions (analyst triage, SOAR, containment, AI calls, offboarding) with tenant actions.
+	// That is an operator/governance surface, not a customer self-service one — so it is platform_admin ONLY
+	// (padmin). It must NOT sit on ssoAdmin (which includes customer_admin): a customer's own view of activity goes
+	// through the audience-fenced read-model, never the raw operator audit trail. Regression-locked in main_test.go.
+	mux.Handle("GET /admin/audit", padmin(auditH.List))
 	// Service accounts + API keys (§6.2 IAM-001/005/008). Programmatic principals for
 	// connectors/customer scripts; the raw key is shown once at creation.
 	mux.Handle("POST /admin/tenants/{id}/service-accounts", ssoAdmin(iamH.CreateServiceAccount))

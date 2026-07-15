@@ -1,8 +1,10 @@
 package audit
 
 // HTTP surface for the immutable audit trail (SRS §11.2 GOV-001; ADMIN-004). Read-only, tenant-scoped by RLS
-// (FindByActionContains reads under WithTenant), and role-gated at the route (ssoAdmin). A caller can search by a
-// substring of the action or target and cap the result; entries are returned most-recent-first for the UI.
+// (FindByActionContains reads under WithTenant), and gated at the route to platform_admin ONLY (padmin) — the raw
+// audit_log is an operator/governance surface that mixes operator (MSSP) actions with tenant actions, so it must
+// NOT be exposed to customer_admin; a customer's own activity view goes through the audience-fenced read-model. A
+// caller can search by a substring of the action or target and cap the result; entries are most-recent-first.
 
 import (
 	"net/http"
