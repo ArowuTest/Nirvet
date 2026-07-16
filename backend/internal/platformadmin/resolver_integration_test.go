@@ -88,13 +88,13 @@ func TestResolve_CrossTenantFlagIsolation(t *testing.T) {
 
 	// Clean baseline for the key (shared persistent DB): no global row, so B's only possible source is its own
 	// tenant row — which it does not have.
-	clearFlag(t, db, "ui.new_dashboard_beta")
+	clearFlag(t, db, TestFlagOpen)
 	// Tenant A turns an open flag ON for itself only (secure default is OFF).
-	seedFlag(t, db, "tenant", a.String(), "ui.new_dashboard_beta", true)
-	if !r.Enabled(ctx, a, "ui.new_dashboard_beta") {
+	seedFlag(t, db, "tenant", a.String(), TestFlagOpen, true)
+	if !r.Enabled(ctx, a, TestFlagOpen) {
 		t.Fatal("tenant A must see its own override (on)")
 	}
-	if r.Enabled(ctx, b, "ui.new_dashboard_beta") {
+	if r.Enabled(ctx, b, TestFlagOpen) {
 		t.Fatal("cross-tenant leak: tenant B must NOT see tenant A's flag override (resolves to secure default off)")
 	}
 }
@@ -105,12 +105,12 @@ func TestResolve_OpenPrecedence(t *testing.T) {
 	tid := paTenant(t, db)
 	r := NewFlagResolver(db)
 	ctx := context.Background()
-	seedFlag(t, db, "global", "", "ui.new_dashboard_beta", true)
-	if !r.Enabled(ctx, tid, "ui.new_dashboard_beta") {
+	seedFlag(t, db, "global", "", TestFlagOpen, true)
+	if !r.Enabled(ctx, tid, TestFlagOpen) {
 		t.Fatal("global-on open flag should be on")
 	}
-	seedFlag(t, db, "tenant", tid.String(), "ui.new_dashboard_beta", false)
-	if r.Enabled(ctx, tid, "ui.new_dashboard_beta") {
+	seedFlag(t, db, "tenant", tid.String(), TestFlagOpen, false)
+	if r.Enabled(ctx, tid, TestFlagOpen) {
 		t.Fatal("tenant override should win for an open flag")
 	}
 }
@@ -122,20 +122,29 @@ func TestResolve_ProtectedTightenOnly(t *testing.T) {
 	r := NewFlagResolver(db)
 	ctx := context.Background()
 
-	// ai.egress_restricted secure=ON. A tenant row trying to turn it OFF (loosen) must be ignored.
-	seedFlag(t, db, "tenant", tid.String(), "ai.egress_restricted", false)
-	if !r.Enabled(ctx, tid, "ai.egress_restricted") {
-		t.Fatal("a tenant must not loosen a protected flag (egress restriction stays ON)")
+	// Start from a known baseline. platform_feature_flags is global state shared by every test in this package, so
+	// another test that leaves a GLOBAL row behind would silently move this test's baseline and make it assert
+	// something it did not intend. (This bit: the four-eyes tests in service_integration_test.go set a global row
+	// for the same protected fixture, and without this clear, base came from THEIR row rather than the secure
+	// default.)
+	clearFlag(t, db, TestFlagProtected)
+	clearFlag(t, db, TestFlagProtectedOff)
+
+	// The protected fixture is secure=ON. A tenant row trying to turn it OFF (loosen) must be ignored.
+	seedFlag(t, db, "tenant", tid.String(), TestFlagProtected, false)
+	if !r.Enabled(ctx, tid, TestFlagProtected) {
+		t.Fatal("a tenant must not loosen a protected flag (it stays at the secure baseline, ON)")
 	}
 
-	// soar.destructive_enabled secure=OFF. Platform enables it globally; a tenant may tighten it back OFF for itself.
-	seedFlag(t, db, "global", "", "soar.destructive_enabled", true)
-	if !r.Enabled(ctx, tid, "soar.destructive_enabled") {
-		t.Fatal("platform-enabled destructive should be on at baseline")
+	// The other shape: a protected flag whose secure default is OFF. The platform enables it globally; a tenant may
+	// tighten it back OFF for itself.
+	seedFlag(t, db, "global", "", TestFlagProtectedOff, true)
+	if !r.Enabled(ctx, tid, TestFlagProtectedOff) {
+		t.Fatal("a platform-enabled protected flag should be on at baseline")
 	}
-	seedFlag(t, db, "tenant", tid.String(), "soar.destructive_enabled", false)
-	if r.Enabled(ctx, tid, "soar.destructive_enabled") {
-		t.Fatal("a tenant tightening a protected flag toward secure must take effect (destructive OFF)")
+	seedFlag(t, db, "tenant", tid.String(), TestFlagProtectedOff, false)
+	if r.Enabled(ctx, tid, TestFlagProtectedOff) {
+		t.Fatal("a tenant tightening a protected flag toward secure must take effect (back to OFF)")
 	}
 }
 
@@ -146,7 +155,7 @@ func TestConfigAudit_AppendOnly(t *testing.T) {
 	var id uuid.UUID
 	if err := db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `INSERT INTO platform_config_audit (entity, key, safety_class, reason)
-			VALUES ('flag','ui.new_dashboard_beta','open','test') RETURNING id`).Scan(&id)
+			VALUES ('flag',$1,'open','test') RETURNING id`, TestFlagOpen).Scan(&id)
 	}); err != nil {
 		t.Fatalf("insert audit: %v", err)
 	}

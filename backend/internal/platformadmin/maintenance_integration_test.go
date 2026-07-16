@@ -55,17 +55,22 @@ func TestReinfB_TimeBoxAutoRevert(t *testing.T) {
 	a := padminActor()
 	ctx := context.Background()
 
-	// Weaken ai.egress_restricted (secure=ON) → OFF, with four-eyes. It gets a default time-box.
+	// platform_feature_flags is package-shared state; start from a known baseline so a global row left by another
+	// test cannot decide this one's outcome.
+	clearFlag(t, db, TestFlagProtected)
+
+	// Weaken the protected fixture (secure=ON) → OFF, with four-eyes. It gets a default time-box.
 	approver := uuid.New()
-	if _, err := svc.SetFlag(ctx, a, SetFlagInput{Key: "ai.egress_restricted", Scope: "global", Enabled: false, Reason: "triage", ApprovedBy: &approver}); err != nil {
+	if _, err := svc.SetFlag(ctx, a, SetFlagInput{Key: TestFlagProtected, Scope: "global", Enabled: false, Reason: "triage", ApprovedBy: &approver}); err != nil {
 		t.Fatalf("weaken: %v", err)
 	}
-	if NewFlagResolver(db).Enabled(ctx, uuid.New(), "ai.egress_restricted") {
+	if NewFlagResolver(db).Enabled(ctx, uuid.New(), TestFlagProtected) {
 		t.Fatal("precondition: the flag should be weakened (off) before expiry")
 	}
 	// Age the time-box into the past.
 	if err := db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		_, e := tx.Exec(ctx, `UPDATE platform_feature_flags SET expires_at = now() - interval '1 minute' WHERE key='ai.egress_restricted' AND scope='global'`)
+		_, e := tx.Exec(ctx, `UPDATE platform_feature_flags SET expires_at = now() - interval '1 minute'
+			WHERE key=$1 AND scope='global'`, TestFlagProtected)
 		return e
 	}); err != nil {
 		t.Fatalf("age expiry: %v", err)
@@ -74,7 +79,7 @@ func TestReinfB_TimeBoxAutoRevert(t *testing.T) {
 	if err != nil || n < 1 {
 		t.Fatalf("sweep should revert the expired weakening: n=%d err=%v", n, err)
 	}
-	if !NewFlagResolver(db).Enabled(ctx, uuid.New(), "ai.egress_restricted") {
+	if !NewFlagResolver(db).Enabled(ctx, uuid.New(), TestFlagProtected) {
 		t.Fatal("Reinf-B: an expired protected weakening must auto-revert to its secure default (ON)")
 	}
 	if al.n < 1 {

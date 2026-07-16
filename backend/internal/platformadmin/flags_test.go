@@ -10,8 +10,8 @@ func TestClassOf_UnknownIsProtected(t *testing.T) {
 	if ClassOf("mfa.enforce") != ClassImmutable {
 		t.Fatalf("mfa.enforce class = %s", ClassOf("mfa.enforce"))
 	}
-	if ClassOf("ui.new_dashboard_beta") != ClassOpen {
-		t.Fatalf("ui.new_dashboard_beta class = %s", ClassOf("ui.new_dashboard_beta"))
+	if ClassOf(TestFlagOpen) != ClassOpen {
+		t.Fatalf("open fixture class = %s", ClassOf(TestFlagOpen))
 	}
 	if ClassOf("soar.destructive_enabled") != ClassProtected {
 		t.Fatalf("soar.destructive_enabled class = %s", ClassOf("soar.destructive_enabled"))
@@ -34,7 +34,7 @@ func TestIsImmutable(t *testing.T) {
 	if !IsImmutable("rls.enforce") {
 		t.Fatal("rls.enforce must be immutable")
 	}
-	if IsImmutable("ui.new_dashboard_beta") {
+	if IsImmutable(TestFlagOpen) {
 		t.Fatal("a beta flag must not be immutable")
 	}
 }

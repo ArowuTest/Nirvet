@@ -99,6 +99,23 @@ func (s *Service) SetFlag(ctx context.Context, actor auth.Principal, in SetFlagI
 		return SetResult{}, httpx.ErrBadRequest("immutable flag cannot be set via config: " + in.Key)
 	}
 
+	// An UNREGISTERED key is refused, which is what the registry's own contract has always said: "Admins CANNOT
+	// edit it. Adding a flag = a code change + review." Until J4 this was only enforced for immutable keys, so an
+	// admin could invent any string — including `soar.destructive_enabled` — and have it stored, audited, and
+	// displayed as a control that nothing reads. That is the J4 lie reachable by typing, and deleting the false
+	// registry entries would not have closed it.
+	//
+	// ClassOf() fails closed to `protected` for unknown keys, which correctly governs how a flag is READ. It was
+	// never a licence to CREATE one: a flag with no registry entry has no reader by construction, because a
+	// reader is code and code implies an entry (flags_reachability_test.go enforces the converse).
+	if !Registered(in.Key) {
+		_ = s.repo.AuditRejected(ctx, ch, "unregistered flag key")
+		return SetResult{}, httpx.ErrBadRequest(
+			"unknown feature flag: " + in.Key + ". Flags are declared in the code-owned registry — a flag that " +
+				"is not registered is read by nothing, so setting it would have no effect. Adding one is a code " +
+				"change plus a reader.")
+	}
+
 	secure := SecureDefault(in.Key)
 	lessSecure := class == ClassProtected && in.Enabled != secure
 
