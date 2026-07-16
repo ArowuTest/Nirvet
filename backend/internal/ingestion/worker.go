@@ -237,22 +237,24 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) (err error) {
 	if err != nil {
 		return err
 	}
-	// Idempotency: if the event already existed (duplicate ingest or job retry),
-	// do not run detection again — this makes the whole worker safe under
-	// at-least-once delivery.
-	if inserted == 0 {
-		return nil
-	}
-	// §6.5: record this (genuinely new) event's normalization quality — parser + how completely it
-	// mapped (stamped by Normalize). Accumulated in memory; flushed once per RunOnce batch.
-	if wk.quality != nil {
+	// §6.5: record this event's normalization quality ONLY when it is genuinely new — a duplicate ingest or a job
+	// retry already recorded it, and re-recording would double-count the parser stats. (Detection below runs
+	// regardless; quality does not.)
+	if inserted > 0 && wk.quality != nil {
 		parser, _ := in.Data["parser"].(string)
 		pv, _ := in.Data["parser_version"].(int)
 		conf, _ := in.Data["normalization_confidence"].(int)
 		wk.quality.Record(j.TenantID, in.Source, parser, pv, conf)
 	}
-	// Detection runs the rule catalogue (module: detection) via the injected
-	// evaluator, producing zero or more alerts (each idempotent on its dedupe key).
+	// Detection runs UNCONDITIONALLY — even when the event already existed (inserted==0). This used to short-circuit
+	// on inserted==0 as an at-least-once optimization, but that was a HIGH silent-detection-loss bug: Append commits
+	// the event in its own tx, and if a LATER step (detect / a crash between append and detect) failed, the job
+	// requeued, re-ran, re-Appended → inserted==0 → detection was skipped FOREVER. A real event stored with no
+	// alert, job reporting Complete, no error surfaced, and the reconciler does not backstop "appended-but-not-
+	// detected" (it only re-enqueues raw rows whose normalize job was never enqueued). For a SOC that is the worst
+	// non-destructive failure. Re-running detection is safe: alerts are ON CONFLICT (tenant, dedupe_key) DO NOTHING,
+	// stateful members are ON CONFLICT DO NOTHING behind a fired_at exactly-once latch, and correlation only fires on
+	// a genuine insert — so a duplicate/retry produces no duplicate alert. Correctness over the saved work.
 	return wk.detect(ctx, ev)
 }
 
@@ -261,9 +263,10 @@ func (wk *Worker) process(ctx context.Context, j queue.Job) (err error) {
 // dedupe key — not its random per-normalization UUID — means two duplicates of the same event collapse to
 // ONE alert on (tenant, dedupe_key) even if they reached detection as distinct rows: the ClickHouse event
 // store's ReplacingMergeTree dedup is ASYNCHRONOUS (two concurrent workers can both insert + both detect),
-// and a reconciler re-normalize could re-run detection. The Postgres store is already protected upstream
-// (Append ON CONFLICT → inserted==0 → detection skipped), so this makes the alert layer robust regardless
-// of the event-store backend or worker count (external-reviewer finding, ClickHouse alert-amplification).
+// and a job retry re-runs detection unconditionally (the inserted==0 short-circuit was removed — it dropped
+// detection permanently when a post-append step failed and retried). Alert-layer idempotency is therefore the
+// SINGLE guarantee both event-store backends and every retry rely on — robust regardless of backend or worker
+// count (external-reviewer finding, ClickHouse alert-amplification; and the retry-after-failure HIGH).
 func (wk *Worker) detect(ctx context.Context, ev eventstore.NormalizedEvent) (err error) {
 	ctx, span := workerTracer.Start(ctx, "ingest.detect", trace.WithAttributes(
 		attribute.String("nirvet.tenant_id", ev.TenantID.String()),

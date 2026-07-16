@@ -23,23 +23,31 @@ import (
 
 // --- status lifecycle (TEN-004) ---
 
+// The terminal offboarding states. onboarding/active/suspended live in entity.go.
+//
+// This block used to declare prospect/churned/archived/legal_hold — the TEN-004 vocabulary from migration 0028.
+// Migration 0073 REPLACED that CHECK with {onboarding,active,suspended,exported,deleted} and moved legal_hold to an
+// ORTHOGONAL boolean column (it is a hold flag, not a lifecycle state). The state machine below was never
+// reconciled, so SetStatus offered transitions to churned/archived/legal_hold that the DB CHECK rejects: the audit
+// + change-history were written first (governance.go SetStatus), THEN setStatus 500'd on the constraint — leaving a
+// committed audit trail that says "moved to legal_hold" for a move that never happened. Aligned here to 0073's
+// real vocabulary.
 const (
-	StatusProspect  Status = "prospect"
-	StatusChurned   Status = "churned"
-	StatusArchived  Status = "archived"
-	StatusLegalHold Status = "legal_hold"
+	StatusExported Status = "exported"
+	StatusDeleted  Status = "deleted"
 )
 
-// statusTransitions is the allowed state machine (structural domain vocabulary, not a
-// per-tenant tunable). An unlisted transition is rejected fail-closed.
+// statusTransitions is the allowed manual state machine (structural domain vocabulary, not a per-tenant tunable).
+// An unlisted transition is rejected fail-closed. exported + deleted are terminal offboarding states reached ONLY
+// through OffboardTenant (migrations 0073/0075), which enforces the export→retention→delete + legal_hold gates —
+// SetStatus must not be a back door around them, so nothing transitions INTO them here; they are listed only as
+// terminal keys so an already-offboarded tenant is a recognised state with no further manual transitions.
 var statusTransitions = map[Status][]Status{
-	StatusProspect:   {StatusOnboarding, StatusChurned, StatusArchived},
-	StatusOnboarding: {StatusActive, StatusSuspended, StatusChurned, StatusArchived},
-	StatusActive:     {StatusSuspended, StatusChurned, StatusLegalHold, StatusArchived},
-	StatusSuspended:  {StatusActive, StatusChurned, StatusLegalHold, StatusArchived},
-	StatusChurned:    {StatusActive, StatusArchived},
-	StatusLegalHold:  {StatusActive, StatusArchived},
-	StatusArchived:   {},
+	StatusOnboarding: {StatusActive, StatusSuspended},
+	StatusActive:     {StatusSuspended},
+	StatusSuspended:  {StatusActive},
+	StatusExported:   {},
+	StatusDeleted:    {},
 }
 
 func canTransition(from, to Status) bool {
@@ -310,7 +318,7 @@ func (s *Service) SetStatus(ctx context.Context, p auth.Principal, tenantID uuid
 		return nil, httpx.ErrBadRequest(fmt.Sprintf("illegal status transition %s -> %s", cur.Status, to))
 	}
 	// Round-4 M8: write the TEN-010 change-history + audit FIRST and PROPAGATE its error — a sensitive
-	// transition (active→legal_hold/archived) must never persist without its audit trail. The tenants
+	// transition (e.g. active→suspended) must never persist without its audit trail. The tenants
 	// registry is platform-level (WithSystem) and the history is tenant-RLS (WithTenant), so they can't
 	// share one tx; ordering history-before-status and failing on its error closes the evidentiary
 	// hole the previously-swallowed `_ =` left. (A rare status-update failure after history is written

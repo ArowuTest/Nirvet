@@ -25,11 +25,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// billableTenantIDs enumerates non-terminated tenants (mirrors retention.SweepAll's tenant enumeration).
+// billableTenantIDs enumerates non-offboarded tenants.
+//
+// The exclusion list must match the ACTUAL terminal states. It filtered NOT IN ('archived','churned') — but those
+// values became IMPOSSIBLE at migration 0073, which replaced the status vocabulary with
+// {onboarding,active,suspended,exported,deleted}. So the filter excluded nothing AND failed to exclude the real
+// terminal states, meaning offboarded tenants (exported/deleted) kept getting metered — billed after they left.
+// Aligned to the real terminals here.
 func (r *Repository) billableTenantIDs(ctx context.Context) ([]uuid.UUID, error) {
 	var ids []uuid.UUID
 	err := r.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		rows, e := tx.Query(ctx, `SELECT id FROM tenants WHERE status NOT IN ('archived','churned') ORDER BY id`)
+		rows, e := tx.Query(ctx, `SELECT id FROM tenants WHERE status NOT IN ('exported','deleted') ORDER BY id`)
 		if e != nil {
 			return e
 		}
