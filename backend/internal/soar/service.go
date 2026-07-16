@@ -112,6 +112,45 @@ func (s *Service) resolveDecision(ctx context.Context, tenantID uuid.UUID, actio
 	return AuthorityObserve, "", false, nil // fail-closed: no authorizer wired ⇒ nothing auto-runs
 }
 
+// authDecision is the resolved authority for one action key (mode + approver floor + business-hours flag),
+// cached per run so resolveDecision is called once per DISTINCT action, not once per step.
+type authDecision struct {
+	mode          AuthorityMode
+	approverRole  string
+	businessHours bool
+}
+
+// resolveDecisionsFor resolves the authority decision once per DISTINCT action key (dedup) — hoisting
+// resolveDecision out of the per-step loop (the N+1 the reviewer flagged). Identical per-key semantics to
+// resolveDecision; a nil/empty keys list yields an empty map.
+func (s *Service) resolveDecisionsFor(ctx context.Context, tenantID uuid.UUID, keys []string) (map[string]authDecision, error) {
+	out := make(map[string]authDecision, len(keys))
+	for _, k := range keys {
+		if _, done := out[k]; done {
+			continue
+		}
+		mode, approverRole, bh, err := s.resolveDecision(ctx, tenantID, k)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = authDecision{mode: mode, approverRole: approverRole, businessHours: bh}
+	}
+	return out, nil
+}
+
+// distinctStepActions returns the distinct action keys across a playbook's steps (order-preserving).
+func distinctStepActions(steps []Step) []string {
+	seen := make(map[string]bool, len(steps))
+	out := make([]string, 0, len(steps))
+	for _, st := range steps {
+		if !seen[st.Action] {
+			seen[st.Action] = true
+			out = append(out, st.Action)
+		}
+	}
+	return out
+}
+
 // requiredApproverRank is the minimum approver seniority (auth.RoleRank) to clear a step of the given
 // §9.5 risk class: the HIGHER of a risk-scaled default (medium→analyst_t3, high→soc_manager) and the
 // tenant-configured approver_role floor (H2 — the stored control is now enforced). business_critical
@@ -211,19 +250,26 @@ func (s *Service) runFor(ctx context.Context, p auth.Principal, tenantID, playbo
 		return nil, httpx.ErrNotFound("playbook not found")
 	}
 
-	// Phase 1 — reads only, no side effects: resolve catalog + authority per step and decide auto-run.
+	// Phase 1 — reads only, no side effects: resolve catalog + authority ONCE per run (was per step = an N+1
+	// of a WithTenant tx + an authority read per step), then decide auto-run per step from the maps.
+	actMap, aerr := s.repo.resolveActionCatalogMap(ctx, tenantID)
+	if aerr != nil {
+		return nil, httpx.ErrInternal("could not read action catalog")
+	}
+	decMap, derr := s.resolveDecisionsFor(ctx, tenantID, distinctStepActions(pb.Steps))
+	if derr != nil {
+		return nil, httpx.ErrInternal("could not read authority-to-act")
+	}
 	plans := make([]stepPlan, 0, len(pb.Steps))
 	for _, st := range pb.Steps {
 		// Risk class comes from the admin-configurable action catalog (§9.5), NOT the step JSON — an
 		// action absent from the catalog fails closed to business_critical (max approval).
-		act, _ := s.repo.resolveAction(ctx, tenantID, st.Action)
+		act := lookupAction(actMap, st.Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = st.ConnectorKey
 		}
-		mode, _, businessHours, derr := s.resolveDecision(ctx, tenantID, st.Action)
-		if derr != nil {
-			return nil, httpx.ErrInternal("could not read authority-to-act")
-		}
+		dec := decMap[st.Action]
+		mode, businessHours := dec.mode, dec.businessHours
 		// business_hours_only fails closed to approval: we cannot yet verify the tenant's business-hours
 		// calendar, so an hours-restricted action never auto-runs (Round-4 H2 — consume the stored flag).
 		autoEligible := !st.RequiresApproval && Allowed(mode, act.RiskClass)
@@ -418,12 +464,32 @@ func (s *Service) approveFor(ctx context.Context, p auth.Principal, tenantID, ru
 func (s *Service) executeRun(ctx context.Context, execP auth.Principal, tenantID uuid.UUID, run *PlaybookRun, cf map[string]Step, ea execAuth) (*PlaybookRun, error) {
 	// Authorization phase (no side effects): re-resolve each pending step and check the approver floor
 	// BEFORE executing any step, so a too-junior approver is rejected without partial execution.
+	// Resolve the catalog ONCE, and (only when the platform approver-rank floor applies) the authority decisions
+	// for the pending steps' distinct actions ONCE — hoisting resolveAction/resolveDecision out of the per-step
+	// loop (the N+1). A customer authorization (skipInternalRank) needs no decisions at all.
+	actMap, aerr := s.repo.resolveActionCatalogMap(ctx, tenantID)
+	if aerr != nil {
+		return nil, httpx.ErrInternal("could not read action catalog")
+	}
+	var decMap map[string]authDecision
+	if !ea.skipInternalRank {
+		var pendingKeys []string
+		for i := range run.Steps {
+			if run.Steps[i].Status == StatusAwaitingApproval {
+				pendingKeys = append(pendingKeys, run.Steps[i].Action)
+			}
+		}
+		var derr error
+		if decMap, derr = s.resolveDecisionsFor(ctx, tenantID, pendingKeys); derr != nil {
+			return nil, httpx.ErrInternal("could not read authority-to-act")
+		}
+	}
 	var steps []approvedStep
 	for i := range run.Steps {
 		if run.Steps[i].Status != StatusAwaitingApproval {
 			continue
 		}
-		act, _ := s.repo.resolveAction(ctx, tenantID, run.Steps[i].Action)
+		act := lookupAction(actMap, run.Steps[i].Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = run.Steps[i].ConnectorKey
 		}
@@ -435,10 +501,7 @@ func (s *Service) executeRun(ctx context.Context, execP auth.Principal, tenantID
 		// Non-BC: the platform approver-rank floor applies UNLESS a customer authorized this run (customer_approver
 		// mode — the tenant delegated authority to the customer approver, so no platform rank is required).
 		if !ea.skipInternalRank {
-			_, approverRole, _, derr := s.resolveDecision(ctx, tenantID, run.Steps[i].Action)
-			if derr != nil {
-				return nil, httpx.ErrInternal("could not read authority-to-act")
-			}
+			approverRole := decMap[run.Steps[i].Action].approverRole
 			if auth.RoleRank(execP.Role) < requiredApproverRank(act.RiskClass, approverRole) {
 				return nil, httpx.ErrForbidden(fmt.Sprintf("approver role '%s' is insufficient to approve a %s-risk action", execP.Role, act.RiskClass))
 			}

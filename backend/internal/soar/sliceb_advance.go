@@ -170,9 +170,13 @@ func (s *Service) persistRun(ctx context.Context, run *PlaybookRun, cursor int) 
 // auto (they already cleared authority to reach running/approved); the per-step Actioner + Class4 guards
 // in advanceRun still apply.
 func (s *Service) replan(ctx context.Context, tenantID uuid.UUID, pb *Playbook, allAuto bool) []stepPlan {
+	// Resolve the catalog ONCE (was resolveAction per step = N+1). On error, actMap is nil and lookupAction
+	// returns unknownAction (business_critical) for every key — the same fail-closed result as the old
+	// per-step `resolveAction` error path, so a catalog read failure still cannot silently downgrade risk.
+	actMap, _ := s.repo.resolveActionCatalogMap(ctx, tenantID)
 	plans := make([]stepPlan, 0, len(pb.Steps))
 	for _, st := range pb.Steps {
-		act, _ := s.repo.resolveAction(ctx, tenantID, st.Action)
+		act := lookupAction(actMap, st.Action)
 		if act.ConnectorKey == "" {
 			act.ConnectorKey = st.ConnectorKey
 		}

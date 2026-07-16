@@ -92,6 +92,65 @@ func (r *Repository) resolveAction(ctx context.Context, tenantID uuid.UUID, acti
 	return *eff, true
 }
 
+// resolveActionCatalogMap resolves the EFFECTIVE catalog entry for every action_key in ONE query (vs.
+// resolveAction's one tx per key). It is the batch form used by the run-execution loops (runFor/executeRun/
+// replan) to kill the per-step N+1: a playbook run resolves its whole catalog once, not per step. Semantics are
+// identical to resolveAction — only enabled rows count; a tenant override supplies executor/connector but risk is
+// clamped UP to the seeded global class (override may raise, never lower); a key absent from the map is resolved
+// by the caller to unknownAction (business_critical, fail-closed). Callers MUST treat a missing key as
+// unknownAction(key), exactly as resolveAction returns (unknownAction, false).
+func (r *Repository) resolveActionCatalogMap(ctx context.Context, tenantID uuid.UUID) (map[string]ActionCatalog, error) {
+	rows, err := r.listActionCatalog(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	globals := make(map[string]ActionCatalog)
+	overrides := make(map[string]ActionCatalog)
+	for _, a := range rows {
+		if !a.Enabled {
+			continue // resolveAction only considers enabled rows
+		}
+		if a.TenantID == nil {
+			globals[a.ActionKey] = a
+		} else {
+			overrides[a.ActionKey] = a
+		}
+	}
+	out := make(map[string]ActionCatalog, len(globals)+len(overrides))
+	merge := func(key string) {
+		g, hasG := globals[key]
+		o, hasO := overrides[key]
+		var eff ActionCatalog
+		if hasO {
+			eff = o
+			if hasG && riskRank(g.RiskClass) > riskRank(o.RiskClass) {
+				eff.RiskClass = g.RiskClass // override may only RAISE risk, never lower it
+			}
+		} else {
+			eff = g
+		}
+		out[key] = eff
+	}
+	for k := range globals {
+		merge(k)
+	}
+	for k := range overrides {
+		if _, done := out[k]; !done {
+			merge(k)
+		}
+	}
+	return out, nil
+}
+
+// lookupAction resolves one key from a pre-built map, falling back to unknownAction (fail-closed) exactly as
+// resolveAction does for an absent/disabled key — so callers using the batch map keep identical semantics.
+func lookupAction(m map[string]ActionCatalog, key string) ActionCatalog {
+	if a, ok := m[key]; ok {
+		return a
+	}
+	return unknownAction(key)
+}
+
 func (r *Repository) listActionCatalog(ctx context.Context, tenantID uuid.UUID) ([]ActionCatalog, error) {
 	var out []ActionCatalog
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
