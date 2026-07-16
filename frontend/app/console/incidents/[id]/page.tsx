@@ -88,6 +88,7 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
   const [state, setState] = useState<"loading" | "ready" | "notfound">("loading");
   const [msg, setMsg] = useState<{ tone: "ok" | "danger"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [custLink, setCustLink] = useState<Record<string, string>>({}); // runId → minted customer-approval URL
 
   // form state
   const [note, setNote] = useState("");
@@ -150,6 +151,23 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       await load();
     } catch (e) {
       setMsg({ tone: "danger", text: errorText(e, "Approving or rejecting a run requires an approver role (SOC manager).") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Mint a single-use customer-approval link for a pending run and show it for the SOC to share (the token is the
+  // capability; the customer approves it on the public /approve-containment page). Mirrors the invite-token pattern:
+  // the link is displayed for manual sharing rather than auto-emailed — automated delivery is a later slice, and this
+  // is the minter half of the approve-link path that previously had no UI at all.
+  async function issueCustomerLink(runId: string) {
+    setMsg(null);
+    setBusy(true);
+    try {
+      const { token } = await apiPost<{ token: string }>(`/soar/runs/${runId}/approval-link`);
+      setCustLink((m) => ({ ...m, [runId]: `${window.location.origin}/approve-containment?token=${token}` }));
+    } catch (e) {
+      setMsg({ tone: "danger", text: errorText(e, "Issuing a customer approval link requires an approver role (SOC manager).") });
     } finally {
       setBusy(false);
     }
@@ -357,9 +375,18 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
                           </ul>
                         )}
                         {r.status === "pending_approval" && (
-                          <div className="mt-2 flex gap-2">
-                            <Button size="sm" disabled={busy} onClick={() => decide(r.id, "approve")}>Approve</Button>
-                            <Button size="sm" variant="danger" disabled={busy} onClick={() => decide(r.id, "reject")}>Reject</Button>
+                          <div className="mt-2">
+                            <div className="flex flex-wrap gap-2">
+                              <Button size="sm" disabled={busy} onClick={() => decide(r.id, "approve")}>Approve</Button>
+                              <Button size="sm" variant="danger" disabled={busy} onClick={() => decide(r.id, "reject")}>Reject</Button>
+                              <Button size="sm" variant="ghost" disabled={busy} onClick={() => issueCustomerLink(r.id)}>Customer approval link</Button>
+                            </div>
+                            {custLink[r.id] && (
+                              <div className="mt-2 rounded-lg p-2" style={{ background: "var(--c-surface)", border: "1px solid var(--c-border)" }}>
+                                <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>Single-use link — send to the customer approver</div>
+                                <code className="mt-1 block break-all text-[11px]" style={{ color: "var(--c-primary)" }}>{custLink[r.id]}</code>
+                              </div>
+                            )}
                           </div>
                         )}
                       </li>

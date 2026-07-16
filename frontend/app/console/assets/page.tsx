@@ -13,6 +13,30 @@ import { PageHeader, Panel, KpiStrip, Kpi, Table, Th, Td, SevBadge, StatusTag, E
 type Asset = { id: string; ref: string; name: string; kind: string; criticality: string; owner: string; tags: string[] | null; created_at: string };
 type Vuln = { id: string; ref: string; cve: string; title: string; severity: string; cvss: number; exploited: boolean; status: string; remediation_due?: string; created_at: string };
 type Exposure = { by_severity: Record<string, number> | null; open_total: number; exploited_open: number; past_due: number };
+type ProtTarget = { id: string; value: string };
+
+// Q2 (reviewer): surface — do NOT derive — the divergence between what an operator marks "critical" here and what
+// the D5 SOAR guard actually withholds. The guard reads protected_hosts / protected_identities, not this inventory
+// (marking the payroll server "critical" buys ZERO SOAR protection on its own). So we SHOW, per critical asset,
+// whether a protected-target pattern already covers it, and one-click routes to the designation screen with the
+// value pre-filled — where the substring/exact-match semantics are explained and the operator confirms. We do not
+// silently create a pattern: deriving one from a ref is lossy in the dangerous direction (the db1-protects-db10
+// footgun), which is exactly why the answer is "make the gap visible", not "auto-protect".
+//
+// coveredBy mirrors the guards: hosts match a protected pattern as a case-insensitive SUBSTRING; identities match
+// EXACTLY. Only host/user assets have a D5 protection concept (isolate / disable) — other kinds get no badge.
+function assetProtection(a: Asset, hostPatterns: string[], identityRefs: Set<string>): "protected" | "unprotected" | null {
+  const ref = a.ref.toLowerCase();
+  if (a.kind === "host") {
+    return hostPatterns.some((p) => p && ref.includes(p)) ? "protected" : "unprotected";
+  }
+  if (a.kind === "user") {
+    // Identities match exactly; the inventory ref may carry a "user:" convention prefix, so test both forms.
+    const bare = ref.replace(/^user:/, "");
+    return identityRefs.has(ref) || identityRefs.has(bare) ? "protected" : "unprotected";
+  }
+  return null;
+}
 
 const CRITICALITIES = ["low", "medium", "high", "critical"];
 const critTone: Record<string, "ok" | "warn" | "danger" | "neutral"> = { low: "neutral", medium: "warn", high: "danger", critical: "danger" };
@@ -24,6 +48,8 @@ export default function AssetsPage() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [vulns, setVulns] = useState<Vuln[]>([]);
   const [exposure, setExposure] = useState<Exposure | null>(null);
+  const [hostPatterns, setHostPatterns] = useState<string[]>([]);
+  const [identityRefs, setIdentityRefs] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"assets" | "vulns">("assets");
   const [vulnStatus, setVulnStatus] = useState("open");
@@ -39,12 +65,17 @@ export default function AssetsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [a, e] = await Promise.allSettled([
+    const [a, e, ph, pi] = await Promise.allSettled([
       apiGet<{ assets: Asset[] | null }>("/assets"),
       apiGet<Exposure>("/exposure/summary"),
+      // Provider-readable deny-lists — used only to SHOW coverage, never to change containment behaviour.
+      apiGet<ProtTarget[]>("/soar/protected-targets/host"),
+      apiGet<ProtTarget[]>("/soar/protected-targets/identity"),
     ]);
     if (a.status === "fulfilled") setAssets(a.value.assets ?? []);
     if (e.status === "fulfilled") setExposure(e.value);
+    if (ph.status === "fulfilled") setHostPatterns((ph.value ?? []).map((t) => t.value.toLowerCase()).filter(Boolean));
+    if (pi.status === "fulfilled") setIdentityRefs(new Set((pi.value ?? []).map((t) => t.value.toLowerCase())));
     await loadVulns(vulnStatus);
     setLoading(false);
   }, [loadVulns, vulnStatus]);
@@ -130,13 +161,37 @@ export default function AssetsPage() {
           ) : assets.length === 0 ? (
             <EmptyState title="No assets yet" hint="Register assets or import them in bulk to triage alerts by business criticality." />
           ) : (
-            <Table head={<><Th>Ref</Th><Th>Name</Th><Th>Kind</Th><Th>Criticality</Th><Th>Owner</Th><Th>Tags</Th></>}>
-              {assets.map((a) => (
+            <Table head={<><Th>Ref</Th><Th>Name</Th><Th>Kind</Th><Th>Criticality</Th><Th>SOAR protection</Th><Th>Owner</Th><Th>Tags</Th></>}>
+              {assets.map((a) => {
+                const prot = assetProtection(a, hostPatterns, identityRefs);
+                // Only surface the gap where it MATTERS and could mislead: a critical host/identity that automated
+                // response could touch. High/medium/low criticals don't get the nag (reviewer scoped it to critical),
+                // and non-host/user kinds have no D5 protection concept at all.
+                const showGap = prot === "unprotected" && a.criticality === "critical";
+                return (
                 <tr key={a.id} onClick={() => router.push(`/console/assets/${a.id}`)} className="cursor-pointer transition hover:bg-[color:var(--c-surface-2)]">
                   <Td className="font-mono text-[12px]">{a.ref}</Td>
                   <Td className="font-medium">{a.name}</Td>
                   <Td>{a.kind}</Td>
                   <Td><StatusTag tone={critTone[a.criticality] ?? "neutral"}>{a.criticality}</StatusTag></Td>
+                  <Td>
+                    {prot === "protected" ? (
+                      <StatusTag tone="ok">Protected</StatusTag>
+                    ) : showGap ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); router.push(`/console/protected-targets?kind=${a.kind === "user" ? "identity" : "host"}&value=${encodeURIComponent(a.ref)}`); }}
+                        title="This critical asset is not on the SOAR deny-list — automated response could isolate or disable it. Click to designate it as a protected target."
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium"
+                        style={{ background: "rgba(245,158,11,0.14)", color: "var(--c-warn)", border: "1px solid var(--c-border)" }}
+                      >
+                        ⚠ Not designated protected
+                      </button>
+                    ) : prot === "unprotected" ? (
+                      <span className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>—</span>
+                    ) : (
+                      <span className="text-[11px]" style={{ color: "var(--c-ink-3)" }}>n/a</span>
+                    )}
+                  </Td>
                   <Td className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>{a.owner || "—"}</Td>
                   <Td>
                     {a.tags && a.tags.length > 0 ? (
@@ -144,7 +199,8 @@ export default function AssetsPage() {
                     ) : "—"}
                   </Td>
                 </tr>
-              ))}
+                );
+              })}
             </Table>
           )}
         </Panel>

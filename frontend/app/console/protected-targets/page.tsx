@@ -14,7 +14,7 @@
 // it makes a crown jewel auto-isolatable again).
 
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, apiDelete, errorText, getMe } from "@/lib/api";
+import { apiGet, apiPost, apiPut, apiDelete, errorText, getMe, ApiError } from "@/lib/api";
 import { PageHeader, Panel, Table, Th, Td, StatusTag, Button, EmptyState } from "@/components/ui";
 import { RoleGate } from "@/components/role-gate";
 
@@ -28,6 +28,7 @@ type Ack = { acked_at: string; acked_by_email: string; confirmed_with: string; n
 // target_count is this tenant's OWN designations — inherited instance-wide rows are excluded server-side,
 // because those are the platform's floor, not this tenant's decision.
 type Decision = { target_count: number; ack: Ack | null; decided: boolean };
+type SoarSettings = { destructive_enabled: boolean; dry_run: boolean; max_class3_per_hour: number; max_class4_per_hour: number };
 
 // The two lists differ in how the guard matches them, and getting that wrong is silent — a partial UPN protects
 // nothing, a short host fragment protects almost everything. The copy says so at the point of entry, not in a doc.
@@ -63,10 +64,16 @@ export default function Page() {
 function ProtectedTargets() {
   const [role, setRole] = useState<string>("");
   const [tick, setTick] = useState(0);
+  // A one-click "designate" from the asset inventory (Q2) lands here as ?kind=host&value=<ref>, so the operator
+  // arrives on the screen where the substring/exact-match semantics are explained, with the value ready to confirm —
+  // never a silent auto-created pattern. Read from the URL directly to avoid a Suspense boundary for one param.
+  const [prefill, setPrefill] = useState<{ kind: Kind; value: string } | null>(null);
   useEffect(() => {
-    getMe()
-      .then((u) => setRole(u.role ?? ""))
-      .catch(() => setRole(""));
+    getMe().then((u) => setRole(u.role ?? "")).catch(() => setRole(""));
+    const q = new URLSearchParams(window.location.search);
+    const k = q.get("kind");
+    const v = q.get("value");
+    if ((k === "host" || k === "identity") && v) setPrefill({ kind: k, value: v });
   }, []);
   return (
     <div>
@@ -76,9 +83,88 @@ function ProtectedTargets() {
       />
       <DecisionPanel role={role} tick={tick} />
       {KINDS.map((k) => (
-        <KindPanel key={k.kind} meta={k} role={role} onChange={() => setTick((n) => n + 1)} />
+        <KindPanel key={k.kind} meta={k} role={role} prefill={prefill?.kind === k.kind ? prefill.value : ""} onChange={() => setTick((n) => n + 1)} />
       ))}
+      <ArmPanel role={role} tick={tick} onChange={() => setTick((n) => n + 1)} />
     </div>
+  );
+}
+
+// ArmPanel is the destructive-response toggle, co-located BELOW the decision on purpose. The D5 arm-gate lives on
+// the server (PUT /soar/settings returns 409 protected_targets_undecided until the crown jewels are decided); this
+// panel makes that gate legible instead of a surprise. Until `decided`, the toggle is disabled with the reason —
+// so an operator never meets the 409 as what reads like a bug. (This is the arm UI that never existed: /soar/settings
+// had no frontend consumer, so the 409 was previously only reachable by API.)
+//
+// Deliberately NOT in the customer-onboarding wizard: PUT /soar/settings is caller-tenant-scoped and padmin-only,
+// so an operator arms their OWN tenant — onboarding creates OTHER tenants. The decision and the toggle belong in the
+// same view, which is here.
+function ArmPanel({ role, tick, onChange }: { role: string; tick: number; onChange: () => void }) {
+  const [settings, setSettings] = useState<SoarSettings | null>(null);
+  const [dec, setDec] = useState<Decision | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canArm = CAN_REMOVE.includes(role); // padmin: enabling destructive response is the highest-consequence toggle
+
+  const load = useCallback(() => {
+    apiGet<SoarSettings>("/soar/settings").then(setSettings).catch(() => setSettings(null));
+    apiGet<Decision>("/soar/protected-targets-decision").then(setDec).catch(() => setDec(null));
+  }, []);
+  useEffect(load, [load, tick]);
+
+  async function setEnabled(next: boolean) {
+    if (!settings) return;
+    setErr("");
+    setBusy(true);
+    try {
+      // Send the whole settings object (SetSettings upserts it); only destructive_enabled changes here.
+      const updated = await apiPut<SoarSettings>("/soar/settings", { ...settings, destructive_enabled: next });
+      setSettings(updated);
+      onChange();
+    } catch (e) {
+      // Defense in depth: the toggle is disabled until decided, so this 409 should be unreachable through the UI —
+      // but if it is ever hit (stale state, API race), dispatch on the CODE and say the real thing, never a raw error.
+      if (e instanceof ApiError && e.code === "protected_targets_undecided") {
+        setErr("Decide this tenant's crown jewels first (above) — an empty deny-list allows rather than withholds.");
+      } else {
+        setErr(errorText(e, "Enabling destructive response requires the platform administrator role.", "Could not update destructive-response settings."));
+      }
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!settings || !dec) return null;
+  const on = settings.destructive_enabled;
+  const blocked = !on && !dec.decided; // can't ENABLE while undecided; DISABLING is always allowed
+
+  return (
+    <Panel title="Automated response" sub="Whether this tenant's playbooks may take real containment action, or only simulate">
+      {err && <p className="mb-3 text-[13px]" style={{ color: "var(--c-danger)" }}>{err}</p>}
+      <div className="flex items-center gap-3">
+        <StatusTag tone={on ? "danger" : "neutral"}>{on ? "Destructive response ENABLED" : "Simulate only"}</StatusTag>
+        {on && settings.dry_run && <StatusTag tone="warn">dry-run</StatusTag>}
+      </div>
+      <p className="mt-2 text-[12px]" style={{ color: "var(--c-ink-3)" }}>
+        {on
+          ? "Playbooks with pre-authorized or contractually-automatic authority can isolate hosts and disable accounts. Designated crown jewels (above) are always withheld to a human."
+          : blocked
+            ? "Blocked until this tenant's crown jewels are decided. Designate at least one protected target above, or record that it has none — then this can be enabled."
+            : "Playbooks run in simulation: they record what they would do but take no real action."}
+      </p>
+      {canArm && (
+        <div className="mt-3">
+          <Button
+            variant={on ? "ghost" : "primary"}
+            disabled={busy || blocked}
+            onClick={() => setEnabled(!on)}
+          >
+            {busy ? "Saving…" : on ? "Disable destructive response" : "Enable destructive response"}
+          </Button>
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -184,10 +270,10 @@ function DecisionPanel({ role, tick }: { role: string; tick: number }) {
   );
 }
 
-function KindPanel({ meta, role, onChange }: { meta: (typeof KINDS)[number]; role: string; onChange: () => void }) {
+function KindPanel({ meta, role, prefill, onChange }: { meta: (typeof KINDS)[number]; role: string; prefill?: string; onChange: () => void }) {
   const [rows, setRows] = useState<Target[] | null>(null);
   const [err, setErr] = useState("");
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(prefill ?? "");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
