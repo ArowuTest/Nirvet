@@ -261,15 +261,32 @@ func (s *Service) ChangePassword(ctx context.Context, p auth.Principal, current,
 	if err != nil {
 		return httpx.ErrInternal("could not hash password")
 	}
-	if err := s.repo.UpdatePassword(ctx, p.TenantID, p.UserID, hash); err != nil {
-		return httpx.ErrInternal("could not update password")
+	// The password update AND the session-generation bump MUST be one transaction — otherwise a crash between them
+	// leaves the password changed while old sessions stay valid, so a stolen JWT survives the very change meant to
+	// revoke it. This mirrors ConfirmPasswordReset, which already does both + audit atomically (RP-5); the earlier
+	// two-call form here (UpdatePassword then BumpUserGeneration, separate txs) had exactly that crash-window.
+	if err := s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		ct, e := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, p.UserID, hash)
+		if e != nil {
+			return e
+		}
+		if ct.RowsAffected() == 0 {
+			return httpx.ErrNotFound("user not found")
+		}
+		// §6.2 session revocation: bump the generation so tokens minted before this change are rejected.
+		if _, e := tx.Exec(ctx,
+			`INSERT INTO user_session_state (tenant_id, user_id, generation) VALUES ($1,$2,1)
+			 ON CONFLICT (tenant_id, user_id) DO UPDATE SET generation = user_session_state.generation + 1, updated_at=now()`,
+			p.TenantID, p.UserID); e != nil {
+			return e
+		}
+		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email,
+			Action: "iam.password_change", Target: "user:" + p.UserID.String()})
+	}); err != nil {
+		return httpx.ErrInternal("could not change password")
 	}
-	// A credential change revokes the user's OTHER live sessions (§6.2 session revocation): bump their session
-	// generation so tokens minted before this change are rejected. Surface a failure rather than silently leave
-	// old sessions valid.
-	if err := s.BumpUserGeneration(ctx, p.TenantID, p.UserID); err != nil {
-		return httpx.ErrInternal("password changed but could not revoke existing sessions; retry")
-	}
+	// Cache-bust so the revocation is immediate on this node (the tx wrote the generation directly).
+	userGenCache.Delete(p.TenantID.String() + ":" + p.UserID.String())
 	return nil
 }
 

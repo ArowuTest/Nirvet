@@ -164,6 +164,14 @@ func (r *Repository) AddCell(ctx context.Context, p auth.Principal, notebookID u
 		if _, err := ownedNotebook(ctx, tx, p, notebookID); err != nil {
 			return err
 		}
+		// Serialise position allocation on this notebook. `position` is assigned max()+1, so two concurrent
+		// AddCell calls could both read the same max and insert the SAME position — colliding cells with a
+		// corrupted order. Locking the notebook row makes the read-then-insert atomic per notebook. (A
+		// UNIQUE(notebook_id, position) is NOT usable here: MoveCell swaps two positions with two UPDATEs, which
+		// would transiently violate it mid-swap without deferred constraints.)
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM investigation_notebooks WHERE id = $1 FOR UPDATE`, notebookID); err != nil {
+			return err
+		}
 		var count int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM investigation_notebook_cells WHERE notebook_id = $1`, notebookID).Scan(&count); err != nil {
 			return err

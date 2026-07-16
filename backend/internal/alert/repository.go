@@ -180,6 +180,21 @@ func (r *Repository) SetCorrelation(ctx context.Context, tenantID, id uuid.UUID,
 }
 
 func (r *Repository) MarkPromoted(ctx context.Context, tx pgx.Tx, id, incidentID uuid.UUID) error {
-	_, err := tx.Exec(ctx, `UPDATE alerts SET status='promoted', incident_id=$2 WHERE id=$1`, id, incidentID)
-	return err
+	// CAS on status: only the FIRST promotion of an alert wins. Without the `status <> 'promoted'` guard two
+	// concurrent CreateFromAlert calls on the same alert each created an incident and each marked the alert
+	// promoted (last-writer-wins on incident_id) — TWO incidents from one alert. Because MarkPromoted runs inside
+	// the incident-creation tx (passed as the promote callback), returning ErrAlreadyPromoted here rolls back the
+	// duplicate incident, so the loser leaves no trace.
+	tag, err := tx.Exec(ctx, `UPDATE alerts SET status='promoted', incident_id=$2 WHERE id=$1 AND status <> 'promoted'`, id, incidentID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAlreadyPromoted
+	}
+	return nil
 }
+
+// ErrAlreadyPromoted signals that an alert was already promoted (a concurrent or repeated promote). Callers treat
+// it as a benign conflict (the incident already exists), not an internal error.
+var ErrAlreadyPromoted = errors.New("alert already promoted")

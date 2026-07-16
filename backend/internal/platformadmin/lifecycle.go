@@ -83,7 +83,9 @@ func (s *Service) OffboardTenant(ctx context.Context, actor auth.Principal, tena
 			return "", httpx.ErrInternal("could not revoke tenant sessions before offboarding")
 		}
 	}
-	n, err := s.repo.OffboardPurge(ctx, tenantID) // the SECURITY DEFINER routine refuses on hold / wrong-state / retention
+	// Purge + certificate in ONE tx: an irreversible purge must never leave the tenant un-certified and un-marked.
+	cert, n, err := s.repo.OffboardPurgeAndRecord(ctx, tenantID, actor.UserID, reason,
+		func(tables int) string { return certOfDestruction(tenantID, tables, actor.UserID) })
 	if err != nil {
 		switch {
 		case strings.Contains(err.Error(), "legal hold"):
@@ -93,10 +95,6 @@ func (s *Service) OffboardTenant(ctx context.Context, actor auth.Principal, tena
 		case strings.Contains(err.Error(), "retention window"):
 			return "", httpx.ErrConflict("tenant retention window has not elapsed; deletion is not yet permitted")
 		}
-		return "", err
-	}
-	cert := certOfDestruction(tenantID, n, actor.UserID)
-	if err := s.repo.RecordDeletion(ctx, tenantID, n, cert, actor.UserID, reason); err != nil {
 		return "", err
 	}
 	_, _ = s.alerter.RaisePlatform(ctx, tenantID, "tenant-deleted:"+tenantID.String(),

@@ -164,31 +164,39 @@ func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth
 	// Phase-B kill-switch re-read: an emergency stop must abort a claimed-but-unexecuted step.
 	if !ex.DryRun {
 		if plat, e := s.repo.GetPlatformFlags(ctx); e == nil && plat.KillSwitch {
-			s.finish(ctx, tenantID, ex, StatusFailed, "", "aborted: kill-switch engaged after claim", nil,
-				denyEntry(actor, act, target, "killed_mid_flight", "kill-switch engaged after claim"))
+			if fe := s.finish(ctx, tenantID, ex, StatusFailed, "", "aborted: kill-switch engaged after claim", nil,
+				denyEntry(actor, act, target, "killed_mid_flight", "kill-switch engaged after claim")); fe != nil {
+				return "", "", fe
+			}
 			return StatusFailed, "aborted: kill-switch engaged after claim", nil
 		}
 	}
 
 	// Dry-run: full gate ran, no real effect.
 	if ex.DryRun {
-		s.finish(ctx, tenantID, ex, StatusExecuted, "dry-run", "dry-run: no real effect", nil,
-			outcomeEntry(actor, act, target, "dry_run", "dry-run"))
+		if fe := s.finish(ctx, tenantID, ex, StatusExecuted, "dry-run", "dry-run: no real effect", nil,
+			outcomeEntry(actor, act, target, "dry_run", "dry-run")); fe != nil {
+			return "", "", fe
+		}
 		return StatusSimulated, "dry-run: no real effect (gate passed)", nil
 	}
 
 	a, ok := s.actioners.lookup(act.ConnectorKey, act.ActionKey)
 	if !ok {
-		s.finish(ctx, tenantID, ex, StatusFailed, "", "no actioner registered", nil,
-			outcomeEntry(actor, act, target, "failed", "no actioner"))
+		if fe := s.finish(ctx, tenantID, ex, StatusFailed, "", "no actioner registered", nil,
+			outcomeEntry(actor, act, target, "failed", "no actioner")); fe != nil {
+			return "", "", fe
+		}
 		return StatusFailed, "no actioner registered", nil
 	}
 	var creds []byte
 	if s.creds != nil {
 		c, e := s.creds.ConnectorCreds(ctx, tenantID, act.ConnectorKey)
 		if e != nil {
-			s.finish(ctx, tenantID, ex, StatusFailed, "", "credential decrypt failed", nil,
-				outcomeEntry(actor, act, target, "failed", "credential decrypt failed"))
+			if fe := s.finish(ctx, tenantID, ex, StatusFailed, "", "credential decrypt failed", nil,
+				outcomeEntry(actor, act, target, "failed", "credential decrypt failed")); fe != nil {
+				return "", "", fe
+			}
 			return StatusFailed, "credential decrypt failed", nil
 		}
 		creds = c
@@ -208,8 +216,10 @@ func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth
 			if gerr != nil {
 				msg = "protected-target check failed (fail-closed): " + gerr.Error()
 			}
-			s.finish(ctx, tenantID, ex, StatusWithheld, "", msg, nil,
-				denyEntry(actor, act, target, "protected_withheld", msg))
+			if fe := s.finish(ctx, tenantID, ex, StatusWithheld, "", msg, nil,
+				denyEntry(actor, act, target, "protected_withheld", msg)); fe != nil {
+				return "", "", fe
+			}
 			if s.alerter != nil {
 				_ = s.alerter.ContainmentFailed(ctx, tenantID, ex.ID, act.ActionKey, target, "withheld_protected", false)
 			}
@@ -233,18 +243,33 @@ func (s *Supervisor) phaseBC(ctx context.Context, tenantID uuid.UUID, actor auth
 
 	ref, prior, callErr := safeCall(ctx, a, creds, target, callParams)
 	if callErr != nil {
-		s.finish(ctx, tenantID, ex, StatusFailed, "", "execution failed: "+callErr.Error(), prior,
-			outcomeEntry(actor, act, target, "failed", callErr.Error()))
+		if fe := s.finish(ctx, tenantID, ex, StatusFailed, "", "execution failed: "+callErr.Error(), prior,
+			outcomeEntry(actor, act, target, "failed", callErr.Error())); fe != nil {
+			return "", "", fe
+		}
 		return StatusFailed, "execution failed: " + callErr.Error(), nil
 	}
-	s.finish(ctx, tenantID, ex, StatusExecuted, ref, "", prior,
-		outcomeEntry(actor, act, target, "executed", ref))
+	// The vendor effect HAS happened. If recording it fails, do NOT report success — propagate so the run stays
+	// executing and the reconciler re-drives (PreCheck-idempotent) until the outcome is durably recorded.
+	if fe := s.finish(ctx, tenantID, ex, StatusExecuted, ref, "", prior,
+		outcomeEntry(actor, act, target, "executed", ref)); fe != nil {
+		return "", "", fe
+	}
 	return StatusExecuted, "executed: " + ref, nil
 }
 
 // finish records Phase C (outcome + prior_state) and its audit in one tx (best-effort).
-func (s *Supervisor) finish(ctx context.Context, tenantID uuid.UUID, ex *ActionExecution, rowStatus, connRef, reason string, prior map[string]any, auditEntry audit.Entry) {
-	_ = s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+// finish persists a step's terminal outcome + its audit in one tx, and PROPAGATES the error.
+//
+// This used to swallow the error (`_ = ...WithTenant`). That was the dangerous kind of best-effort: after a real
+// vendor effect (a host isolated, an account disabled), if the outcome write failed the caller was still told
+// "executed" while the row stayed 'executing' — a real containment that the platform could neither confirm nor
+// reverse, reported clean. Now the error propagates so the caller returns it instead of a false success; the run
+// stays claimed/executing and the completion reconciler re-drives phaseBC, which is resume-safe and
+// PreCheck-idempotent (H-1 correlator) — so it re-records the outcome without re-firing the effect. Keep retrying
+// to record the truth rather than lie once that it's done.
+func (s *Supervisor) finish(ctx context.Context, tenantID uuid.UUID, ex *ActionExecution, rowStatus, connRef, reason string, prior map[string]any, auditEntry audit.Entry) error {
+	return s.repo.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if e := s.repo.finishExecutionTx(ctx, tx, ex.RunID, ex.StepIndex, rowStatus, connRef, reason, prior); e != nil {
 			return e
 		}

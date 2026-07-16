@@ -67,3 +67,28 @@ func (r *Repository) RecordDeletion(ctx context.Context, tenantID uuid.UUID, tab
 		return e
 	})
 }
+
+// OffboardPurgeAndRecord purges the tenant AND records the deletion + certificate in ONE transaction.
+//
+// The purge and the certificate were previously two separate txs (OffboardPurge then RecordDeletion). An
+// IRREVERSIBLE purge whose certificate write fails is a compliance hole: the data is gone, the tenant is not marked
+// deleted, and there is no certificate of destruction to prove lawful deletion. Composing them means a rollback of
+// the record UNDOES the purge (the DELETEs are uncommitted MVCC tuples), so the outcome is all-or-nothing: purged +
+// certified, or neither. certFn computes the certificate from the table count returned by the purge, inside the tx.
+func (r *Repository) OffboardPurgeAndRecord(ctx context.Context, tenantID, actorID uuid.UUID, reason string, certFn func(tables int) string) (cert string, tables int, err error) {
+	err = r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// The SECURITY DEFINER routine RAISES (rolling back this tx) on legal hold / wrong-state / retention — the
+		// service maps those to 403/409.
+		if e := tx.QueryRow(ctx, `SELECT tenant_offboard_purge($1)`, tenantID).Scan(&tables); e != nil {
+			return e
+		}
+		cert = certFn(tables)
+		if _, e := tx.Exec(ctx, `UPDATE tenants SET status='deleted' WHERE id=$1`, tenantID); e != nil {
+			return e
+		}
+		_, e := tx.Exec(ctx, `INSERT INTO tenant_offboarding (tenant_id, action, tables_purged, cert_sha256, actor_id, reason)
+			VALUES ($1,'delete',$2,$3,$4,$5)`, tenantID, tables, cert, actorID, reason)
+		return e
+	})
+	return cert, tables, err
+}

@@ -2,6 +2,7 @@ package incident
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -197,6 +198,11 @@ func (s *Service) CreateFromAlert(ctx context.Context, p auth.Principal, alertID
 		return s.alertSvc.Repo().MarkPromoted(ctx, tx, alertID, incidentID)
 	}
 	if err := s.repo.CreateFromAlertTx(ctx, p.TenantID, inc, seed, promote); err != nil {
+		// A concurrent/repeat promote lost the CAS: the alert is already an incident — a benign conflict, not a
+		// 500. The whole tx (including this duplicate incident) rolled back, so nothing partial persisted.
+		if errors.Is(err, alert.ErrAlreadyPromoted) {
+			return nil, httpx.ErrConflict("alert has already been promoted to an incident")
+		}
 		return nil, httpx.ErrInternal("could not promote alert")
 	}
 	// Record the asset-driven escalation on the timeline (best-effort).
