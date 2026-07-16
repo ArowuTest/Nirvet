@@ -28,6 +28,28 @@ func (s *Service) SetSettings(ctx context.Context, p auth.Principal, tenantID uu
 	if in.MaxClass3PerHour < 0 || in.MaxClass4PerHour < 0 {
 		return SoarSettings{}, httpx.ErrBadRequest("rate limits must be non-negative")
 	}
+	// D5 arm-gate: refuse to ARM destructive response for a tenant that has not decided about its crown jewels.
+	// An empty deny-list allows (host_guard.go returns allow on zero patterns), so enabling containment with no
+	// decision is enabling it with no blast-radius net — silently. Nirvet cannot supply a built-in floor here the
+	// way redaction.go does (there is no universal crown jewel), so it refuses to arm instead.
+	//
+	// Only on the TRANSITION to enabled: re-saving an already-armed tenant's rate limits must not fail, and
+	// DISABLING must never be blocked by this gate — turning containment off is always allowed.
+	if in.DestructiveEnabled {
+		cur, err := s.repo.GetSoarSettings(ctx, tenantID)
+		if err != nil {
+			return SoarSettings{}, httpx.ErrInternal("could not read current SOAR settings")
+		}
+		if !cur.DestructiveEnabled {
+			dec, err := s.ProtectedDecision(ctx, tenantID)
+			if err != nil {
+				return SoarSettings{}, err
+			}
+			if !dec.Decided {
+				return SoarSettings{}, ErrProtectedTargetsUndecided()
+			}
+		}
+	}
 	if err := s.repo.SetSoarSettings(ctx, tenantID, in); err != nil {
 		return SoarSettings{}, httpx.ErrInternal("could not save SOAR settings")
 	}

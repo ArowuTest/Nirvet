@@ -24,6 +24,10 @@ const CAN_REMOVE = ["platform_admin"];
 
 type Kind = "host" | "identity";
 type Target = { id: string; kind: Kind; value: string; note: string; global: boolean; created_at: string };
+type Ack = { acked_at: string; acked_by_email: string; confirmed_with: string; note: string };
+// target_count is this tenant's OWN designations — inherited instance-wide rows are excluded server-side,
+// because those are the platform's floor, not this tenant's decision.
+type Decision = { target_count: number; ack: Ack | null; decided: boolean };
 
 // The two lists differ in how the guard matches them, and getting that wrong is silent — a partial UPN protects
 // nothing, a short host fragment protects almost everything. The copy says so at the point of entry, not in a doc.
@@ -58,6 +62,7 @@ export default function Page() {
 
 function ProtectedTargets() {
   const [role, setRole] = useState<string>("");
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     getMe()
       .then((u) => setRole(u.role ?? ""))
@@ -69,14 +74,117 @@ function ProtectedTargets() {
         title="Protected targets"
         sub="Crown jewels the automated response must refuse to touch"
       />
+      <DecisionPanel role={role} tick={tick} />
       {KINDS.map((k) => (
-        <KindPanel key={k.kind} meta={k} role={role} />
+        <KindPanel key={k.kind} meta={k} role={role} onChange={() => setTick((n) => n + 1)} />
       ))}
     </div>
   );
 }
 
-function KindPanel({ meta, role }: { meta: (typeof KINDS)[number]; role: string }) {
+// DecisionPanel surfaces the D5 arm-gate: destructive response cannot be enabled until this tenant has decided
+// about its crown jewels. It is at the TOP of the page because it is the consequence — the lists below are how
+// you satisfy it.
+function DecisionPanel({ role, tick }: { role: string; tick: number }) {
+  const [dec, setDec] = useState<Decision | null>(null);
+  const [err, setErr] = useState("");
+  const [who, setWho] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canAck = CAN_REMOVE.includes(role); // padmin: the attestation is what unlocks arming
+
+  const load = useCallback(() => {
+    apiGet<Decision>("/soar/protected-targets-decision")
+      .then(setDec)
+      .catch(() => setDec(null));
+  }, []);
+  useEffect(load, [load, tick]);
+
+  async function ack() {
+    setErr("");
+    setBusy(true);
+    try {
+      await apiPost("/soar/protected-targets-decision/ack", { confirmed_with: who, note });
+      setWho("");
+      setNote("");
+      load();
+    } catch (e) {
+      setErr(errorText(e, "Recording this acknowledgement requires the platform administrator role.", "Could not record the acknowledgement."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function withdraw() {
+    setErr("");
+    try {
+      await apiDelete("/soar/protected-targets-decision/ack");
+      load();
+    } catch (e) {
+      setErr(errorText(e, "Withdrawing this acknowledgement requires the platform administrator role.", "Could not withdraw the acknowledgement."));
+    }
+  }
+
+  if (!dec) return null;
+
+  return (
+    <Panel
+      title="Automated response readiness"
+      sub="Destructive response cannot be enabled until this tenant's crown jewels are decided"
+    >
+      {err && <p className="mb-3 text-[13px]" style={{ color: "var(--c-danger)" }}>{err}</p>}
+
+      <div className="mb-3 flex items-center gap-2">
+        <StatusTag tone={dec.decided ? "ok" : "warn"}>{dec.decided ? "Decided" : "Not decided"}</StatusTag>
+        <span className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>
+          {dec.target_count > 0
+            ? `${dec.target_count} target${dec.target_count === 1 ? "" : "s"} designated by this tenant.`
+            : dec.ack
+              ? `Acknowledged as having none — confirmed with ${dec.ack.confirmed_with}${dec.ack.acked_by_email ? `, recorded by ${dec.ack.acked_by_email}` : ""}.`
+              : "Nothing designated and nothing acknowledged. Enabling destructive response is blocked."}
+        </span>
+      </div>
+
+      {dec.ack && canAck && (
+        <Button variant="ghost" size="sm" onClick={withdraw}>
+          Withdraw acknowledgement
+        </Button>
+      )}
+
+      {/* The attestation branch only makes sense while there is nothing designated. Offering it alongside a
+          populated list would invite "acknowledge none" to sit next to four crown jewels, which is nonsense. */}
+      {!dec.decided && canAck && (
+        <div className="mt-3 border-t pt-3" style={{ borderColor: "var(--c-border)" }}>
+          <div className="mb-2 text-[12px]" style={{ color: "var(--c-ink-3)" }}>
+            If this tenant genuinely has no crown jewels, record that decision instead. Nirvet cannot make that
+            determination on the customer&apos;s behalf, so name the person who confirmed it.
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="rounded-lg px-3 py-2 text-sm"
+              style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)", minWidth: 240 }}
+              placeholder="Confirmed with (name, role)"
+              value={who}
+              onChange={(e) => setWho(e.target.value)}
+            />
+            <input
+              className="rounded-lg px-3 py-2 text-sm"
+              style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)", minWidth: 240 }}
+              placeholder="Note (optional)"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <Button variant="ghost" onClick={ack} disabled={busy || who.trim().length < 3}>
+              {busy ? "Recording…" : "Acknowledge none"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function KindPanel({ meta, role, onChange }: { meta: (typeof KINDS)[number]; role: string; onChange: () => void }) {
   const [rows, setRows] = useState<Target[] | null>(null);
   const [err, setErr] = useState("");
   const [value, setValue] = useState("");
@@ -103,6 +211,7 @@ function KindPanel({ meta, role }: { meta: (typeof KINDS)[number]; role: string 
     try {
       await apiPost(`/soar/protected-targets/${meta.kind}`, { value, note });
       setValue("");
+      onChange();
       setNote("");
       load();
     } catch (e) {
@@ -118,6 +227,7 @@ function KindPanel({ meta, role }: { meta: (typeof KINDS)[number]; role: string 
     setErr("");
     try {
       await apiDelete(`/soar/protected-targets/${meta.kind}/${t.id}`);
+      onChange();
       load();
     } catch (e) {
       setErr(errorText(e, "Removing a protection requires the platform administrator role.", "Could not remove the protected target."));

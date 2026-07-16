@@ -30,6 +30,13 @@ func TestSoarSettingsAndPlatformFlags(t *testing.T) {
 	if s, err := svc.Settings(ctx, tn.ID); err != nil || s.DestructiveEnabled || s.MaxClass3PerHour != 10 || s.MaxClass4PerHour != 0 {
 		t.Fatalf("default settings: %+v (err %v)", s, err)
 	}
+	// The D5 arm-gate is a precondition of ENABLING destructive response: a tenant must first decide about its
+	// crown jewels, because an empty deny-list allows rather than withholds. This test is about the settings
+	// surface round-tripping, not about the gate (TestArmGate_* covers that), so satisfy the precondition the way
+	// a real operator would — by designating one — rather than reaching past it.
+	if _, err := svc.AddProtectedTarget(ctx, p, soar.ProtectedKindHost, "dc01", "domain controller"); err != nil {
+		t.Fatalf("designate a protected target (arm-gate precondition): %v", err)
+	}
 	set, err := svc.SetSettings(ctx, p, tn.ID, soar.SoarSettings{DestructiveEnabled: true, DryRun: true, MaxClass3PerHour: 5, MaxClass4PerHour: 1})
 	if err != nil {
 		t.Fatalf("set settings: %v", err)

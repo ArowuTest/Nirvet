@@ -1740,11 +1740,20 @@ paths:
     put:
       tags: [soar]
       summary: PUT /soar/settings
+      description: >-
+        D5 arm-gate: ENABLING destructive_enabled is refused with 409 `protected_targets_undecided` unless the
+        tenant has decided about its crown jewels (see /soar/protected-targets-decision). Only the transition to
+        enabled is gated — re-saving an armed tenant, and DISABLING, are always allowed.
       responses:
         '200': { description: OK }
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+        '409':
+          description: >-
+            `protected_targets_undecided` — cannot arm destructive response before the tenant's crown jewels are
+            decided (an empty deny-list allows, it does not withhold).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   /soar/protected-targets/{kind}:
     get:
       tags: [soar]
@@ -1817,6 +1826,59 @@ paths:
         '401': { description: unauthenticated }
         '403': { description: forbidden }
         '404': { description: not found }
+  /soar/protected-targets-decision:
+    get:
+      tags: [soar]
+      summary: GET /soar/protected-targets-decision
+      description: >-
+        Whether this tenant has DECIDED about its crown jewels, and how. `target_count` counts the tenant's OWN
+        designations only — inherited instance-wide rows are excluded, because those are the platform's floor and
+        not the tenant's decision. `decided` is `target_count > 0 || ack != null`, and PUT /soar/settings refuses
+        to ENABLE destructive response while it is false.
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /soar/protected-targets-decision/ack:
+    post:
+      tags: [soar]
+      summary: POST /soar/protected-targets-decision/ack
+      description: >-
+        Record the audited attestation that this tenant deliberately designates NO crown jewels — the alternative
+        to designating one, and what unblocks arming destructive response. Deliberately not a field on
+        /soar/settings: an ack there could be set in the same request that flips destructive_enabled, which is a
+        checkbox beside the toggle rather than a decision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmed_with]
+              properties:
+                confirmed_with:
+                  type: string
+                  minLength: 3
+                  maxLength: 200
+                  description: >-
+                    Who AT THE CUSTOMER confirmed there are no crown jewels. Mandatory: the SOC cannot make that
+                    determination on the customer's behalf.
+                note: { type: string }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    delete:
+      tags: [soar]
+      summary: DELETE /soar/protected-targets-decision/ack
+      description: >-
+        Withdraw the attestation. Re-blocks a FUTURE arm; does not disarm an already-armed tenant (a safety gate
+        that can trap a tenant armed, or disarm one mid-incident, is a worse hazard than the one it guards).
+      responses:
+        '204': { description: No Content }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
   /tenant/ai/provider:
     get:
       tags: [tenant]

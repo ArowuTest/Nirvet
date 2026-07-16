@@ -869,6 +869,13 @@ func main() {
 	mux.Handle("GET /soar/protected-targets/{kind}", provider(soarH.ListProtectedTargets))
 	mux.Handle("POST /soar/protected-targets/{kind}", manager(soarH.AddProtectedTarget))
 	mux.Handle("DELETE /soar/protected-targets/{kind}/{id}", padmin(soarH.RemoveProtectedTarget))
+	// D5 arm-gate: PUT /soar/settings refuses to ENABLE destructive response until this tenant has decided about
+	// its crown jewels — >=1 own designation, or the audited attestation that it designates none. Kept off the
+	// settings payload on purpose: an ack field there could be set in the same request that flips the toggle,
+	// which is a checkbox beside a loaded gun rather than a decision.
+	mux.Handle("GET /soar/protected-targets-decision", provider(soarH.GetProtectedDecision))
+	mux.Handle("POST /soar/protected-targets-decision/ack", padmin(soarH.AckProtectedTargets))
+	mux.Handle("DELETE /soar/protected-targets-decision/ack", padmin(soarH.WithdrawProtectedAck))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
 	mux.Handle("GET /threat-intel/enrich", provider(threatH.Enrich)) // per-alert IOC enrichment (watchlist + STIX match)
