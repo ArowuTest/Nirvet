@@ -861,6 +861,14 @@ func main() {
 	mux.Handle("PUT /soar/settings", padmin(soarH.SetSettings))
 	mux.Handle("GET /soar/platform", padmin(soarH.GetPlatform))
 	mux.Handle("PUT /soar/platform", padmin(soarH.SetPlatform))
+	// §6.11 D5: designate the crown-jewel deny-lists the protected-target guards read. The guards and their
+	// tables have existed since 0066/0098; this is the write path that never got built, without which the
+	// lists stay empty — and an empty list ALLOWS (host_guard.go returns allow on len(patterns)==0), so the
+	// blast-radius net silently caught nothing. Gated by DIRECTION, not by row ownership: adding a protection
+	// tightens the net (manager), removing one makes a crown jewel auto-isolatable again (platform-admin).
+	mux.Handle("GET /soar/protected-targets/{kind}", provider(soarH.ListProtectedTargets))
+	mux.Handle("POST /soar/protected-targets/{kind}", manager(soarH.AddProtectedTarget))
+	mux.Handle("DELETE /soar/protected-targets/{kind}/{id}", padmin(soarH.RemoveProtectedTarget))
 	// threat intelligence (watchlist)
 	mux.Handle("GET /threat-intel", provider(threatH.List))
 	mux.Handle("GET /threat-intel/enrich", provider(threatH.Enrich)) // per-alert IOC enrichment (watchlist + STIX match)

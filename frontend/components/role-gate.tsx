@@ -11,7 +11,21 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getMe } from "@/lib/api";
 import { PageHeader, EmptyState } from "@/components/ui";
 
-export function RoleGate({ allow, title, children }: { allow: readonly string[]; title: string; children: ReactNode }) {
+// `hint` states WHO the area is for. It defaults to the platform-admin wording every current caller wants, but it
+// must be overridable: a gate that allows the whole SOC and still says "limited to platform administrators" tells
+// a customer_admin something false and sends them hunting for privileges that would not help — the same defect as
+// the J2 403s that guessed a role reason. If the gate does not know the reason, it should not invent one.
+export function RoleGate({
+  allow,
+  title,
+  hint = "This area is limited to platform administrators.",
+  children,
+}: {
+  allow: readonly string[];
+  title: string;
+  hint?: string;
+  children: ReactNode;
+}) {
   const [state, setState] = useState<"loading" | "ok" | "deny">("loading");
   const allowKey = allow.join(",");
 
@@ -30,7 +44,7 @@ export function RoleGate({ allow, title, children }: { allow: readonly string[];
     return (
       <div>
         <PageHeader title={title} />
-        <EmptyState title="Access restricted" hint="This area is limited to platform administrators." />
+        <EmptyState title="Access restricted" hint={hint} />
       </div>
     );
   return <>{children}</>;

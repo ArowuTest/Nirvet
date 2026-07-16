@@ -1745,6 +1745,78 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /soar/protected-targets/{kind}:
+    get:
+      tags: [soar]
+      summary: GET /soar/protected-targets/{kind}
+      description: >-
+        The D5 crown-jewel deny-list the blast-radius guards consult before a destructive step. Returns the
+        tenant's own designations plus the instance-wide (global) ones it inherits. An EMPTY list means nothing
+        is exempt from automated response — it does not withhold. Readable by any internal SOC role: it is the
+        answer to "why was that containment withheld?".
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [host, identity] }
+          description: >-
+            host — matched as a case-insensitive substring of the resolved host; identity — matched EXACTLY
+            against the UPN and resolved object id.
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [soar]
+      summary: POST /soar/protected-targets/{kind}
+      description: >-
+        Designate a crown jewel for the caller's tenant. TIGHTENS the blast-radius net (more refusals), so it is
+        gated at soc_manager. Rejects wildcards: neither guard globs, so "*.corp.gov.gh" would match nothing and
+        protect nothing.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [host, identity] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value: { type: string, maxLength: 253, description: 'Host pattern (substring) or full UPN / object id (exact)' }
+                note: { type: string, description: 'Why this target is a crown jewel' }
+      responses:
+        '201': { description: Created }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '409': { description: already designated }
+  /soar/protected-targets/{kind}/{id}:
+    delete:
+      tags: [soar]
+      summary: DELETE /soar/protected-targets/{kind}/{id}
+      description: >-
+        Undesignate a crown jewel. WEAKENS the net — the target becomes auto-isolatable/disable-able again — so it
+        sits a tier above the add, at platform_admin. Instance-wide (global) rows cannot be removed here.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [host, identity] }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: No Content }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+        '404': { description: not found }
   /tenant/ai/provider:
     get:
       tags: [tenant]

@@ -53,6 +53,8 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Response",
     items: [
       { label: "Playbooks", href: "/console/playbooks", icon: "activity", ready: true, roles: PROVIDER },
+      // Read is provider-wide on purpose: when a containment is withheld, this list is the answer to "why?".
+      { label: "Protected targets", href: "/console/protected-targets", icon: "shield", ready: true, roles: PROVIDER },
       { label: "Privileged access", href: "/console/pam", icon: "shield", ready: true, roles: PROVIDER },
       { label: "Team workload", href: "/console/workload", icon: "users", ready: true, roles: MANAGER },
       { label: "Evidence", href: "/console/evidence", icon: "server", ready: true, roles: PROVIDER },
