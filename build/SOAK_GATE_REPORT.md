@@ -69,6 +69,26 @@ hardware** (paid/prod PG + CPU will raise per-worker throughput materially — t
 tier adds ~1–2 s of DB latency that prod removes). The per-event cost is detection (all seeded rules evaluated per
 event) + correlation; that is the first optimization lever if worker fan-out isn't enough.
 
+### Drain scaling (multi-worker) — the capacity answer (Jul 16, `TestValueLoopDrainScaling`)
+
+The single-worker number (44 ev/s) raised the real question: does drain scale with worker COUNT, or does the
+shared Postgres plateau first? Test builds N **genuinely separate** workers (own queue handle over the same
+Postgres queue tables + own detection engine/cache; contend via `FOR UPDATE SKIP LOCKED` — not goroutines sharing
+one worker). 15 tenants × 60 = 900 events/round, local docker PG, pool max=10:
+
+| workers | total ev/s | per-worker ev/s | scaling |
+|--------:|-----------:|----------------:|---------|
+| 1 | 35 | 34.8 | baseline |
+| 2 | 60 | 30.1 | 1.7× |
+| 4 | 111 | 27.8 | **3.2× (1→4), ~80% efficient** |
+
+**Answer: drain scales ~linearly with workers — no DB plateau through 4×.** Throughput rose 3.2× for 4× workers;
+the gentle per-worker decline (34.8→27.8 ev/s) is mild contention, and with **pool max=10** shared across 4
+detect+correlate+alert workers, the connection pool is the suspected next lever (not a hard DB ceiling). So a
+2k-ev/s gov estate is a **horizontal-workers + pool-sizing + prod-DB** problem, not an architectural wall — exactly
+what the SKIP-LOCKED queue was built for, now empirically confirmed. (Absolute per-worker rate is local-docker-PG
+bound; paid PG raises it, as the infra soak's ~1–2 s free-tier DB latency showed.)
+
 **Still open for the FULL A2 gate (needs the load env, not a local box):**
 1. Scale the knobs toward the real spec (250 tenants / ~2k ev/s / ~10k burst / 48h) on paid PG+API — this local run
    proves the code path + shape, not the 48h endurance or the burst ceiling.

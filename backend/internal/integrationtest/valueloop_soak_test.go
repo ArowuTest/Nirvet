@@ -20,15 +20,21 @@ package integrationtest
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ArowuTest/nirvet/internal/detection"
 	"github.com/ArowuTest/nirvet/internal/ingestion"
+	"github.com/ArowuTest/nirvet/internal/platform/queue"
 	"github.com/ArowuTest/nirvet/internal/tenant"
+	"github.com/ArowuTest/nirvet/internal/threatintel"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -192,6 +198,143 @@ func soakCount(t *testing.T, h *harness, tid uuid.UUID, table string) int {
 		t.Fatalf("count %s: %v", table, err)
 	}
 	return n
+}
+
+// buildDrainWorker builds a GENUINELY SEPARATE worker instance (its own queue handle over the SAME Postgres
+// queue tables via the shared pool, its own detection engine + rule cache + enricher) — like a distinct worker
+// process. N of these draining concurrently contend on the real queue through FOR UPDATE SKIP LOCKED, which is
+// the faithful multi-worker test (not N goroutines sharing one worker). Shares the pool-backed alert/correlation
+// services (stateless over the pool), as separate processes would share the same DB.
+func buildDrainWorker(t *testing.T, h *harness) (*ingestion.Worker, func()) {
+	t.Helper()
+	q, closeQ, _, err := queue.New(h.ctx, os.Getenv("NIRVET_NATS_URL"), h.db.Pool)
+	if err != nil {
+		t.Fatalf("build drain worker queue: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	detEng := detection.NewEngine(detection.NewRepository(h.db))
+	enr := threatintel.NewEnricher(threatintel.NewRepository(h.db))
+	return ingestion.NewWorker(q, h.events, enr, detEng, h.alertSvc, log).WithCorrelator(h.corrSvc), closeQ
+}
+
+// soakIngestBatch fills the queue with tenants×perTenant synthetic events (concurrent producers).
+func soakIngestBatch(t *testing.T, h *harness, tids []uuid.UUID, perTenant, concurrency int) int {
+	t.Helper()
+	jobs := make(chan uuid.UUID, len(tids)*perTenant)
+	for _, tid := range tids {
+		for j := 0; j < perTenant; j++ {
+			jobs <- tid
+		}
+	}
+	close(jobs)
+	var wg sync.WaitGroup
+	var n int64
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seq := 0
+			for tid := range jobs {
+				seq++
+				in := ingestion.IngestInput{Source: "soak", NativeID: uuid.NewString(), ClassName: soakClass(seq), Severity: soakSeverity(seq), ActorRef: "user:soak-" + strconv.Itoa(seq%50), TargetRef: "host:soak-" + strconv.Itoa(seq%20)}
+				if _, err := h.ingest.Ingest(context.Background(), tid, in); err != nil {
+					t.Errorf("ingest: %v", err)
+					return
+				}
+				atomic.AddInt64(&n, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	return int(n)
+}
+
+func parseWorkerCounts(s string, def []int) []int {
+	if s == "" {
+		return def
+	}
+	var out []int
+	for _, p := range strings.Split(s, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil && n > 0 {
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
+}
+
+// TestValueLoopDrainScaling answers the real 2k-ev/s capacity question the single-worker soak raised: does drain
+// scale ~linearly with worker COUNT, or does the shared Postgres plateau first (worker-bound vs DB-bound)? For
+// each worker count it re-fills the queue, spins up that many separate workers, drains, and reports ev/s +
+// per-worker ev/s. A flat total across counts ⇒ DB ceiling; a rising total ⇒ headroom.
+func TestValueLoopDrainScaling(t *testing.T) {
+	if os.Getenv("NIRVET_SOAK") == "" {
+		t.Skip("drain-scaling soak: set NIRVET_SOAK=1 to run")
+	}
+	h := newHarness(t)
+	ts := tenant.NewService(tenant.NewRepository(h.db))
+	tenants := soakEnvInt("NIRVET_SOAK_TENANTS", 10)
+	perTenant := soakEnvInt("NIRVET_SOAK_EVENTS_PER_TENANT", 60)
+	counts := parseWorkerCounts(os.Getenv("NIRVET_SOAK_DRAIN_WORKERS"), []int{1, 2, 4})
+
+	tids := []uuid.UUID{h.tenantID}
+	for i := 1; i < tenants; i++ {
+		tn, err := ts.Create(h.ctx, tenant.CreateInput{Name: "drain-" + uuid.NewString()})
+		if err != nil {
+			t.Fatalf("seed tenant: %v", err)
+		}
+		tids = append(tids, tn.ID)
+	}
+	t.Logf("DRAIN SCALING config: tenants=%d events/round=%d worker counts=%v maxconns=%d",
+		len(tids), len(tids)*perTenant, counts, h.db.Pool.Stat().MaxConns())
+
+	for _, wc := range counts {
+		batch := soakIngestBatch(t, h, tids, perTenant, 8)
+		workers := make([]*ingestion.Worker, 0, wc)
+		closers := make([]func(), 0, wc)
+		for i := 0; i < wc; i++ {
+			w, closeQ := buildDrainWorker(t, h)
+			workers = append(workers, w)
+			closers = append(closers, closeQ)
+		}
+		var processed int64
+		start := time.Now()
+		var wg sync.WaitGroup
+		for _, w := range workers {
+			wg.Add(1)
+			go func(w *ingestion.Worker) {
+				defer wg.Done()
+				zeros := 0
+				for {
+					n, err := w.RunOnce(h.ctx)
+					if err != nil {
+						t.Errorf("RunOnce: %v", err)
+						return
+					}
+					if n > 0 {
+						atomic.AddInt64(&processed, int64(n))
+						zeros = 0
+						continue
+					}
+					zeros++
+					if zeros >= 3 { // three empty claims in a row = queue drained from this worker's view
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			}(w)
+		}
+		wg.Wait()
+		dur := time.Since(start)
+		for _, c := range closers {
+			c()
+		}
+		rate := float64(atomic.LoadInt64(&processed)) / dur.Seconds()
+		t.Logf("DRAIN SCALING | workers=%d batch=%d processed=%d drain=%s => %.0f ev/s total (%.1f ev/s per worker)",
+			wc, batch, atomic.LoadInt64(&processed), dur.Round(time.Millisecond), rate, rate/float64(wc))
+	}
 }
 
 func soakCountAlerts(t *testing.T, h *harness, tid uuid.UUID) int {
