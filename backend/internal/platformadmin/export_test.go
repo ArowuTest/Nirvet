@@ -62,16 +62,21 @@ const (
 	TestFlagGuarded      = "test.guarded_fixture"
 	TestFlagProtected    = "test.protected_fixture"     // SecureDefault ON  — weakening = setting it OFF
 	TestFlagProtectedOff = "test.protected_off_fixture" // SecureDefault OFF — weakening = setting it ON
+	TestFlagImmutable    = "test.immutable_fixture"     // code-only; a planted DB row must be inert (Reinf-A)
 )
 
 // RegisterStandardTestFlags registers one fixture per settable class and returns a single restore func.
 func RegisterStandardTestFlags() func() {
 	restores := []func(){
-		RegisterFlagForTest(TestFlagOpen, FlagSpec{ClassOpen, false, "test fixture: open"}),
-		RegisterFlagForTest(TestFlagGuarded, FlagSpec{ClassGuarded, false, "test fixture: guarded"}),
+		RegisterFlagForTest(TestFlagOpen, FlagSpec{Class: ClassOpen, SecureDefault: false, Desc: "test fixture: open"}),
+		RegisterFlagForTest(TestFlagGuarded, FlagSpec{Class: ClassGuarded, SecureDefault: false, Desc: "test fixture: guarded"}),
 		// SecureDefault true, so "weakening" it means setting false — the shape of a real protected control.
-		RegisterFlagForTest(TestFlagProtected, FlagSpec{ClassProtected, true, "test fixture: protected, secure=on"}),
-		RegisterFlagForTest(TestFlagProtectedOff, FlagSpec{ClassProtected, false, "test fixture: protected, secure=off"}),
+		RegisterFlagForTest(TestFlagProtected, FlagSpec{Class: ClassProtected, SecureDefault: true, Desc: "test fixture: protected, secure=on"}),
+		RegisterFlagForTest(TestFlagProtectedOff, FlagSpec{Class: ClassProtected, SecureDefault: false, Desc: "test fixture: protected, secure=off"}),
+		// An immutable fixture needs no EnforcedBy: the per-flag proof fence (J5) reads the init-time snapshot of
+		// the PRODUCTION registry, so a fixture can neither satisfy that fence nor be policed by it. Which is the
+		// point — the fence exists to make real immutable claims earn themselves, not to police test scaffolding.
+		RegisterFlagForTest(TestFlagImmutable, FlagSpec{Class: ClassImmutable, SecureDefault: true, Desc: "test fixture: immutable"}),
 	}
 	return func() {
 		for _, r := range restores {

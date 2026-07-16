@@ -45,11 +45,11 @@ func lastAuditReason(t *testing.T, db *database.DB, key string) string {
 func TestGate_ImmutableRejectedAndAudited(t *testing.T) {
 	db := paDB(t)
 	svc := NewService(NewRepository(db), &mockPAAlerter{})
-	_, err := svc.SetFlag(context.Background(), padminActor(), SetFlagInput{Key: "mfa.enforce", Enabled: false, Reason: "x"})
+	_, err := svc.SetFlag(context.Background(), padminActor(), SetFlagInput{Key: TestFlagImmutable, Enabled: false, Reason: "x"})
 	if status(err) != 400 {
 		t.Fatalf("immutable flag must be rejected 400, got %v", err)
 	}
-	if !strings.HasPrefix(lastAuditReason(t, db, "mfa.enforce"), "REJECTED:") {
+	if !strings.HasPrefix(lastAuditReason(t, db, TestFlagImmutable), "REJECTED:") {
 		t.Fatal("the rejected attempt must be audited")
 	}
 }

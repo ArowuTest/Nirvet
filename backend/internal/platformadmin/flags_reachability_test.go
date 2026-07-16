@@ -159,3 +159,91 @@ func TestImmutableFlagsAreNotSettable(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// J5: the exemption must be EARNED PER FLAG.
+//
+// The J4 fix exempted ClassImmutable from the reachability fence because "the code is the reader". That is a
+// per-flag FACT and it was asserted as a CLASS PROPERTY, so nothing ever checked it — and it was false for
+// mfa.enforce, which claimed "MFA enforcement", immutable, secure-default true, while login demanded a code only
+// `if u.MFAEnabled`. The single flag the fence exempted was the single flag that was lying. A category exemption
+// is an exemption nobody re-checks.
+//
+// So each immutable flag must name its enforcing code (FlagSpec.EnforcedBy) AND register a proof below that fails
+// if that control is absent. Deleting the REVOKE from 0017, or re-adding mfa.enforce, turns this red.
+// ---------------------------------------------------------------------------------------------------------
+
+// immutableProofs asserts the CONTROL exists — not that the flag is declared. Adding an immutable flag without a
+// proof here fails TestEveryImmutableFlagProvesItsControl, which is the whole point: you cannot claim
+// "configuration can never disable this" without showing what enforces it.
+var immutableProofs = map[string]func(t *testing.T, root string){
+	"rls.enforce":     proveRLSEnforced,
+	"audit.immutable": proveAuditAppendOnly,
+}
+
+func TestEveryImmutableFlagProvesItsControl(t *testing.T) {
+	root := repoRoot(t)
+	for key, spec := range productionRegistry {
+		if spec.Class != ClassImmutable {
+			continue
+		}
+		if strings.TrimSpace(spec.EnforcedBy) == "" {
+			t.Errorf("immutable flag %q declares no EnforcedBy — it claims configuration can never disable this "+
+				"control while naming nothing that enforces it. This is J5 (mfa.enforce). Name the code path, or "+
+				"delete the flag until the control exists.", key)
+			continue
+		}
+		proof, ok := immutableProofs[key]
+		if !ok {
+			t.Errorf("immutable flag %q has no proof-test in immutableProofs — the reachability fence EXEMPTS "+
+				"immutable flags, so without a proof nothing on this project will ever check that %q is real. "+
+				"That exemption is earned per flag, never granted by class.", key, spec.EnforcedBy)
+			continue
+		}
+		t.Run(key, func(t *testing.T) { proof(t, root) })
+	}
+}
+
+// migrationsCorpus concatenates every migration — the enforcement for both surviving immutable flags is schema-level.
+func migrationsCorpus(t *testing.T, root string) string {
+	t.Helper()
+	var b strings.Builder
+	entries, err := os.ReadDir(filepath.Join(root, "migrations"))
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		c, err := os.ReadFile(filepath.Join(root, "migrations", e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		b.Write(c)
+	}
+	return b.String()
+}
+
+// rls.enforce: tenant isolation is real if migrations FORCE row security (so even the table owner is bound) and
+// schemacheck fences it. Verified: 63 migrations carry FORCE ROW LEVEL SECURITY.
+func proveRLSEnforced(t *testing.T, root string) {
+	if !strings.Contains(migrationsCorpus(t, root), "FORCE ROW LEVEL SECURITY") {
+		t.Error("rls.enforce claims tenant isolation cannot be disabled by config, but no migration FORCEs row " +
+			"level security — the claim is unbacked")
+	}
+	b, err := os.ReadFile(filepath.Join(root, "internal", "schemacheck", "schemacheck_test.go"))
+	if err != nil || !strings.Contains(string(b), "relforcerowsecurity") {
+		t.Error("rls.enforce's second leg is the schemacheck fence asserting relforcerowsecurity; it is gone, so " +
+			"a future table could ship without FORCE RLS and nothing would notice")
+	}
+}
+
+// audit.immutable: append-only is real if the app role cannot mutate audit_log. Verified: 0017:9.
+func proveAuditAppendOnly(t *testing.T, root string) {
+	corpus := migrationsCorpus(t, root)
+	if !strings.Contains(corpus, "REVOKE UPDATE, DELETE, TRUNCATE ON audit_log") {
+		t.Error("audit.immutable claims the audit log is append-only and config can never change that, but no " +
+			"migration revokes UPDATE/DELETE/TRUNCATE on audit_log from the app role — the claim is unbacked")
+	}
+}

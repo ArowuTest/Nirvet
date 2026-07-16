@@ -19,6 +19,20 @@ type FlagSpec struct {
 	Class         SafetyClass
 	SecureDefault bool
 	Desc          string
+
+	// EnforcedBy names the production code path that IS this flag's reader. REQUIRED for ClassImmutable and
+	// meaningless otherwise.
+	//
+	// J5: the J4 fix exempted ClassImmutable from the reachability fence on the grounds that "the code is the
+	// reader". That is a PER-FLAG FACT, and it was asserted as a CLASS PROPERTY — so it was never checked. It was
+	// false for mfa.enforce, which declared the registry's strongest assurance ("MFA enforcement", immutable,
+	// default true) while nothing enforced MFA at all: login demands a code only when the user has already opted
+	// in (iam/service.go `if u.MFAEnabled`). The one flag the fence exempted was the one flag that was lying.
+	//
+	// So the exemption now has to be earned, per flag, by naming the code and proving it exists
+	// (flags_reachability_test.go). The general rule this taught: NEVER LET A FENCE EXEMPT A CATEGORY — an
+	// exemption granted by class is an exemption nobody ever re-checks.
+	EnforcedBy string
 }
 
 // registry is the authoritative flag catalog. Admins CANNOT edit it. Adding a flag = a code change + review —
@@ -48,13 +62,28 @@ type FlagSpec struct {
 // What remains is TRUE: these three controls are code-owned and configuration can never disable them. That is
 // the same shape as ai/redaction.go's compiled floor — a control that works with zero configuration — stated
 // here as a class so the SET path can refuse, and so an auditor can be shown the claim.
+// J5 (reviewer): `"mfa.enforce": {ClassImmutable, true, "MFA enforcement"}` was DELETED from this list. It made
+// the registry's strongest claim — MFA is enforced and configuration can never disable it — and nothing enforced
+// MFA. Every path is per-user opt-in: an mfa_enabled column, SetMFAEnabled, a login that demands a code only
+// `if u.MFAEnabled` (iam/service.go:182), and accessreview.go which merely REPORTS who has it. No RequireMFA, no
+// middleware, no policy. It also contradicted this builder's own earlier finding, in the session where a
+// client-side force-MFA block was correctly refused as theatre because no server-side policy existed.
+//
+// It is not re-added as ClassGuarded or wired to a resolver — that would be the J4 mistake (a flag pretending to
+// be a control). It comes back when the force-MFA slice lands and there is real enforcement for EnforcedBy to
+// name. An absent claim is honest; a false one is not, and this is the claim a CSA assessor asks about first.
 var registry = map[string]FlagSpec{
 	// Immutable — security controls config must never be able to disable (resolved from code only, Reinf-A).
-	// A DB row for these is inert BY DESIGN: the code is the reader, which is why they are exempt from the
-	// reachability fence.
-	"mfa.enforce":     {ClassImmutable, true, "MFA enforcement"},
-	"rls.enforce":     {ClassImmutable, true, "row-level tenant isolation"},
-	"audit.immutable": {ClassImmutable, true, "audit-log append-only"},
+	// A DB row for these is inert BY DESIGN: the code is the reader. That exemption from the reachability fence is
+	// EARNED PER FLAG via EnforcedBy + a proof-test, never granted by class (J5).
+	"rls.enforce": {
+		Class: ClassImmutable, SecureDefault: true, Desc: "row-level tenant isolation",
+		EnforcedBy: "migrations/*.sql FORCE ROW LEVEL SECURITY + internal/schemacheck (relforcerowsecurity fence)",
+	},
+	"audit.immutable": {
+		Class: ClassImmutable, SecureDefault: true, Desc: "audit-log append-only",
+		EnforcedBy: "migrations/0017_audit_immutable.sql REVOKE UPDATE, DELETE, TRUNCATE ON audit_log",
+	},
 }
 
 // Registered reports whether a key is in the catalog.

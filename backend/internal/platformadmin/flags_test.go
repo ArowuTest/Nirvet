@@ -7,8 +7,8 @@ func TestClassOf_UnknownIsProtected(t *testing.T) {
 	if ClassOf("totally.unregistered.flag") != ClassProtected {
 		t.Fatal("an unregistered flag key must fail closed to protected (M-1)")
 	}
-	if ClassOf("mfa.enforce") != ClassImmutable {
-		t.Fatalf("mfa.enforce class = %s", ClassOf("mfa.enforce"))
+	if ClassOf(TestFlagImmutable) != ClassImmutable {
+		t.Fatalf("immutable fixture class = %s", ClassOf(TestFlagImmutable))
 	}
 	if ClassOf(TestFlagOpen) != ClassOpen {
 		t.Fatalf("open fixture class = %s", ClassOf(TestFlagOpen))
@@ -22,7 +22,7 @@ func TestSecureDefault(t *testing.T) {
 	if SecureDefault("totally.unregistered.flag") != false {
 		t.Fatal("unknown key must default to false (conservative)")
 	}
-	if SecureDefault("mfa.enforce") != true {
+	if SecureDefault(TestFlagImmutable) != true {
 		t.Fatal("a security control must default ON")
 	}
 	if SecureDefault("soar.destructive_enabled") != false {

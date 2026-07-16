@@ -62,9 +62,9 @@ func clearFlag(t *testing.T, db *database.DB, key string) {
 func TestResolve_ImmutableIsInert(t *testing.T) {
 	db := paDB(t)
 	tid := paTenant(t, db)
-	seedFlag(t, db, "global", "", "mfa.enforce", false) // attacker/mistake plants mfa.enforce=off globally
-	if !NewFlagResolver(db).Enabled(context.Background(), tid, "mfa.enforce") {
-		t.Fatal("immutable mfa.enforce must resolve ON from code, ignoring the planted DB row (Reinf-A)")
+	seedFlag(t, db, "global", "", TestFlagImmutable, false) // attacker/mistake plants the immutable flag OFF globally
+	if !NewFlagResolver(db).Enabled(context.Background(), tid, TestFlagImmutable) {
+		t.Fatal("an immutable flag must resolve ON from code, ignoring the planted DB row (Reinf-A)")
 	}
 }
 
