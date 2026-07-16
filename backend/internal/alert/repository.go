@@ -141,6 +141,12 @@ func (r *Repository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, e
 // Close marks an alert closed (dispositioned) — only from new/assigned, so a promoted alert
 // (already an incident) is not silently reverted. Returns pgx.ErrNoRows when nothing changed.
 func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID) error {
+	return r.CloseTx(ctx, tenantID, id, nil)
+}
+
+// CloseTx closes the alert AND runs postTx in the SAME transaction (see AssignTx) — the fleet disposition path's
+// mutation + audit land atomically.
+func (r *Repository) CloseTx(ctx context.Context, tenantID, id uuid.UUID, postTx func(ctx context.Context, tx pgx.Tx) error) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
 			`UPDATE alerts SET status='closed' WHERE id=$1 AND status IN ('new','assigned')`, id)
@@ -150,12 +156,22 @@ func (r *Repository) Close(ctx context.Context, tenantID, id uuid.UUID) error {
 		if ct.RowsAffected() == 0 {
 			return pgx.ErrNoRows
 		}
+		if postTx != nil {
+			return postTx(ctx, tx)
+		}
 		return nil
 	})
 }
 
 // Assign sets the assignee and marks the alert assigned.
 func (r *Repository) Assign(ctx context.Context, tenantID, id, assignee uuid.UUID) error {
+	return r.AssignTx(ctx, tenantID, id, assignee, nil)
+}
+
+// AssignTx assigns AND runs postTx in the SAME transaction — so an assignment and its audit (the cross-tenant
+// fleet write path) commit together or not at all, instead of the assignment landing with a dropped audit row.
+// postTx runs under the target tenant's RLS, so an audit written in it lands in that tenant's trail.
+func (r *Repository) AssignTx(ctx context.Context, tenantID, id, assignee uuid.UUID, postTx func(ctx context.Context, tx pgx.Tx) error) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		ct, err := tx.Exec(ctx,
 			`UPDATE alerts SET assignee_id=$2, status='assigned' WHERE id=$1 AND status IN ('new','assigned')`, id, assignee)
@@ -164,6 +180,9 @@ func (r *Repository) Assign(ctx context.Context, tenantID, id, assignee uuid.UUI
 		}
 		if ct.RowsAffected() == 0 {
 			return pgx.ErrNoRows
+		}
+		if postTx != nil {
+			return postTx(ctx, tx)
 		}
 		return nil
 	})

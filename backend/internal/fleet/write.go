@@ -26,6 +26,10 @@ import (
 type AlertWriter interface {
 	Assign(ctx context.Context, tenantID, id, assignee uuid.UUID) error
 	Disposition(ctx context.Context, tenantID, id uuid.UUID, disposition, reason string, by uuid.UUID) error
+	// The *Tx variants run a caller-supplied post-mutation callback in the SAME transaction as the mutation, so the
+	// fleet write path can land its cross-tenant audit atomically with the assign/disposition (see AssignAlert).
+	AssignTx(ctx context.Context, tenantID, id, assignee uuid.UUID, postTx func(ctx context.Context, tx pgx.Tx) error) error
+	DispositionTx(ctx context.Context, tenantID, id uuid.UUID, disposition, reason string, by uuid.UUID, postTx func(ctx context.Context, tx pgx.Tx) error) error
 }
 
 // ContainmentRunner is the subset of the SOAR service the fleet DESTRUCTIVE path routes through. Both methods
@@ -50,10 +54,12 @@ func (s *Service) AssignAlert(ctx context.Context, p auth.Principal, alertID, as
 	if s.alerts == nil {
 		return httpx.ErrInternal("fleet write path not configured")
 	}
-	if err := s.alerts.Assign(ctx, target, alertID, assignee); err != nil {
-		return err
-	}
-	return s.auditTarget(ctx, target, p, "fleet.alert.assign", alertID, map[string]any{"assignee": assignee.String()})
+	// Mutation + target-tenant audit commit in ONE tx: the audit callback runs inside the assign's transaction
+	// (already under WithTenant(target)), so the agency's "who acted on my resource" row can never be dropped
+	// while the assignment lands. Previously the two were separate txs — an audit failure left an un-attributed
+	// cross-tenant write.
+	return s.alerts.AssignTx(ctx, target, alertID, assignee,
+		s.auditCallback(p, "fleet.alert.assign", alertID, map[string]any{"assignee": assignee.String()}))
 }
 
 // DispositionAlert dispositions a fleet alert (close with a verdict). Same target-resolution + scope check +
@@ -66,10 +72,10 @@ func (s *Service) DispositionAlert(ctx context.Context, p auth.Principal, alertI
 	if s.alerts == nil {
 		return httpx.ErrInternal("fleet write path not configured")
 	}
-	if err := s.alerts.Disposition(ctx, target, alertID, disposition, reason, p.UserID); err != nil {
-		return err
-	}
-	return s.auditTarget(ctx, target, p, "fleet.alert.disposition", alertID, map[string]any{"disposition": disposition})
+	// Disposition + target-tenant audit in ONE tx (see AssignAlert) — the verdict and its cross-tenant attribution
+	// commit together or not at all.
+	return s.alerts.DispositionTx(ctx, target, alertID, disposition, reason, p.UserID,
+		s.auditCallback(p, "fleet.alert.disposition", alertID, map[string]any{"disposition": disposition}))
 }
 
 // FireContainment fires a SOAR containment playbook on another tenant's alert — the highest-consequence fleet
@@ -142,13 +148,14 @@ func (s *Service) ApproveContainment(ctx context.Context, p auth.Principal, aler
 	return s.containment.ApproveForTarget(ctx, p, target, runID)
 }
 
-// auditTarget records a fleet write in the TARGET tenant's audit trail with the OPERATOR's real identity
-// (#4 — data-owner-visibility on the write side: the agency sees who acted on its resource). tenant_id comes
-// from the WithTenant(target) GUC via the audit_log default, so the row lands in the target tenant. A failure
-// here does not undo the (already-applied) mutation — but it is returned so the caller surfaces the audit gap
-// rather than silently dropping it (NFR-003).
-func (s *Service) auditTarget(ctx context.Context, target uuid.UUID, p auth.Principal, action string, alertID uuid.UUID, meta map[string]any) error {
-	return s.db.WithTenant(ctx, target, func(ctx context.Context, tx pgx.Tx) error {
+// auditCallback builds the post-mutation callback that records a fleet write in the TARGET tenant's audit trail
+// with the OPERATOR's real identity (#4 — data-owner-visibility on the write side: the agency sees who acted on
+// its resource). It is handed to the alert service's *Tx methods, so it runs inside the MUTATION's transaction —
+// which the alert repo has already opened under WithTenant(target). tenant_id comes from that GUC via the
+// audit_log default, so the row lands in the target tenant. Because it shares the mutation's tx, a failure here
+// rolls the mutation back (NFR-003): a cross-tenant write is NEVER applied without its attributing audit row.
+func (s *Service) auditCallback(p auth.Principal, action string, alertID uuid.UUID, meta map[string]any) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID:    p.UserID,
 			ActorEmail: p.Email,
@@ -156,5 +163,5 @@ func (s *Service) auditTarget(ctx context.Context, target uuid.UUID, p auth.Prin
 			Target:     "alert:" + alertID.String(),
 			Metadata:   meta,
 		})
-	})
+	}
 }

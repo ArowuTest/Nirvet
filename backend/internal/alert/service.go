@@ -2,10 +2,12 @@ package alert
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ArowuTest/nirvet/internal/platform/eventstore"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // FeedbackSink receives an analyst's alert disposition so the detection module can attribute it to
@@ -36,6 +38,13 @@ var validDispositions = map[string]bool{
 // feeds that verdict back to detection tuning (DET-007). The alert close is the authoritative action;
 // feedback is best-effort so a feedback failure never blocks dispositioning the alert.
 func (s *Service) Disposition(ctx context.Context, tenantID, id uuid.UUID, disposition, reason string, by uuid.UUID) error {
+	return s.DispositionTx(ctx, tenantID, id, disposition, reason, by, nil)
+}
+
+// DispositionTx dispositions the alert AND runs postTx (e.g. the cross-tenant fleet audit) in the SAME transaction,
+// so the disposition and its audit commit together. A postTx error is a 500 (the mutation rolls back); a no-rows
+// close is the ordinary "already promoted/closed" 400.
+func (s *Service) DispositionTx(ctx context.Context, tenantID, id uuid.UUID, disposition, reason string, by uuid.UUID, postTx func(ctx context.Context, tx pgx.Tx) error) error {
 	if !validDispositions[disposition] {
 		return httpx.ErrBadRequest("invalid disposition: must be true_positive|false_positive|benign|duplicate")
 	}
@@ -43,8 +52,11 @@ func (s *Service) Disposition(ctx context.Context, tenantID, id uuid.UUID, dispo
 	if err != nil {
 		return httpx.ErrNotFound("alert not found")
 	}
-	if err := s.repo.Close(ctx, tenantID, id); err != nil {
-		return httpx.ErrBadRequest("alert cannot be dispositioned (already promoted or closed)")
+	if err := s.repo.CloseTx(ctx, tenantID, id, postTx); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return httpx.ErrBadRequest("alert cannot be dispositioned (already promoted or closed)")
+		}
+		return httpx.ErrInternal("could not disposition alert")
 	}
 	if s.feedback != nil && a.DetectionID != nil {
 		// Attribute the verdict to the firing rule. Best-effort: the alert is already closed.
@@ -126,8 +138,17 @@ func (s *Service) Get(ctx context.Context, tenantID, id uuid.UUID) (*Alert, erro
 
 // Assign assigns an alert to an analyst.
 func (s *Service) Assign(ctx context.Context, tenantID, id, assignee uuid.UUID) error {
-	if err := s.repo.Assign(ctx, tenantID, id, assignee); err != nil {
-		return httpx.ErrNotFound("alert not assignable")
+	return s.AssignTx(ctx, tenantID, id, assignee, nil)
+}
+
+// AssignTx assigns the alert AND runs postTx (e.g. the cross-tenant fleet audit) in the SAME transaction. A no-rows
+// assign is the ordinary "not assignable" 404; a postTx error is a 500 with the assignment rolled back.
+func (s *Service) AssignTx(ctx context.Context, tenantID, id, assignee uuid.UUID, postTx func(ctx context.Context, tx pgx.Tx) error) error {
+	if err := s.repo.AssignTx(ctx, tenantID, id, assignee, postTx); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return httpx.ErrNotFound("alert not assignable")
+		}
+		return httpx.ErrInternal("could not assign alert")
 	}
 	return nil
 }
