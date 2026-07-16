@@ -45,7 +45,40 @@ Recommended go-live sequence for the full gate: (a) move API + Postgres to alway
 load/staging env; (c) run the value-loop soak there with auth + synthetic volume, asserting end-to-end p95
 detection latency and zero dropped events; (d) then production cutover (wipe test data, rotate seeded creds).
 
+## Value-loop soak (A2) — FIRST RUN, local, Jul 16 2026
+
+The outstanding gate is now **partially closed**: a real value-loop driver exists and runs. Harness =
+`internal/integrationtest/valueloop_soak_test.go` (`TestValueLoopSoak`, gated behind `NIRVET_SOAK=1`), reusing the
+proven `newHarness` wiring — it seeds K tenants and drives the **real** `ingest → normalize → detect → correlate →
+alert → incident` loop against local Postgres, then measures. Source-verified the 4 known-weak points first:
+outbox uses `FOR UPDATE SKIP LOCKED` (structurally sound); audit_log access-review query matches mig-0131's
+`(actor_id,action,at DESC)` index (covered); SOAR `resolveAction`/`resolveDecision` open a per-call `WithTenant`
+tx inside per-step loops (**real N+1, bounded by step count** — not exercised by this ingest-only run; see below).
+
+**Run: 25 tenants × 40 events = 1000, concurrency 8, local docker PG (127.0.0.1:5433).**
+- Ingest: **5.63 s → 178 ev/s** (c=8). Drain (worker, single, incl. per-event detection + correlation):
+  **22.8 s → 44 ev/s**. processed=1003 (RunOnce batch re-drives; no loss).
+- **197 alerts + 25 incidents raised** — the loop is functionally CORRECT at volume (detection + correlation +
+  auto-incident all fire), not merely up.
+- Pool: acquired=0 / idle=8 / total=8 / **max=10 — no exhaustion, no leak**. No dropped events (ingested==total).
+
+**Headline finding — the drain worker is the throughput bottleneck, not ingest.** Ingest (178 ev/s) >> drain
+(44 ev/s/worker), so under sustained load the queue absorbs the gap and **drain must scale horizontally**. Naive
+math to the reviewer's 2k-ev/s steady target: ~2000 / 44 ≈ **~45 worker instances at this per-worker rate on this
+hardware** (paid/prod PG + CPU will raise per-worker throughput materially — the infra soak above showed the free
+tier adds ~1–2 s of DB latency that prod removes). The per-event cost is detection (all seeded rules evaluated per
+event) + correlation; that is the first optimization lever if worker fan-out isn't enough.
+
+**Still open for the FULL A2 gate (needs the load env, not a local box):**
+1. Scale the knobs toward the real spec (250 tenants / ~2k ev/s / ~10k burst / 48h) on paid PG+API — this local run
+   proves the code path + shape, not the 48h endurance or the burst ceiling.
+2. **Exercise the SOAR N+1** — add a playbook-run loop to the harness (this run is ingest-only, so the confirmed
+   N+1 wasn't measured); drive concurrent runs and count per-run queries.
+3. Retention-sweep × live-ingest contention (run the retention sweep concurrently with the drive).
+4. audit_log index under a large history (seed millions of audit rows, then time the access-review query).
+
 ## Bottom line
-Infra-layer soak: **app stable, latency gated on free-tier infra.** The always-on API **+ DB** upgrade is a
-confirmed hard prerequisite. The authenticated value-loop soak remains the outstanding gate and needs a load env
-+ auth (out of scope for a non-destructive prod run).
+Infra-layer soak: **app stable, latency gated on free-tier infra.** Value-loop soak: **driver built and green —
+loop is correct at volume, no drops, no pool/leak issues; drain throughput (44 ev/s/worker) is the scale lever and
+needs horizontal workers + prod DB for 2k ev/s.** The always-on API **+ DB** upgrade and a dedicated load env
+remain hard prerequisites to close the full A2 gate at the 250-tenant/48h spec.
