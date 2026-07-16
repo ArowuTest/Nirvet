@@ -17,14 +17,17 @@ patterns, not measured.
 
 | # | Item | Verified state at source | Go-live severity | Effort | Blocker for gov? |
 |---|------|--------------------------|------------------|--------|------------------|
-| H1 | **KMS envelope-encryption for the credential vault (ADR-0004)** | **STUB.** `internal/platform/crypto/crypto.go`: `kmsCipher` returns `errKMSNotImplemented`; prod path is `localCipher` wrapped by `NIRVET_SECRET_MASTER_KEY` (env). TODO(ADR-0004) present. GCS blob adapter (#161) already built, so cloud-portability groundwork exists. | **HIGH** for a *sovereign* claim (tenant connector secrets must be KMS-wrapped, not env-key-wrapped). Not a *pilot* blocker (local cipher is real AES, persistent key works). | L | **Yes for the sovereignty story**, no for a pilot. |
+| H1 | **KMS envelope-encryption for the credential vault (ADR-0004)** | **STUB.** `crypto.go:37` — `localCipher` uses a **SINGLE master key** (`NIRVET_SECRET_MASTER_KEY`, env); tenant id is AES-GCM **AAD only** (`:81`) = a cross-tenant *binding*, NOT per-tenant key separation. `kmsCipher` returns `errKMSNotImplemented`. GCS adapter (#161) exists (KMS pairs with GCP, H4). | **BLOCKER for the multi-agency operator model** (reviewer, sharpened). Blast radius of a leaked master key = **ALL agencies' EDR/identity/firewall API credentials at once** (they share the key), and it scales with agency count. Env-var master key over N agencies' vault creds is a single point of catastrophic compromise. **Pilot-OK only** at single-tenant (blast radius = 1). | L | **Single-tenant pilot: no. Multi-agency operator go-live: YES (blocker).** |
 | H2 | **F3 ROE onboarding surface / arm-gate 409 window** | **DONE** (#224). `soar/protected_ack.go` + `sliceb_gate.go` present; ROE step closes the arm-gate window so destructive SOAR can't be armed before protected-targets are designated. | — (verify-only) | XS | No — already closed. Re-verify in the go-live pass. |
 | H3 | **Value-loop soak / scale at volume** | **PARTIAL.** `build/SOAK_GATE_REPORT.md` exists = infra-layer PASS; the *value loop* (ingest→detect→correlate→SOAR) has **never run at volume**. | **HIGH** — a gov estate will push real event volume day one; an unproven value loop is a live-incident risk. | M | **Yes** — must run a real soak before a gov go-live sign-off. |
 | H4 | **Render → GCP sovereign migration** | **FUTURE.** App is cloud-portable (BlobStore/ADR-0005, GCS adapter #161, NATS/ClickHouse adapters); no GCP deploy artifact yet. Free Render PG expires 2026-08-12. | **HIGH** for a Ghana *sovereign* deployment (data must live in-jurisdiction). | L–XL | **Yes** for sovereign go-live; the pilot can run on Render. |
 
 **One-line:** H2 is done; **H1 (KMS), H3 (soak), H4 (GCP) are the three real gov go-live long-poles.** H1 pairs
 naturally with H4 (both are GCP-native), so sequence H3 (soak — proves the product) → H1+H4 (GCP+KMS — proves the
-sovereign deployment) unless the gov contract front-loads the residency requirement.
+sovereign deployment) unless the gov contract front-loads the residency requirement. **Reviewer sharpening (Jul 16,
+verified at `crypto.go`):** H1 is a **go-live blocker for the multi-agency operator model**, not "future work" —
+the single-master-key blast radius is every agency's connector creds. Bank it as a blocker the moment agency #2
+onboards; the single-tenant pilot can run on the local cipher.
 
 ---
 
@@ -32,8 +35,22 @@ sovereign deployment) unless the gov contract front-loads the residency requirem
 
 1. **H3 — value-loop soak at volume.** Highest information-per-effort: it either proves the core product holds at
    gov scale or surfaces the scaling bug now instead of in front of a government customer. Extend
-   `SOAK_GATE_REPORT.md` from infra-PASS to value-loop-PASS. Gate: define the target event rate + duration with
-   the owner, then run it.
+   `SOAK_GATE_REPORT.md` from infra-PASS to value-loop-PASS.
+
+   **Reviewer soak spec (Jul 16 — defensible default; PIN to the actual first agency's size when known):**
+   - **Model:** 250 tenants active · ~2,000 events/sec steady · ~10,000/sec burst · **48h sustained + three 15-min bursts.**
+   - **Why:** 48h catches slow leaks (pool exhaustion, outbox backlog, `audit_log`/partition growth); the burst
+     proves the queue/outbox/detection path degrades gracefully not catastrophically; 250 concurrent tenants proves
+     RLS context-switching + per-tenant pooling at fleet scale.
+   - **Watch these KNOWN-WEAK points (not just "does it stay up"):**
+     1. **SOAR N+1** (`resolveAction`/`resolveDecision` per playbook step) — only shows under playbook-run load;
+        drive concurrent runs.
+     2. **Outbox drain** — does `notification_outbox` backlog grow unbounded under burst, or does SKIP-LOCKED keep pace?
+     3. **Retention sweep × live ingest** — sweep + ingest hitting the same tables under load.
+     4. **`audit_log` index (mig 0131)** actually holding the access-review query flat as history grows.
+   - **Scale to reality:** if the first gov deploy is a ~10-agency pilot, soak at ~10× that for headroom rather than
+     the full 250 — but prove multi-tenant isolation at **250-tenant breadth** regardless (that's the fleet the
+     architecture claims). Owner still to confirm the target against the real first agency.
 2. **H1 — KMS envelope-encryption** (closes task #162). Implement `kmsCipher` via `cloud.google.com/go/kms`:
    generate DEK → wrap with the tenant KMS CryptoKey → store `{wrappedDEK, ciphertext}` → decrypt unwraps via KMS.
    Keep `localCipher` as the non-sovereign/dev fallback (config-selected on `NIRVET_KMS_KEY_NAME`). Pre-code gate
