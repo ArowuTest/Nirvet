@@ -21,6 +21,9 @@ type Credentials struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 	AzureTenant  string `json:"azure_tenant"`
+	// Okta identity-containment vendor (G1): SSWS API token + the tenant's Okta org base URL.
+	OktaOrgURL string `json:"okta_org_url"`
+	OktaToken  string `json:"okta_token"`
 }
 
 // connectorSecret is a tenant connector's sealed credential + config for an authorized action call.

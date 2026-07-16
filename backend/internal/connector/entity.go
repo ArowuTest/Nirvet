@@ -20,6 +20,9 @@ const (
 	// (SRS §1.4 scopes that out) — the kind only selects the source normalizer.
 	KindOsquery Kind = "host_osquery"
 	KindWazuh   Kind = "host_wazuh"
+	// §6.11 G1 first non-Microsoft response vendor: Okta identity containment (suspend/unsuspend/revoke-sessions).
+	// Ingestion for Okta already exists (source normalizer); this Kind selects the outbound Actioner client.
+	KindOkta Kind = "okta"
 )
 
 // ConnectorConfig is a tenant's configured integration. Secrets are stored
