@@ -216,7 +216,12 @@ func (rs *ReportService) finalizeReport(ctx context.Context, p auth.Principal, i
 	if err := rs.repo.MarkReady(ctx, p.TenantID, id, uri, len(ds.Rows), len(data)); err != nil {
 		return nil, err
 	}
-	_ = rs.repo.WriteAudit(ctx, p.TenantID, &id, p.UserID, "generate", format, len(ds.Rows))
+	// REP-008: every generate is recorded in the append-only report_audit. Do NOT swallow this — a report the
+	// platform generated but cannot show it generated is a compliance gap. The report row is already 'ready', so a
+	// retry (which re-generates) is an acceptable cost against silently losing the audit.
+	if err := rs.repo.WriteAudit(ctx, p.TenantID, &id, p.UserID, "generate", format, len(ds.Rows)); err != nil {
+		return nil, httpx.ErrInternal("report generated but its audit record failed; retry")
+	}
 	return rs.repo.Get(ctx, p.TenantID, id)
 }
 
@@ -239,7 +244,11 @@ func (rs *ReportService) Download(ctx context.Context, p auth.Principal, id uuid
 	if err != nil {
 		return nil, "", httpx.ErrInternal("artifact read failed")
 	}
-	_ = rs.repo.WriteAudit(ctx, p.TenantID, &id, p.UserID, "download", rep.Format, rep.RowCount)
+	// REP-008: every download is recorded. Fail CLOSED — do not hand out a compliance artifact if we cannot record
+	// who took it and when. A transient audit-DB failure blocks the download; the caller retries.
+	if err := rs.repo.WriteAudit(ctx, p.TenantID, &id, p.UserID, "download", rep.Format, rep.RowCount); err != nil {
+		return nil, "", httpx.ErrInternal("could not record the download audit; retry")
+	}
 	return data, rep.Format, nil
 }
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/httpx"
@@ -66,26 +65,14 @@ func (s *Service) Create(ctx context.Context, p auth.Principal, in CreateInput) 
 	if in.Tags == nil {
 		in.Tags = []string{}
 	}
-	prev, _ := s.repo.GetByRef(ctx, p.TenantID, in.Ref) // before-value for the audit
 	a := &Asset{
 		ID: uuid.New(), TenantID: p.TenantID, Ref: in.Ref, Name: in.Name,
 		Kind: in.Kind, Criticality: in.Criticality, Owner: in.Owner, Tags: in.Tags,
 	}
-	if err := s.repo.Upsert(ctx, a); err != nil {
+	// Upsert + criticality-change audit atomically: a failed audit rolls back the upsert (never a silently
+	// unaudited criticality edit), and the retry re-reads the true prior value.
+	if err := s.repo.UpsertWithCriticalityAudit(ctx, a, p); err != nil {
 		return nil, httpx.ErrInternal("could not save asset")
-	}
-	if s.db != nil && (prev == nil || prev.Criticality != a.Criticality) {
-		prevCrit := ""
-		if prev != nil {
-			prevCrit = prev.Criticality
-		}
-		_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-			return audit.Record(ctx, tx, audit.Entry{
-				ActorID: p.UserID, ActorEmail: p.Email, Action: "asset.criticality_set",
-				Target:   "asset:" + a.Ref,
-				Metadata: map[string]any{"criticality": a.Criticality, "previous": prevCrit, "kind": a.Kind},
-			})
-		})
 	}
 	return a, nil
 }
