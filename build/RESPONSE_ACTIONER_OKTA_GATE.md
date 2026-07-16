@@ -108,3 +108,15 @@ Everything else passes clean: reversibility classification, D5 casing reference,
 dormant-until-configured posture, the named `reset_password` deferral, and the test plan. **Cleared to build.**
 Builder verifier note: restore any of the 3 must-adds' bugs in code → the corresponding test must go red before the
 fix (mutation-check discipline, [[feedback_reviewer_never_weaken_test]]).
+
+## 9. LANDED — commit 13b5691, DORMANT, all 3 must-adds implemented
+
+`connector/okta.go` (SSWS client) + `connector/okta_actioner.go` (suspend/unsuspend + revoke_sessions) + `KindOkta`
++ `Credentials.OktaOrgURL/OktaToken` + `migrations/0132` (catalog rows `okta_suspend_user`=high, `okta_revoke_sessions`
+=medium) + `main.go` registration. Vendor-prefixed action keys (`okta_*`) — see the source-reality catch: the
+catalog is keyed by action_key alone with a routing `connector_key` column, so a bare `revoke_sessions` would
+misroute to entra-id. **unsuspend is registry-only** (the inverse), NOT a catalog step action (mirrors Entra's
+`enable_user`). Must-adds all IMPLEMENTED: MA-1 `Idempotent:true` on revoke_sessions; MA-2 `action_id`=bare id in
+every Fn; MA-3 multi-state fail-safe (`oktaAccessDenied` map + STAGED/PROVISIONED not-applicable + unsuspend-only-
+from-SUSPENDED). Tests (`okta_actioner_test.go`, loopback mock + injected client, no SSRF weakening) cover the
+contract flags + all 7 statuses. connector + full soar suite + mig-0132 green. **Next: CrowdStrike EDR actioner.**
