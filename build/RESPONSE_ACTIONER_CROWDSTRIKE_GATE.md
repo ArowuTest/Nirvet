@@ -40,14 +40,30 @@ Okta `reset_password` deferral.)
 *Vendor-prefixed `cs_*` keys are REQUIRED: `isolate_endpoint` already maps to `defender` in the catalog (mig 0036),
 so a generic `isolate_endpoint` step would misroute to Defender. Same source-reality catch as Okta's `okta_*`.
 
+**CS-FLAG (reviewer, non-blocking) — blast-radius asymmetry between the two auto-runnable verbs.** `cs_isolate_host`
+hits ONE device; `cs_block_hash` is **tenant-wide** — every endpoint in the tenant stops executing that hash, so a
+false-positive block on a legitimate signed binary is a **fleet-wide outage** (reversible, but everyone at once).
+Same `High` class, very different consequence, and the D5 crown-jewel guard covers hosts/identities, NOT hashes — so
+nothing structurally stops a block on a critical legit hash. Not a slice blocker (reversible + approval-gated), but
+the catalog seed for `cs_block_hash` should carry a note that its blast radius is the whole fleet, and the authority
+model should treat it with **more weight than single-host isolate** — a tenant may reasonably set a higher approver
+floor (or keep it approval-only) for it. Named here so it isn't discovered in production.
+
 ## 3. Terminal-state PreCheck (multi-state, like Okta — NOT a boolean)
 CrowdStrike device containment `status` is multi-valued: **`normal` · `containment_pending` · `contained` ·
 `lift_containment_pending`**. PreCheck reads it and is fail-SAFE:
 - `cs_isolate_host`: if `contained` OR `containment_pending` → **goal met, no call, `changed=false`** (D2 fail-safe —
   never re-contain, and a foreign containment we didn't cause is left `changed=false` so ReverseRun won't lift it,
   exactly as the Okta foreign-suspend case composes with `sliceb_reverse.go:52-54`). If `normal` → contain,
-  `changed=true`. If `lift_containment_pending` → treat as in-flight-release; **do not** issue a contain over a
-  pending lift (decide: goal-not-met-retry-later vs. no-op — document the choice, default no-op `changed=false`).
+  `changed=true`.
+  - **CS-MA1 (reviewer must-add) — `lift_containment_pending` MUST re-contain, NOT no-op.** A host in
+    `lift_containment_pending` is mid-release, heading to `normal`/uncontained. An operator issuing isolate INTENDS
+    contained. A no-op would let the lift complete → the host ends **uncontained** despite an explicit isolate — a
+    fail-OPEN. For a containment verb the fail-safe direction is toward *contained*, so over `lift_containment_pending`
+    the actioner **re-issues contain** (`changed=true`, cancelling the in-flight lift) — goal-not-met, not no-op.
+    This is the same fail-safe-direction invariant as D5/reachability: an ambiguous state must never resolve to
+    "less protected." (The symmetric `cs_release_host` over `containment_pending` DOES no-op — leaving the host
+    contained, which is the safe direction for a release.)
 - `cs_release_host` (reverse): lift ONLY from `contained`/`lift_containment_pending`→ from `normal`/`containment_pending`,
   `changed=false` (never lift a host we didn't contain — the reverse-composition invariant the reviewer verified on Okta).
 - **MA-2 analog:** `priorState["action_id"]` = the **bare CrowdStrike `device_id`** (the reconciler's poll key; the
@@ -97,3 +113,22 @@ terminal-state PreCheck, `action_id`, and the reverse composition (already-conta
 
 Ties [[project_nirvet_soar_slicec]] (Defender async pattern), [[project_nirvet_soar_entra]]/Okta (identity ref),
 [[project_nirvet_protected_targets]] (D5), [[feedback_reachability_invariant]], [[feedback_reviewer_never_weaken_test]].
+
+---
+
+## 10. RECORDED REVIEWER PASS — Fable 5, Jul 16 2026 → **PASS with 1 must-add + 1 flag (both folded in)**
+
+Verified at source: Defender async-Confirm pattern real (`isolate_endpoint` has `Confirm: d.confirm`), routing catch
+real (mig 0036:59 seeds `isolate_endpoint … 'defender'`), and `canAutoRun` confirms `cs_kill_process` is refused at
+both branches (not idempotent/precheck AND high-risk-not-reversible) — the defer+unregister decision is correct.
+
+- **CS-MA1 (must-add) — FOLDED (§3):** `cs_isolate_host` over `lift_containment_pending` must **re-contain, not
+  no-op** — the original default was fail-OPEN (a host mid-release stays uncontained despite an explicit isolate).
+  Fail-safe direction for a containment verb is toward contained. Build must implement this exact branch + a test.
+- **CS-FLAG (non-blocking) — FOLDED (§2):** `cs_block_hash` blast radius is the WHOLE FLEET (tenant-wide), unlike
+  single-host isolate; D5 doesn't cover hashes. Catalog seed carries the note; authority model may set a higher bar.
+
+Everything else clears (reversibility table correct + source-verified, async Confirm mirrors Defender, O-1..O-4 are
+the right unknowns, reverse-composition carried from Okta). **Cleared to build.** Reviewer will verify at source:
+the `lift_containment_pending`→re-contain branch + its test, `cs_kill_process` absent from the registry, multi-state
+PreCheck, `action_id` bare ids, and the foreign-contained-host reverse skip.
