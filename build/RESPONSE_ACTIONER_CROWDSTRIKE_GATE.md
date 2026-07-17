@@ -132,3 +132,20 @@ Everything else clears (reversibility table correct + source-verified, async Con
 the right unknowns, reverse-composition carried from Okta). **Cleared to build.** Reviewer will verify at source:
 the `lift_containment_pending`→re-contain branch + its test, `cs_kill_process` absent from the registry, multi-state
 PreCheck, `action_id` bare ids, and the foreign-contained-host reverse skip.
+
+## 11. LANDED — commit 3192bef (HOST CONTAINMENT slice), DORMANT
+
+`connector/crowdstrike.go` (OAuth2 client-creds + device resolve/status + device-action) + `crowdstrike_actioner.go`
+(cs_isolate_host ⇄ cs_release_host + multi-state fail-safe + per-verb async Confirm) + `KindCrowdStrike` +
+`Credentials.CrowdStrikeBaseURL` (region/GovCloud) + `migrations/0133` (seeds `cs_isolate_host`=high only) +
+`main.go`. **CS-MA1 implemented + dedicated test** (`TestCrowdStrike_CSMA1_IsolateOverLiftPending_ReContains`):
+isolate over `lift_containment_pending` re-contains (changed=true), the symmetric release over `containment_pending`
+no-ops. Terminal-state D2 (already-contained→changed=false) composes with ReverseRun's `changed=true` gate → foreign
+containment never lifted. `action_id`=bare device id. `TestCrowdStrike_ContractFlags` asserts block/allow/kill are
+NOT registered. connector + full soar suite + mig-0133 green.
+
+**Scoped to host containment.** Follow-ups, NOT built this slice (unregistered = honest simulate): **cs_block_hash /
+cs_allow_hash** (IOC — independent endpoints + CS-FLAG tenant-wide blast radius, its own sub-slice) and
+**cs_kill_process** (RTR + non-reversible). Open questions resolved: O-1 device-actions ARE async → per-verb Confirm
+wired; O-2 region base URL in creds (GovCloud); O-4 device ref = `device:<id>` or hostname-resolved. O-3 (IOC reverse)
+deferred with the block/allow sub-slice.
