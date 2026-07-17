@@ -272,11 +272,24 @@ func (s *Service) runFor(ctx context.Context, p auth.Principal, tenantID, playbo
 		mode, businessHours := dec.mode, dec.businessHours
 		// business_hours_only fails closed to approval: we cannot yet verify the tenant's business-hours
 		// calendar, so an hours-restricted action never auto-runs (Round-4 H2 — consume the stored flag).
-		autoEligible := !st.RequiresApproval && Allowed(mode, act.RiskClass)
+		//
+		// FleetWide (owner decision, Option 1) — the BREADTH gate. `!act.FleetWide` short-circuits BEFORE the
+		// mode-dependent Allowed(...), so a fleet-wide action (blocks a hash/IP/domain across EVERY endpoint) is
+		// never auto-eligible under ANY authority mode — pre_authorized/contractual_auto/emergency included. A
+		// permissive config must never license a fleet-wide effect (same floor as D5). It routes to
+		// awaiting_approval, NOT skipped: a manager can still approve-and-run it, so the control stays REACHABLE
+		// (not the business_critical phantom). This line is the ONLY auto-eligibility computation in the codebase,
+		// and BOTH run-creation paths reach it (Run→runFor; FireContainment→RunForTarget→runFor), so there is no
+		// second decision point to bypass it.
+		autoEligible := !st.RequiresApproval && !act.FleetWide && Allowed(mode, act.RiskClass)
 		sr := StepResult{Name: st.Name, ConnectorKey: act.ConnectorKey, Action: st.Action, Risk: act.RiskClass}
 		if !autoEligible {
 			sr.Status = StatusAwaitingApproval
-			sr.Note = fmt.Sprintf("requires approval (class %s, authority '%s')", act.RiskClass, mode)
+			if act.FleetWide {
+				sr.Note = fmt.Sprintf("fleet-wide: approval required regardless of authority mode (class %s, authority '%s')", act.RiskClass, mode)
+			} else {
+				sr.Note = fmt.Sprintf("requires approval (class %s, authority '%s')", act.RiskClass, mode)
+			}
 		} else if businessHours {
 			sr.Status = StatusAwaitingApproval
 			sr.Note = fmt.Sprintf("business-hours-only: deferred to approval (class %s, authority '%s')", act.RiskClass, mode)

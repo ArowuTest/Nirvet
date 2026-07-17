@@ -36,6 +36,13 @@ type ActionCatalog struct {
 	Executor     ExecutorKind `json:"executor"`
 	ConnectorKey string       `json:"connector_key"`
 	Enabled      bool         `json:"enabled"`
+	// FleetWide marks an action whose blast radius is the WHOLE TENANT (blocks a hash/IP/domain across every
+	// endpoint), as opposed to a single host/user. It is a BREADTH gate axis INDEPENDENT of risk/reversibility:
+	// a fleet-wide action is NEVER auto-eligible under ANY authority mode (the `!act.FleetWide` short-circuit in
+	// runFor sits ABOVE the mode-dependent Allowed()), but stays approvable-and-runnable by a manager. Reversibility
+	// is the wrong proxy for "safe to automate" at fleet scale — a reversible fleet-wide false positive is still a
+	// fleet-wide outage. A tenant override may only RAISE this, never lower it (same clamp as RiskClass).
+	FleetWide bool `json:"fleet_wide"`
 }
 
 // unknownAction is the fail-closed fallback for an action_key absent from the catalog: maximum risk
@@ -56,7 +63,7 @@ func (r *Repository) resolveAction(ctx context.Context, tenantID uuid.UUID, acti
 	var global, override *ActionCatalog
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled
+			`SELECT id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled, fleet_wide
 			   FROM soar_action_catalog
 			  WHERE action_key=$1 AND enabled = true AND (tenant_id = app_current_tenant() OR tenant_id IS NULL)`, actionKey)
 		if err != nil {
@@ -65,7 +72,7 @@ func (r *Repository) resolveAction(ctx context.Context, tenantID uuid.UUID, acti
 		defer rows.Close()
 		for rows.Next() {
 			var a ActionCatalog
-			if err := rows.Scan(&a.ID, &a.TenantID, &a.ActionKey, &a.Title, &a.RiskClass, &a.Executor, &a.ConnectorKey, &a.Enabled); err != nil {
+			if err := rows.Scan(&a.ID, &a.TenantID, &a.ActionKey, &a.Title, &a.RiskClass, &a.Executor, &a.ConnectorKey, &a.Enabled, &a.FleetWide); err != nil {
 				return err
 			}
 			if a.TenantID == nil {
@@ -87,6 +94,9 @@ func (r *Repository) resolveAction(ctx context.Context, tenantID uuid.UUID, acti
 		eff = override
 		if global != nil && riskRank(global.RiskClass) > riskRank(override.RiskClass) {
 			eff.RiskClass = global.RiskClass // override may only RAISE risk, never lower it
+		}
+		if global != nil && global.FleetWide {
+			eff.FleetWide = true // override may only RAISE fleet_wide — a tenant can never un-mark a fleet-wide action
 		}
 	}
 	return *eff, true
@@ -126,6 +136,9 @@ func (r *Repository) resolveActionCatalogMap(ctx context.Context, tenantID uuid.
 			if hasG && riskRank(g.RiskClass) > riskRank(o.RiskClass) {
 				eff.RiskClass = g.RiskClass // override may only RAISE risk, never lower it
 			}
+			if hasG && g.FleetWide {
+				eff.FleetWide = true // override may only RAISE fleet_wide (same tighten-only clamp as risk)
+			}
 		} else {
 			eff = g
 		}
@@ -155,7 +168,7 @@ func (r *Repository) listActionCatalog(ctx context.Context, tenantID uuid.UUID) 
 	var out []ActionCatalog
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			`SELECT id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled
+			`SELECT id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled, fleet_wide
 			   FROM soar_action_catalog
 			  WHERE tenant_id = app_current_tenant() OR tenant_id IS NULL
 			  ORDER BY action_key, tenant_id NULLS FIRST`)
@@ -165,7 +178,7 @@ func (r *Repository) listActionCatalog(ctx context.Context, tenantID uuid.UUID) 
 		defer rows.Close()
 		for rows.Next() {
 			var a ActionCatalog
-			if err := rows.Scan(&a.ID, &a.TenantID, &a.ActionKey, &a.Title, &a.RiskClass, &a.Executor, &a.ConnectorKey, &a.Enabled); err != nil {
+			if err := rows.Scan(&a.ID, &a.TenantID, &a.ActionKey, &a.Title, &a.RiskClass, &a.Executor, &a.ConnectorKey, &a.Enabled, &a.FleetWide); err != nil {
 				return err
 			}
 			out = append(out, a)
@@ -185,16 +198,18 @@ func (r *Repository) upsertActionCatalog(ctx context.Context, p auth.Principal, 
 	a.ActionKey = strings.ToLower(strings.TrimSpace(a.ActionKey))
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO soar_action_catalog (id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			`INSERT INTO soar_action_catalog (id, tenant_id, action_key, title, risk_class, executor, connector_key, enabled, fleet_wide)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 			 ON CONFLICT (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid), action_key)
 			 DO UPDATE SET title=EXCLUDED.title, risk_class=EXCLUDED.risk_class, executor=EXCLUDED.executor,
-			              connector_key=EXCLUDED.connector_key, enabled=EXCLUDED.enabled`,
-			uuid.New(), tenantID, a.ActionKey, a.Title, a.RiskClass, a.Executor, a.ConnectorKey, a.Enabled); err != nil {
+			              connector_key=EXCLUDED.connector_key, enabled=EXCLUDED.enabled, fleet_wide=EXCLUDED.fleet_wide`,
+			uuid.New(), tenantID, a.ActionKey, a.Title, a.RiskClass, a.Executor, a.ConnectorKey, a.Enabled, a.FleetWide); err != nil {
 			return err
 		}
+		// A tenant may store fleet_wide=false here, but resolveAction/resolveActionCatalogMap clamp it back UP to the
+		// seeded global's true — the override can only tighten, never un-mark a fleet-wide action.
 		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email, Action: "soar.action_catalog_set",
-			Target: "action:" + a.ActionKey, Metadata: map[string]any{"risk_class": a.RiskClass, "executor": a.Executor}})
+			Target: "action:" + a.ActionKey, Metadata: map[string]any{"risk_class": a.RiskClass, "executor": a.Executor, "fleet_wide": a.FleetWide}})
 	})
 }
 
