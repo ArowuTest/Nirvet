@@ -88,11 +88,11 @@ func TestCrowdStrike_ContractFlags(t *testing.T) {
 	if !ok || rel.Inverse != "cs_isolate_host" || rel.Confirm == nil {
 		t.Fatalf("cs_release_host must invert cs_isolate_host with a Confirm")
 	}
-	// Deferred verbs MUST NOT be registered (can't sneak in as auto-runnable / misrouted).
-	for _, deferred := range []string{"cs_block_hash", "cs_allow_hash", "cs_kill_process"} {
-		if _, present := by[deferred]; present {
-			t.Fatalf("%s must NOT be registered in this slice (deferred)", deferred)
-		}
+	// cs_block_hash / cs_allow_hash are now registered (the FleetWide IOC sub-slice); their flags are asserted in
+	// TestCrowdStrike_IOC_ContractFlags. cs_kill_process stays DEFERRED (non-reversible / RTR) → MUST remain
+	// unregistered so it can never sneak in as auto-runnable or misrouted.
+	if _, present := by["cs_kill_process"]; present {
+		t.Fatal("cs_kill_process must NOT be registered (deferred: non-reversible, needs RTR)")
 	}
 }
 
@@ -181,5 +181,144 @@ func TestCrowdStrike_ConfirmTerminalStates(t *testing.T) {
 	m.status = "normal"
 	if done, success, _, _ := iso.Confirm(context.Background(), creds, "aid-C"); !done || success {
 		t.Fatalf("isolate Confirm on normal must be done+failed")
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// IOC block/allow (the FleetWide consumer). Covers: terminal-state PreCheck on indicator existence, bare
+// action_id, delete-what-we-made via prior_action_id, and the reverse-composition invariant (a FOREIGN
+// indicator is recorded changed=false so ReverseRun — which gates on changed=true — never deletes it).
+
+type iocMock struct {
+	existing  string // indicator id present for the hash ("" = none)
+	created   int
+	deleted   int
+	deletedID string
+	delete404 bool
+}
+
+func newIOCServer(t *testing.T, m *iocMock) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_in": 1800})
+	})
+	mux.HandleFunc("/iocs/queries/indicators/v1", func(w http.ResponseWriter, r *http.Request) {
+		res := []string{}
+		if m.existing != "" {
+			res = append(res, m.existing)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"resources": res})
+	})
+	mux.HandleFunc("/iocs/entities/indicators/v1", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			m.created++
+			m.existing = "ioc-new"
+			_ = json.NewEncoder(w).Encode(map[string]any{"resources": []map[string]any{{"id": "ioc-new"}}})
+		case http.MethodDelete:
+			m.deleted++
+			m.deletedID = r.URL.Query().Get("ids")
+			if m.delete404 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64 chars = sha256
+
+func TestCrowdStrike_IOC_ContractFlags(t *testing.T) {
+	by := map[string]soar.Actioner{}
+	for _, ac := range NewCrowdStrikeActioner("x", "i", "s", nil).Actioners() {
+		by[ac.Action] = ac
+	}
+	blk, ok := by["cs_block_hash"]
+	if !ok || !blk.PreCheck || !blk.Reversible || blk.Inverse != "cs_allow_hash" {
+		t.Fatalf("cs_block_hash must be PreCheck+Reversible(Inverse cs_allow_hash), got %+v", blk)
+	}
+	if blk.Confirm != nil {
+		t.Error("cs_block_hash is synchronous (indicator created immediately) → Confirm must be nil")
+	}
+	if by["cs_allow_hash"].Inverse != "cs_block_hash" {
+		t.Error("cs_allow_hash must invert cs_block_hash")
+	}
+}
+
+func TestCrowdStrike_IOC_BlockCreatesWhenAbsent(t *testing.T) {
+	m := &iocMock{}
+	_, fn := csFn(t, csActionerFor(newIOCServer(t, m)), "cs_block_hash")
+	creds, _ := json.Marshal(Credentials{})
+	ref, prior, err := fn(context.Background(), creds, "sha256:"+testHash, nil)
+	if err != nil {
+		t.Fatalf("block: %v", err)
+	}
+	if m.created != 1 || prior["changed"] != true {
+		t.Fatalf("block on absent indicator must create + changed=true; created=%d changed=%v", m.created, prior["changed"])
+	}
+	if ref != "ioc-new" || prior["action_id"] != "ioc-new" { // MA-2: bare indicator id
+		t.Fatalf("action_id must be the bare indicator id, got ref=%q action_id=%v", ref, prior["action_id"])
+	}
+}
+
+func TestCrowdStrike_IOC_ForeignIndicator_NotOursNotDeleted(t *testing.T) {
+	// THE REVERSE-COMPOSITION INVARIANT. A pre-existing FOREIGN 'prevent' indicator → our block is goal-met with
+	// changed=false. ReverseRun gates on changed=true, so the inverse is never invoked → we never delete a
+	// fleet-wide block another admin created.
+	m := &iocMock{existing: "ioc-foreign"}
+	_, fn := csFn(t, csActionerFor(newIOCServer(t, m)), "cs_block_hash")
+	creds, _ := json.Marshal(Credentials{})
+	_, prior, err := fn(context.Background(), creds, "sha256:"+testHash, nil)
+	if err != nil {
+		t.Fatalf("block over foreign indicator must not error: %v", err)
+	}
+	if m.created != 0 {
+		t.Fatalf("must NOT create a second indicator when one exists, got created=%d", m.created)
+	}
+	if prior["changed"] != false {
+		t.Fatal("REVERSE-COMPOSITION BREAK: a foreign pre-existing indicator must record changed=false, so " +
+			"ReverseRun's changed=true gate never deletes a block we did not create")
+	}
+}
+
+func TestCrowdStrike_IOC_AllowDeletesExactlyOurIndicator(t *testing.T) {
+	// O-3 delete-what-we-made: the reverse keys on prior_action_id (forwarded by ReverseRun from
+	// prior_state.action_id) — NOT on whatever indicator currently matches the hash (which could be a foreign
+	// one created after ours).
+	m := &iocMock{existing: "ioc-someone-elses"}
+	_, fn := csFn(t, csActionerFor(newIOCServer(t, m)), "cs_allow_hash")
+	creds, _ := json.Marshal(Credentials{})
+	_, prior, err := fn(context.Background(), creds, "sha256:"+testHash,
+		map[string]any{"reverse_of": "cs_block_hash", "prior_action_id": "ioc-ours"})
+	if err != nil {
+		t.Fatalf("allow: %v", err)
+	}
+	if m.deletedID != "ioc-ours" {
+		t.Fatalf("delete-what-we-made VIOLATED: reverse deleted %q but our indicator was ioc-ours — keying on the "+
+			"current hash match instead of prior_action_id would delete a foreign indicator", m.deletedID)
+	}
+	if prior["changed"] != true {
+		t.Fatalf("a real delete must record changed=true, got %v", prior["changed"])
+	}
+}
+
+func TestCrowdStrike_IOC_AllowAlreadyGoneIsNoop(t *testing.T) {
+	m := &iocMock{existing: "ioc-x", delete404: true}
+	_, fn := csFn(t, csActionerFor(newIOCServer(t, m)), "cs_allow_hash")
+	creds, _ := json.Marshal(Credentials{})
+	_, prior, err := fn(context.Background(), creds, "sha256:"+testHash, map[string]any{"prior_action_id": "ioc-x"})
+	if err != nil {
+		t.Fatalf("allow on an already-deleted indicator must not error: %v", err)
+	}
+	if prior["changed"] != false {
+		t.Fatalf("already-gone indicator must be changed=false, got %v", prior["changed"])
 	}
 }

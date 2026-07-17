@@ -162,3 +162,77 @@ func (c *crowdStrikeClient) deviceAction(ctx context.Context, deviceID, action s
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// IOC (custom indicator) management — the FLEET-WIDE block surface. A 'prevent' indicator on a hash stops that
+// file executing on EVERY endpoint in the tenant, which is why cs_block_hash carries fleet_wide=true and can
+// never auto-run (see the FleetWide gate). Indicator create/delete are SYNCHRONOUS → the actioner's Confirm=nil.
+
+// findIndicator returns the id of an ACTIVE indicator for (type, value), found=false if none. Used by the
+// block PreCheck (already-blocked ⇒ goal-met) and by the reverse fallback.
+func (c *crowdStrikeClient) findIndicator(ctx context.Context, iocType, value string) (id string, found bool, err error) {
+	filter := iocType + ":'" + value + "'"
+	resp, err := c.do(ctx, http.MethodGet, "/iocs/queries/indicators/v1?filter="+url.QueryEscape(filter), nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("crowdstrike ioc query: status %d", resp.StatusCode)
+	}
+	var out struct {
+		Resources []string `json:"resources"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", false, err
+	}
+	if len(out.Resources) == 0 {
+		return "", false, nil
+	}
+	return out.Resources[0], true, nil
+}
+
+// createIndicator creates a 'prevent' (block) indicator for a hash across the tenant. Returns the BARE indicator
+// id (the G-1 action_id / the reverse's delete key). Synchronous.
+func (c *crowdStrikeClient) createIndicator(ctx context.Context, iocType, value, comment string) (string, error) {
+	body := map[string]any{
+		"indicators": []map[string]any{{
+			"type": iocType, "value": value, "action": "prevent", "severity": "high",
+			"platforms": []string{"windows", "mac", "linux"}, "applied_globally": true, "comment": comment,
+		}},
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/iocs/entities/indicators/v1", body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("crowdstrike ioc create: status %d", resp.StatusCode)
+	}
+	var out struct {
+		Resources []struct {
+			ID string `json:"id"`
+		} `json:"resources"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if len(out.Resources) == 0 || out.Resources[0].ID == "" {
+		return "", fmt.Errorf("crowdstrike ioc create: no indicator id returned")
+	}
+	return out.Resources[0].ID, nil
+}
+
+// deleteIndicator removes an indicator by id (the reverse of a block: delete-what-we-made). A 404 is treated as
+// already-gone by the caller, not an error here.
+func (c *crowdStrikeClient) deleteIndicator(ctx context.Context, id string) (status int, err error) {
+	resp, err := c.do(ctx, http.MethodDelete, "/iocs/entities/indicators/v1?ids="+url.QueryEscape(id), nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		return resp.StatusCode, fmt.Errorf("crowdstrike ioc delete: status %d", resp.StatusCode)
+	}
+	return resp.StatusCode, nil
+}

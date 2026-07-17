@@ -69,7 +69,17 @@ func (s *Supervisor) ReverseRun(ctx context.Context, tenantID uuid.UUID, actor a
 				creds = c
 			}
 		}
-		ref, _, callErr := safeCall(ctx, inv, creds, ex.Target, map[string]any{"reverse_of": ex.ActionKey})
+		// Forward the ORIGINAL action's vendor id (prior_state.action_id, the G-1 bare id) to the inverse as
+		// `prior_action_id`. Additive: existing inverses (Defender/Entra/Okta/CS-host) ignore it and key off
+		// Target. It exists for "delete-what-we-made" inverses — e.g. CrowdStrike cs_allow_hash must delete the
+		// EXACT indicator our block created, not merely whatever indicator now matches the hash (which could be a
+		// foreign one created after ours). Without this the inverse can only re-find by target, which is a TOCTOU:
+		// the `changed=true` gate above proves WE created an indicator, not that the one matching now is ours.
+		revParams := map[string]any{"reverse_of": ex.ActionKey}
+		if aid, ok := ex.PriorState["action_id"].(string); ok && aid != "" {
+			revParams["prior_action_id"] = aid
+		}
+		ref, _, callErr := safeCall(ctx, inv, creds, ex.Target, revParams)
 		if callErr != nil {
 			res.Status, res.Detail = "failed", callErr.Error()
 			out = append(out, res)
