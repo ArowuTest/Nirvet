@@ -55,6 +55,7 @@ export function SiteFooter() {
               <span className="text-lg font-extrabold tracking-tight">NIR<span style={{ color: "var(--c-primary)" }}>VET</span></span>
             </Link>
             <p className="mt-3 max-w-xs text-[13px]" style={{ color: "var(--c-ink-2)" }}>AI-powered cyber operations for enterprises that cannot afford to be slow.</p>
+            <p className="mt-2 max-w-xs text-[11px]" style={{ color: "var(--c-ink-3)" }}>Network Intelligence · Risk Visibility · Event Triage</p>
             <a href={`mailto:${CONTACT_EMAIL}`} className="mt-4 inline-flex items-center gap-2 text-[13px] font-medium transition hover:text-white" style={{ color: "var(--c-ink-2)" }}>
               <Icon name="bell" size={14} />{CONTACT_EMAIL}
             </a>

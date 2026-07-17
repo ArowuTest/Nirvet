@@ -10,6 +10,13 @@ export const metadata: Metadata = {
   description: "Nirvet builds AI-native security operations for enterprises and operators that cannot afford to be slow.",
 };
 
+// The name is an acronym — three pillars across the six letters.
+const PILLARS = [
+  { letters: "NI", title: "Network Intelligence", body: "Correlate signals across your entire network and data estate into intelligence analysts can actually act on — not raw, disconnected telemetry." },
+  { letters: "RV", title: "Risk Visibility", body: "Surface true risk and posture — what matters, why, and how exposed you are — so teams focus on decisions instead of drowning in alerts." },
+  { letters: "ET", title: "Event Triage", body: "Turn a flood of events into a ranked queue of decisions, with AI-assisted triage and governed, reversible response." },
+];
+
 const PRINCIPLES = [
   { icon: "shield", title: "Governed autonomy", body: "Automation should move fast without moving recklessly. Every automated action passes through an explicit authority model, and the highest-consequence actions always wait for a human." },
   { icon: "users", title: "Human-in-the-loop", body: "AI accelerates analysts; it doesn't replace their judgement. The co-pilot proposes and summarises — people decide, and the decision is always recorded." },
@@ -25,6 +32,31 @@ export default function AboutPage() {
         title={<>Security operations at <span style={{ color: "var(--c-primary)" }}>machine speed</span>, with human control</>}
         sub="Nirvet is an AI-native security operations platform for organisations and service providers that operate in high-stakes, highly-regulated environments."
       />
+
+      {/* What the name means — the NIRVET acronym */}
+      <section style={{ background: "var(--c-surface)", borderBottom: "1px solid var(--c-border)" }}>
+        <div className="mx-auto max-w-7xl px-6 py-16 md:px-10">
+          <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--c-primary)" }}>What the name means</div>
+          <h2 className="mt-4 text-2xl font-extrabold tracking-tight md:text-3xl">
+            NIRVET — <span style={{ color: "var(--c-primary)" }}>Network Intelligence, Risk Visibility &amp; Event Triage</span>
+          </h2>
+          <p className="mt-4 max-w-2xl text-[16px] leading-relaxed" style={{ color: "var(--c-ink-2)" }}>
+            The name is a promise about what the platform does. Three capabilities, one plane: see your network clearly,
+            understand your real risk, and act on the events that matter.
+          </p>
+          <div className="mt-10 grid gap-6 md:grid-cols-3">
+            {PILLARS.map((p) => (
+              <div key={p.title} className="p-7" style={{ background: "var(--c-bg)", border: "1px solid var(--c-border)", borderRadius: 24 }}>
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl text-lg font-extrabold" style={{ background: "rgba(14,165,233,0.12)", border: "1px solid rgba(14,165,233,0.25)", color: "var(--c-primary)" }}>
+                  {p.letters}
+                </div>
+                <h3 className="mt-4 text-[17px] font-bold">{p.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed" style={{ color: "var(--c-ink-2)" }}>{p.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
       <section>
         <div className="mx-auto max-w-4xl px-6 py-14 md:px-10">
