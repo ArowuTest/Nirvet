@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import { Icon, NirvetMark } from "@/components/icons";
+import { SiteFooter } from "@/components/site";
 
 const NAV_LINKS = [
   { label: "Platform", href: "#why" },
@@ -196,28 +197,7 @@ export default function Home() {
       </section>
 
       {/* FOOTER */}
-      <footer style={{ background: "var(--c-surface)", borderTop: "1px solid var(--c-border)" }}>
-        <div className="mx-auto max-w-7xl px-6 py-12 md:px-10">
-          <div className="grid gap-10 md:grid-cols-[2fr_1fr_1fr_1fr]">
-            <div>
-              <div className="flex items-center gap-2.5">
-                <NirvetMark size={30} />
-                <span className="text-lg font-extrabold tracking-tight">NIR<span style={{ color: "var(--c-primary)" }}>VET</span></span>
-              </div>
-              <p className="mt-3 max-w-xs text-[13px]" style={{ color: "var(--c-ink-2)" }}>AI-powered cyber operations for enterprises that cannot afford to be slow.</p>
-            </div>
-            <FooterCol title="Platform" links={["Detection & Response", "AI Co-pilot", "Playbook Engine", "Evidence Management", "Integrations"]} />
-            <FooterCol title="Company" links={["About", "Careers", "Blog", "Contact"]} />
-            <FooterCol title="Legal" links={["Privacy Policy", "Terms of Service", "Security Disclosure", "Cookie Preferences"]} />
-          </div>
-          <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t pt-6 text-[12px] sm:flex-row" style={{ borderColor: "var(--c-border)", color: "var(--c-ink-3)" }}>
-            <span>© 2025 Nirvet Ltd. All rights reserved.</span>
-            <span className="flex gap-5">
-              <span>Privacy</span><span>Terms</span><span>Security</span>
-            </span>
-          </div>
-        </div>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }
@@ -253,19 +233,6 @@ function CompareCard({ tone, featured, tag, title, desc, items, cta }: { tone: "
         ))}
       </ul>
       <Link href="/login" className="mt-7 inline-flex rounded-lg px-5 py-2.5 text-sm font-semibold transition" style={featured ? { background: "var(--c-primary)", color: "#fff" } : { color: "var(--c-primary)", border: "1px solid var(--c-primary)" }}>{cta}</Link>
-    </div>
-  );
-}
-
-function FooterCol({ title, links }: { title: string; links: string[] }) {
-  return (
-    <div>
-      <div className="text-[13px] font-semibold" style={{ color: "var(--c-ink)" }}>{title}</div>
-      <ul className="mt-3 space-y-2">
-        {links.map((l) => (
-          <li key={l} className="text-[13px]" style={{ color: "var(--c-ink-3)" }}>{l}</li>
-        ))}
-      </ul>
     </div>
   );
 }
