@@ -4,15 +4,11 @@
 
 import Link from "next/link";
 import { Icon, NirvetMark } from "@/components/icons";
+import { SiteNav } from "@/components/site-nav";
+
+export { SiteNav };
 
 export const CONTACT_EMAIL = "contact@nirvet.com";
-
-const NAV_LINKS = [
-  { label: "Platform", href: "/#why" },
-  { label: "Deployment", href: "/#deployment" },
-  { label: "By Industry", href: "/#industry" },
-  { label: "Security", href: "/#security" },
-];
 
 // Footer columns — the single authoritative map. Landing footer + every page footer render from this.
 const FOOTER_COLS: { title: string; links: { label: string; href: string }[] }[] = [
@@ -47,28 +43,6 @@ const FOOTER_COLS: { title: string; links: { label: string; href: string }[] }[]
 ];
 
 const card = { background: "var(--c-surface)", border: "1px solid var(--c-border)", borderRadius: 24 } as const;
-
-export function SiteNav() {
-  return (
-    <nav className="fixed inset-x-0 top-0 z-50 h-16 border-b backdrop-blur" style={{ background: "rgba(5,13,26,0.85)", borderColor: "var(--c-border)" }}>
-      <div className="mx-auto flex h-full max-w-7xl items-center gap-10 px-6 md:px-10">
-        <Link href="/" className="flex items-center gap-2.5">
-          <NirvetMark size={32} />
-          <span className="text-lg font-extrabold tracking-tight">NIR<span style={{ color: "var(--c-primary)" }}>VET</span></span>
-        </Link>
-        <div className="hidden flex-1 items-center gap-7 md:flex">
-          {NAV_LINKS.map((l) => (
-            <Link key={l.href} href={l.href} className="text-sm font-medium transition hover:text-white" style={{ color: "var(--c-ink-2)" }}>{l.label}</Link>
-          ))}
-        </div>
-        <div className="ml-auto flex items-center gap-3">
-          <Link href="/login" className="rounded-lg px-4 py-2 text-sm font-semibold transition" style={{ color: "var(--c-ink-2)", border: "1px solid var(--c-border)" }}>Sign In</Link>
-          <Link href="/contact" className="rounded-lg px-5 py-2 text-sm font-semibold text-white transition" style={{ background: "var(--c-primary)" }}>Request Demo</Link>
-        </div>
-      </div>
-    </nav>
-  );
-}
 
 export function SiteFooter() {
   return (
