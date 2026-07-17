@@ -147,3 +147,24 @@ fleet-wide family (fail on an empty family list — no vacuous assertion).
 `Allowed()` at the single chokepoint; (2) the flag is on the whole block family, not just `cs_block_hash`; (3) the
 reverse composition on foreign indicators; (4) the mutation-check test genuinely goes RED when the guard is dropped;
 (5) the CI guard enumerates a non-empty family.
+
+---
+
+## LANDED
+
+- **§A** — FleetWide dimension: `84fbc2b`; stale mutation-target doc fix: `7882f84`. Reviewer §A PASS (5/5 checks;
+  batch resolver clamps too) + the stale-mutation-target finding (documented false-green detector was itself a
+  false-green — fixed + made self-verifying).
+- **§B** — CrowdStrike IOC actioner: `948e3ef`. `cs_block_hash` (fleet-wide 'prevent' indicator; seeded
+  fleet_wide=true so approval-only) ⇄ `cs_allow_hash` (registry-only inverse, delete-what-we-made). Confirm=nil
+  (sync). `action_id`=bare indicator id. Foreign pre-existing indicator → changed=false → never deleted by reverse.
+  `cs_kill_process` still deferred/unregistered.
+
+**§B GATE-vs-SOURCE FINDING (found at build, fixed): O-3 was unimplementable as written.** `ReverseRun`
+(`sliceb_reverse.go:72`) passed the inverse ONLY `ex.Target` + `{reverse_of}` — **never `ex.PriorState`** — so
+"key `cs_allow_hash` on prior_state.action_id" could not work. Both the reviewer and I passed the gate on that
+assumption. Fix (additive): ReverseRun now forwards `prior_state.action_id` as `prior_action_id`; existing inverses
+ignore it. `cs_allow_hash` deletes EXACTLY the indicator our block created, not merely the current hash match (a
+foreign one created after ours) — a real TOCTOU the `changed=true` gate alone doesn't close. Tested. **Reviewer to
+verify at source on landing: the `prior_action_id` forwarding in ReverseRun + the delete-by-prior-id keying (not
+find-by-hash) in the reverse path.**
