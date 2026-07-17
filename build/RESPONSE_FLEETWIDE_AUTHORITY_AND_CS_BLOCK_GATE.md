@@ -6,10 +6,19 @@ Rationale (owner): Option 2 (`business_critical`) would make it *unrunnable even
 ransomware* — a phantom control (the J4 anti-pattern). Option 3 is the fail-open CS-FLAG exists to prevent.
 
 **Scope of this gate = TWO things, in order:** (A) a reusable **`FleetWide` authority dimension** (the foundation),
-then (B) the **CrowdStrike `cs_block_hash` ⇄ `cs_allow_hash`** IOC actioner as its first consumer. (A) also closes a
-**pre-existing latent fail-open** found while scoping this: the Defender `block_hash`/`block_ip`/`block_domain`
-catalog rows are seeded `'high'` (mig 0036) → they would auto-fire fleet-wide under `pre_authorized`/`contractual_
-auto` the day a Defender block actioner is registered. Reusable ≠ CrowdStrike-only.
+then (B) the **CrowdStrike `cs_block_hash` ⇄ `cs_allow_hash`** IOC actioner as its first consumer.
+
+**(A) also closes a pre-existing hole — precisely characterized as LATENT, NOT LIVE (reviewer-verified):** the
+Defender `block_hash`/`block_ip`/`block_domain` catalog rows are seeded `'high'` (mig 0036:60-62) and are genuinely
+fleet-wide (a Defender custom-indicator block applies across every endpoint). It is **not live-exploitable today**,
+for two INDEPENDENT reasons, both verified at source: (1) `DefenderActioner.Actioners()` registers only
+`isolate_endpoint`/`release_endpoint` — there is **no registered Defender block actioner**, so those actions hit the
+empty-registry fallback and **simulate**; (2) the seeded playbooks mark those steps `requires_approval:true`. But it
+IS a real **structural** hole: nothing in the engine stops a fleet-wide auto-fire — safety rests entirely on the
+playbook author remembering `requires_approval` on every such step AND the tenant not being on a permissive mode.
+The `fleet_wide` flag closes that structurally and **retroactively hardens the already-cataloged Defender family**,
+which is exactly why the dimension must be reusable, not CrowdStrike-only. (Log it as latent so the register isn't
+polluted with a live-severity item that isn't one.)
 
 Gate written BEFORE code; must clear a reviewer pass before the build. Reviewer already named the two source checks:
 the `FleetWide` check sits **above** mode resolution (a permissive mode can't bypass it), and the flag is applied to
@@ -48,9 +57,16 @@ tenant — a false-positive auto-fire is a fleet-wide outage. Reversibility ≠ 
      documentation so the axis is complete, though it can never auto-run anyway).
    Single-target verbs (`isolate_endpoint`, `cs_isolate_host`, `disable_user`, `okta_suspend_user`, `revoke_sessions`)
    stay `fleet_wide=false` — they hit one host/user.
-5. **CI guard (optional, recommended):** a schemacheck-style test asserting no catalog row is BOTH auto-eligible
-   under a permissive mode AND blocks-across-the-fleet by name — i.e. the block/quarantine-all family must carry
-   `fleet_wide=true`. Prevents a future block verb being seeded `'high'` without the flag (the exact latent bug).
+5. **CI guard — REQUIRED (upgraded from "optional" on the reviewer's pass).** A schemacheck-style test asserting
+   every catalog row in the **block/quarantine-all family carries `fleet_wide=true`**. Rationale (reviewer): this is
+   the exact fence that would have caught the Defender latent fail-open we just found sitting in the catalog — a
+   future block verb seeded `'high'` without the flag is precisely the recurrence it prevents. Same reasoning as the
+   J5 proof-fence: **don't rely on the author remembering; make CI enforce it.** Because we found this bug class
+   latent in-tree, the fence is non-optional.
+   - **Must genuinely enumerate the family, not assert vacuously** (reviewer will check for an empty assertion):
+     enumerate by action_key/name pattern (`block_*`, `*_block_hash`, `*_block_ip`, `*_block_domain`,
+     `network_block_all`, `quarantine_all*`) over the seeded catalog, and fail if any matched row has
+     `fleet_wide=false`. The test must fail if the family list is empty (guard against a pattern that matches nothing).
 
 ## B. CrowdStrike `cs_block_hash` ⇄ `cs_allow_hash` (IOC actioner — the first FleetWide consumer)
 
@@ -103,3 +119,31 @@ block family (not just cs_block_hash), and the reverse composition on foreign in
 
 Ties [[feedback_reachability_invariant]] (a permissive/empty config must never license a fleet-wide effect — same as
 the D5 floor), [[feedback_reviewer_never_weaken_test]], [[project_nirvet_soar_slicec]], [[verify_semantics_not_names]].
+
+---
+
+## G. RECORDED REVIEWER PASS — Fable 5, Jul 17 2026 → **PASS, no must-adds** (1 strengthening, folded)
+
+**The load-bearing property was PRE-VERIFIED at source by the reviewer — the single-chokepoint claim holds:**
+- `service.go:275` is the **only** auto-eligibility computation in the entire codebase (no other `autoEligible` /
+  `!st.RequiresApproval` / `Allowed(mode` anywhere; the sole other `Allowed(` hit is the function definition).
+- **Both** run-creation paths funnel through it: direct `Run` (service.go:222) → `runFor`, and the fleet cross-tenant
+  `FireContainment` → `RunForTarget` (service.go:235) → `runFor`. Layer 2 (`canAutoRun`/`evaluateGate`) is
+  execution-time and correctly runs already-approved actions.
+- ⇒ Placing `!act.FleetWide` at :275, short-circuiting **before** the mode-dependent `Allowed(mode, ...)`,
+  structurally prevents a fleet-wide auto-fire **under any authority mode, via any path**. There is no second
+  decision point to bypass it.
+
+**Also verified:** the Defender fail-open is real but **latent not live** (folded into the scope note above — no
+registered Defender block actioner ⇒ simulates; seeded playbooks set `requires_approval`); the dimension is applied
+to the whole block family + `network_block_all` with single-target verbs correctly `false`; the override-only-tightens
+clamp mirrors the risk clamp; `unknownAction` fail-closed `FleetWide:false` is sound (unknown → `business_critical`
+→ never auto-runs anyway); the IOC reverse is delete-what-we-made with a bare `action_id` and is foreign-indicator safe.
+
+**Strengthening folded:** §A.5 CI guard **upgraded optional → REQUIRED**, and it must genuinely enumerate the
+fleet-wide family (fail on an empty family list — no vacuous assertion).
+
+**Cleared to build.** Reviewer will verify at source on landing: (1) the `!act.FleetWide` edit actually landed above
+`Allowed()` at the single chokepoint; (2) the flag is on the whole block family, not just `cs_block_hash`; (3) the
+reverse composition on foreign indicators; (4) the mutation-check test genuinely goes RED when the guard is dropped;
+(5) the CI guard enumerates a non-empty family.
