@@ -5,8 +5,18 @@ package soar
 // short-circuit sits ABOVE the mode-dependent Allowed() at the single chokepoint (runFor) — yet stays
 // approvable-and-runnable (reachable, not the business_critical phantom).
 //
-// MUTATION CHECK: drop `!act.FleetWide` from service.go's autoEligible → TestFleetWide_NeverAutoRunsUnderAnyMode
-// goes RED (a contractual_auto fleet-wide step auto-runs). That is the whole point of the guard.
+// MUTATION CHECK — drop the `!act.FleetWide` term from service.go's autoEligible; the REAL target is:
+//
+//	go test ./internal/soar/ -run TestFleetWide_NeverAutoRuns_EvenWhenAdminGrantsContractualAuto -v -count=1
+//
+// (defined in fleetwide_run_integration_test.go — it drives the SHIPPED path via svc.Run→runFor). With the term
+// dropped it goes RED: "cs_block_hash auto-ran ... run status=completed".
+//
+// READ THIS BEFORE TRUSTING A GREEN: `go test -run <name>` with a name that matches NOTHING prints "ok ...
+// [no tests to run]" and EXITS 0. So a stale/misspelled target makes the mutation check itself report success
+// while executing zero assertions — the false-green-detector producing a false green. (This comment previously
+// named `TestFleetWide_NeverAutoRunsUnderAnyMode`, a deleted draft: the check silently passed on nothing.)
+// ALWAYS run with -v and confirm you see the test NAME execute and then FAIL. "ok" alone proves nothing.
 
 import (
 	"context"
