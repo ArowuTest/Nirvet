@@ -23,6 +23,9 @@ const (
 	// §6.11 G1 first non-Microsoft response vendor: Okta identity containment (suspend/unsuspend/revoke-sessions).
 	// Ingestion for Okta already exists (source normalizer); this Kind selects the outbound Actioner client.
 	KindOkta Kind = "okta"
+	// §6.11 G1 #2: CrowdStrike Falcon EDR containment (isolate/release host). Ingestion (crowdstrike-falcon)
+	// already exists; this Kind selects the outbound Actioner client.
+	KindCrowdStrike Kind = "crowdstrike"
 )
 
 // ConnectorConfig is a tenant's configured integration. Secrets are stored

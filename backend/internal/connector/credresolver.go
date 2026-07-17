@@ -24,6 +24,10 @@ type Credentials struct {
 	// Okta identity-containment vendor (G1): SSWS API token + the tenant's Okta org base URL.
 	OktaOrgURL string `json:"okta_org_url"`
 	OktaToken  string `json:"okta_token"`
+	// CrowdStrike Falcon EDR vendor (G1 #2): OAuth2 client-credentials reuse ClientID/ClientSecret; the API base
+	// is REGION-specific (US-1 api.crowdstrike.com, US-2, EU-1, GovCloud api.laggar.gcw.crowdstrike.com — GovCloud
+	// matters for the Ghana-sovereign posture). Empty base ⇒ US-1 default.
+	CrowdStrikeBaseURL string `json:"crowdstrike_base_url"`
 }
 
 // connectorSecret is a tenant connector's sealed credential + config for an authorized action call.

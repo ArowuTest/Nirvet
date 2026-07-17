@@ -355,6 +355,9 @@ func main() {
 	for _, a := range connector.NewOktaActioner("", "", nil).Actioners() { // §6.11 G1: first non-Microsoft vendor (Okta identity)
 		soarReg.Register(a)
 	}
+	for _, a := range connector.NewCrowdStrikeActioner("", "", "", nil).Actioners() { // §6.11 G1 #2: CrowdStrike EDR host containment
+		soarReg.Register(a)
+	}
 	// A destructive step initiated via a playbook run/approve also goes through this supervisor, so it carries
 	// the same D5 protected-identity guard (blast-radius) + the failed/withheld-containment alerter.
 	soarSvc.WithSupervisor(soar.NewSupervisor(soarRepo, soarReg, soarCreds, log).
