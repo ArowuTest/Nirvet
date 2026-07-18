@@ -10,6 +10,7 @@
 package crypto
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -39,10 +40,15 @@ type localCipher struct {
 	aead cipher.AEAD
 }
 
-// NewLocal builds a local cipher from a base64-encoded 32-byte key. If key is
-// empty, an ephemeral key is generated (dev convenience) and a warning is logged;
-// secrets then do not survive a restart.
+// NewLocal builds a local cipher (SecretCipher) from a base64-encoded 32-byte key.
 func NewLocal(masterKeyB64 string, log *slog.Logger) (SecretCipher, error) {
+	return newLocalCipher(masterKeyB64, log)
+}
+
+// newLocalCipher builds the concrete *localCipher (used both as the standalone SecretCipher and as the v1 reader
+// inside the KMS dual-read transitionCipher). If key is empty, an ephemeral key is generated (dev convenience) and a
+// warning is logged; secrets then do not survive a restart.
+func newLocalCipher(masterKeyB64 string, log *slog.Logger) (*localCipher, error) {
 	var key []byte
 	if masterKeyB64 == "" {
 		key = make([]byte, 32)
@@ -107,32 +113,32 @@ func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, er
 	return c.aead.Open(nil, ciphertext[:ns], ciphertext[ns:], aad)
 }
 
-// kmsCipher is the production backend that wraps data keys with GCP Cloud KMS.
-// TODO(ADR-0004): implement envelope encryption via cloud.google.com/go/kms.
-//  1. generate a random DEK, AES-256-GCM encrypt plaintext (tenant_id as AAD),
-//  2. wrap the DEK with the tenant's KMS CryptoKey, store {wrappedDEK, ciphertext},
-//  3. on decrypt, unwrap DEK via KMS then open. Cache decrypted secrets only in
-//     memory for the duration of a connector run.
-type kmsCipher struct{ keyName string }
-
-var errKMSNotImplemented = errors.New("crypto: GCP KMS cipher not yet implemented (ADR-0004); until it is, unset NIRVET_KMS_KEY_NAME and set a persistent NIRVET_SECRET_MASTER_KEY")
-
-// NewKMS returns the KMS-backed cipher. It is NOT yet implemented, so it fails at
-// construction (fail-fast at startup) rather than returning a cipher that would error
-// on every connector-credential / MFA-secret operation at runtime. Wired in before
-// go-live when GCP credentials are available (see the kmsCipher TODO above).
-func NewKMS(keyName string) (SecretCipher, error) {
-	return nil, errKMSNotImplemented
-}
-
-func (c *kmsCipher) Encrypt(uuid.UUID, []byte) ([]byte, error) { return nil, errKMSNotImplemented }
-func (c *kmsCipher) Decrypt(uuid.UUID, []byte) ([]byte, error) { return nil, errKMSNotImplemented }
-
-// New selects the cipher based on configuration: KMS if a key name is set,
-// otherwise the local cipher.
+// New selects the cipher backend (M4 — three-way, for the KMS dual-read cutover). The real envelope cipher +
+// gcpKMS wrapper live in kms.go:
+//   - kmsKeyName == ""            → local cipher (dev/pilot; single master key).
+//   - kmsKeyName + masterKeyB64   → transitionCipher: writes KMS-wrapped v2, still reads legacy v1 (zero-downtime cutover).
+//   - kmsKeyName, no masterKeyB64 → pure envelopeCipher (post-cutover; no v1 to read).
+//
+// A configured-but-unprovisioned KMS fails fast at boot (its token source is not yet wired — provision later).
 func New(kmsKeyName, masterKeyB64 string, log *slog.Logger) (SecretCipher, error) {
-	if kmsKeyName != "" {
-		return NewKMS(kmsKeyName)
+	if kmsKeyName == "" {
+		return NewLocal(masterKeyB64, log)
 	}
-	return NewLocal(masterKeyB64, log)
+	kms := newGCPKMS()
+	// Fail fast at startup: a KMS-configured deploy whose token source can't be obtained must not silently start
+	// (and must never degrade to the shared master key — M1).
+	tctx, cancel := context.WithTimeout(context.Background(), kmsOpTimeout)
+	defer cancel()
+	if _, err := kms.token(tctx); err != nil {
+		return nil, err
+	}
+	env := newEnvelopeCipher(kms, kmsKeyName)
+	if masterKeyB64 == "" {
+		return env, nil
+	}
+	local, err := newLocalCipher(masterKeyB64, log)
+	if err != nil {
+		return nil, err
+	}
+	return &transitionCipher{writer: env, local: local}, nil
 }
