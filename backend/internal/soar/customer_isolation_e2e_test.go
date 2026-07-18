@@ -28,6 +28,7 @@ import (
 // ApproveAsCustomer fetches GetRun(p.TenantID, id) BEFORE any policy check, so the discriminator is clean:
 //   - attacker (tenant A) approving tenant B's run  → 404 (the tenant-scoped fetch never finds it)
 //   - victim   (tenant B) approving its OWN run     → 403 (fetch SUCCEEDS; stopped only by B's default policy)
+//
 // The 404-vs-403 contrast is what proves the 404 is a TENANT mismatch and not a spurious not-found.
 func TestB4_CrossTenant_ApproveIsolation(t *testing.T) {
 	db := caDB(t)
