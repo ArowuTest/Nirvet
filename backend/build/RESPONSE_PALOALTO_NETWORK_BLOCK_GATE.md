@@ -1,6 +1,10 @@
 # Pre-code Gate — Palo Alto (PAN-OS) network-block Actioner (`block_ip` ⇄ `unblock_ip`)
 
-Status: **CLEARED TO BUILD.** Reviewer PASS conditional on resolving §7.2 (reachability) — now folded in below. §7.1 settled by the reviewer at source (see §7.1). Loop: gate → reviewer pass ✔ → build → CI-green → reviewer source-verification.
+Status: **LANDED & VERIFIED — reviewer landing PASS (clean, no findings), CI-green (a2151c3).** Loop complete: gate → reviewer pass ✔ → build ✔ → CI-green ✔ → reviewer source-verification ✔.
+
+**Reviewer landing verification (all at source):** catalog repoint touches only `connector_key`, `fleet_wide` from 0134 survives ✔ · reverse splits `ip|corrTag` and unregisters exactly ours (O-3 reuse) ✔ · foreign reverse-skip via `panForeign`→`changed=false` ✔ · `TestFleetWide_BlockIP_NeverAutoRuns` drives real `svc.Run`, mutation-proven, self-verifying instruction ✔ · §7.2 fail-loud: register/unregister errors propagate, RFC-1918 block surfaces as error not fake success ✔. The multi-run shared-quarantine-tag edge was checked and deliberately NOT flagged — it is inherent terminal-state (D2) reverse semantics, identical to the Defender/CrowdStrike/Okta vendors already passed; ref-counting would be a cross-cutting D2 change, not a Palo Alto fix.
+
+**Build verification (builder):** gofmt/vet/`go build ./...` clean · 5 connector unit tests (register-with-corr, unregister-exact-by-prior-id, foreign-not-removed changed=false, fail-closed on missing creds) · from-zero 135 migrations apply on a fresh DB · `TestFleetWide_BlockIP_NeverAutoRuns` via the real `svc.Run` and **mutation-proven** (set block_ip fleet_wide=false → test goes RED; restore → green) · existing FleetWide tests unregressed. Files: `internal/connector/{entity.go,credresolver.go,paloalto.go,paloalto_actioner.go,paloalto_actioner_test.go}`, `internal/soar/fleetwide_block_ip_test.go`, `cmd/api/main.go`, `migrations/0135_paloalto_block_ip.sql`.
 Owner pick: Palo Alto firewall = next response vendor (new network-containment axis).
 
 ## 1. Why this slice — and the armed-but-dead gap it closes (verified at source)
