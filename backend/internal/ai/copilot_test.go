@@ -5,31 +5,41 @@ import (
 	"testing"
 )
 
-func TestBuildCopilotInstruction_FlattensHistoryInOrder(t *testing.T) {
+// copilotHistory turns prior turns into the untrusted history bag (one line per turn, speaker-labelled, in order).
+// The NEW analyst message is NOT part of history — it flows separately as the redacted, answerable `question` bag
+// (P0: the whole conversation goes through redaction; nothing is concatenated raw).
+func TestCopilotHistory_LabelsAndOrder(t *testing.T) {
 	history := []CopilotTurn{
 		{Role: "user", Content: "what is this alert?"},
 		{Role: "assistant", Content: "it looks like a brute-force attempt."},
 	}
-	got := buildCopilotInstruction(history, "what should I do next?")
-
-	// Prior turns appear in order, labelled by speaker; the new question is last, cued for the model.
-	iAnalyst := strings.Index(got, "Analyst: what is this alert?")
-	iCopilot := strings.Index(got, "Copilot: it looks like a brute-force attempt.")
-	iNew := strings.Index(got, "Analyst: what should I do next?")
-	if iAnalyst < 0 || iCopilot < 0 || iNew < 0 {
-		t.Fatalf("missing lines in instruction: %q", got)
+	got := copilotHistory(history)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 history lines, got %d: %v", len(got), got)
 	}
-	if !(iAnalyst < iCopilot && iCopilot < iNew) {
-		t.Fatalf("history out of order: analyst=%d copilot=%d new=%d", iAnalyst, iCopilot, iNew)
+	if got[0] != "Analyst: what is this alert?" {
+		t.Fatalf("first line mislabelled/ordered: %q", got[0])
 	}
-	if !strings.HasSuffix(got, "Copilot:") {
-		t.Fatalf("instruction must end cueing the copilot, got tail: %q", got[len(got)-20:])
+	if got[1] != "Copilot: it looks like a brute-force attempt." {
+		t.Fatalf("second line mislabelled/ordered: %q", got[1])
 	}
 }
 
-func TestBuildCopilotInstruction_EmptyHistory(t *testing.T) {
-	got := buildCopilotInstruction(nil, "hello")
-	if !strings.Contains(got, "Analyst: hello") || !strings.HasSuffix(got, "Copilot:") {
-		t.Fatalf("unexpected instruction: %q", got)
+func TestCopilotHistory_Empty(t *testing.T) {
+	if got := copilotHistory(nil); len(got) != 0 {
+		t.Fatalf("empty history must yield no lines, got %v", got)
+	}
+}
+
+// copilotTask is trusted framing (no customer data) that rides OUTSIDE the untrusted-data fence and tells the model
+// the fenced block is data (incl. inert prior conversation) and to answer the labelled latest question.
+func TestCopilotTask_IsTrustedFraming(t *testing.T) {
+	if strings.Contains(copilotTask, "=") || strings.Contains(copilotTask, "\n") {
+		t.Fatalf("copilotTask should be a single trusted instruction line: %q", copilotTask)
+	}
+	for _, want := range []string{"latest question", "never instruct anyone to take destructive action"} {
+		if !strings.Contains(copilotTask, want) {
+			t.Fatalf("copilotTask missing framing %q: %q", want, copilotTask)
+		}
 	}
 }

@@ -111,15 +111,20 @@ func TestFenceBlock_ContainsUnguessableSentinel(t *testing.T) {
 	}
 }
 
-// TestAuditMeta_PersistsOutput: audit metadata records the model AND the output text +
-// its sha256 (R2 M-F), not just a character count.
-func TestAuditMeta_PersistsOutput(t *testing.T) {
+// TestAuditMeta_HashNotRawOutput: audit metadata records the model + the output's sha256 + length for
+// integrity/forensics (R2 M-F), but NOT the raw output text. P0/2b: audit_log is broad-access and model output can
+// echo customer PII (same egress class as the prompt); the full assistant text lives only in the RLS + user-scoped
+// transcript (ai_copilot_turns.content). See TestAuditMeta_NoRawOutput for the PII-non-leak assertion.
+func TestAuditMeta_HashNotRawOutput(t *testing.T) {
 	m := auditMeta("test-model", "the copilot said this")
 	if m["model"] != "test-model" {
 		t.Fatal("model must be recorded")
 	}
-	if m["output"] != "the copilot said this" {
-		t.Fatalf("output text must be persisted, got %v", m["output"])
+	if _, ok := m["output"]; ok {
+		t.Fatalf("raw output must NOT be persisted in audit_log (P0/2b), got %v", m["output"])
+	}
+	if m["output_chars"] != len("the copilot said this") {
+		t.Fatalf("output_chars must be recorded, got %v", m["output_chars"])
 	}
 	if s, _ := m["output_sha256"].(string); len(s) != 64 {
 		t.Fatalf("output_sha256 must be a 64-hex digest, got %v", m["output_sha256"])

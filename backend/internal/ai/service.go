@@ -59,19 +59,16 @@ func truncateUTF8(s string, max int) string {
 	return s[:max]
 }
 
-// auditMeta builds the audit metadata for an AI call: model + the full output text
-// (bounded) and its sha256, so there is a forensic record of what the copilot said
-// (R2 M-F / GuardFullAudit), not just a character count.
+// auditMeta builds the audit metadata for an AI call: model + the output's sha256 + length.
+// The RAW output is NOT stored here — audit_log is broad-access and model output can echo
+// customer PII (P0, same egress class as the prompt). The full assistant text already lives
+// in the RLS + user_id-scoped transcript (ai_copilot_turns.content); audit keeps only the
+// hash + length for integrity/forensics (R2 M-F / GuardFullAudit), never the cleartext.
 func auditMeta(model, output string) map[string]any {
 	sum := sha256.Sum256([]byte(output))
-	stored := output
-	if len(stored) > 8000 {
-		stored = truncateUTF8(stored, 8000) + "…(truncated)"
-	}
 	return map[string]any{
 		"model":         model,
 		"output_chars":  len(output),
-		"output":        stored,
 		"output_sha256": hex.EncodeToString(sum[:]),
 	}
 }
@@ -123,21 +120,72 @@ func (s *Service) WithRedaction(r *RedactionService) *Service {
 	return s
 }
 
+// egress is the typed input to the single LLM chokepoint. Untrusted content is ALWAYS []string that the body
+// redacts before send; there is NO untrusted string param, so raw content cannot reach Complete (P0; the
+// check-ai-egress-redaction guard asserts this signature). Redaction by class:
+//   - evidence: tenant policy (balanced default; keeps analytic signal in key=value case facts).
+//   - history:  STRICT wholesale, ALWAYS (regardless of tenant policy) — the prior conversation is all free text,
+//     which has no safe structure to preserve (a bare name/hostname/account has no pattern). C2.
+//   - question: tenant policy floored at balanced (never cleartext, even if the tenant disabled redaction) so the
+//     latest analyst question stays ANSWERABLE while pasted PII (IP/email/token/ID) is masked. C1.
+//
+// task is a TRUSTED, fixed instruction (a const literal supplied by the caller — never customer data); it frames the
+// request OUTSIDE the untrusted-data fence, where systemPrompt says a genuine instruction lives.
+type egress struct {
+	task     string
+	evidence []string
+	history  []string
+	question []string
+}
+
 // completeExternal is the ONE and ONLY path that sends data to an LLM provider (CI-fenced: `.Complete(` may appear
-// nowhere else in the ai service layer). It redacts the fenced lines BEFORE they leave the platform, then fences +
-// length-bounds them. mask-by-default: with no Redactor wired, or on any config error, the built-in floor still
-// masks — a caller can never egress un-redacted customer telemetry.
-func (s *Service) completeExternal(ctx context.Context, tenantID uuid.UUID, prov Provider, lines []string, instruction string) (string, RedactionResult, error) {
+// nowhere else in the ai service layer). It redacts every untrusted bag BEFORE it leaves the platform, then fences +
+// length-bounds the data block. mask-by-default: with no Redactor wired, or on any config error, the built-in floor
+// still masks — a caller can never egress un-redacted customer telemetry.
+func (s *Service) completeExternal(ctx context.Context, tenantID uuid.UUID, prov Provider, in egress) (string, RedactionResult, error) {
 	policy := defaultRedactionPolicy()
 	patterns := append(builtinSpecific(), builtinBroad()...)
 	if s.redaction != nil {
 		policy = s.redaction.ResolvePolicy(ctx, tenantID)
 		patterns = s.redaction.Patterns(ctx, tenantID)
 	}
-	redacted, rr := redactLines(lines, policy, patterns)
-	user := fenceBlock(redacted) + instruction
+	strictPolicy := RedactionPolicy{Enabled: true, Mode: RedactStrict}
+	// The question floor: never cleartext, but never wholesale unless the tenant explicitly chose strict (which is a
+	// deliberate max-security trade against answerability).
+	qPolicy := policy
+	if !qPolicy.Enabled || qPolicy.Mode == RedactOff {
+		qPolicy = RedactionPolicy{Enabled: true, Mode: RedactBalanced}
+	}
+
+	redEvidence, r1 := redactLines(in.evidence, policy, patterns)
+	redHistory, r2 := redactLines(in.history, strictPolicy, patterns)
+	redQuestion, r3 := redactLines(in.question, qPolicy, patterns)
+
+	fenced := make([]string, 0, len(redEvidence)+len(redHistory))
+	fenced = append(fenced, redEvidence...)
+	fenced = append(fenced, redHistory...)
+	user := fenceBlock(fenced)
+	if t := strings.TrimSpace(in.task); t != "" {
+		user += "\n\n" + t
+	}
+	if len(redQuestion) > 0 { // the answerable latest question, OUTSIDE the never-obey fence (redacted)
+		user += "\n\n" + strings.Join(redQuestion, "\n")
+	}
 	text, err := prov.Complete(ctx, systemPrompt, user)
-	return text, rr, err
+	return text, mergeRedaction(r1, r2, r3), err
+}
+
+// mergeRedaction combines the per-bag redaction outcomes for the ONE audit record. The reported Mode is the
+// tenant's configured EVIDENCE policy (the first result) — a stable "what policy is this tenant on" signal; the
+// history bag's always-on strict masking is an internal guarantee, captured by Applied+Count (any pass masked;
+// total substitutions), not by flipping the reported mode. Never carries cleartext.
+func mergeRedaction(evidence RedactionResult, rest ...RedactionResult) RedactionResult {
+	out := evidence
+	for _, r := range rest {
+		out.Applied = out.Applied || r.Applied
+		out.Count += r.Count
+	}
+	return out
 }
 
 // withRedactionMeta folds the redaction outcome into an AI-call audit record: whether masking ran, the mode, and
@@ -200,7 +248,7 @@ func (s *Service) SummariseAlert(ctx context.Context, p auth.Principal, alertID 
 
 	var rr RedactionResult
 	if prov.Available() {
-		text, r, err := s.completeExternal(ctx, p.TenantID, prov, evidence, instruction)
+		text, r, err := s.completeExternal(ctx, p.TenantID, prov, egress{task: instruction, evidence: evidence})
 		rr = r
 		if err == nil {
 			sum.Text = text
@@ -301,7 +349,7 @@ func (s *Service) TriageIncident(ctx context.Context, p auth.Principal, incident
 
 	var rr RedactionResult
 	if prov.Available() {
-		text, r, gerr := s.completeExternal(ctx, p.TenantID, prov, facts, instruction)
+		text, r, gerr := s.completeExternal(ctx, p.TenantID, prov, egress{task: instruction, evidence: facts})
 		rr = r
 		if gerr == nil {
 			sum.Text = text
