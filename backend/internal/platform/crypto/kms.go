@@ -80,6 +80,7 @@ func (e *envelopeCipher) Encrypt(tenantID uuid.UUID, plaintext []byte) ([]byte, 
 	if _, err := rand.Read(dek); err != nil {
 		return nil, err
 	}
+	defer zero(dek) // reviewer follow-on (b): best-effort DEK zeroization after use (sovereign defense-in-depth)
 	aead, err := gcm(dek)
 	if err != nil {
 		return nil, err
@@ -129,6 +130,7 @@ func (e *envelopeCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte,
 		// M1/M2: a KMS unwrap failure is terminal — never attempt a local/v1 open of a v2 blob.
 		return nil, fmt.Errorf("crypto: KMS unwrap failed (fail-closed): %w", err)
 	}
+	defer zero(dek) // reviewer follow-on (b): best-effort DEK zeroization after use
 	aead, err := gcm(dek)
 	if err != nil {
 		return nil, err
@@ -163,6 +165,14 @@ func (t *transitionCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byt
 	}
 	// v1 (version byte 1) and pre-version legacy blobs are handled by localCipher's own dual-layout Decrypt.
 	return t.local.Decrypt(tenantID, ciphertext)
+}
+
+// zero overwrites a byte slice (best-effort scrub of a data key after use). Go's GC may still hold copies, but
+// zeroing the DEK we control shortens its lifetime in memory — cheap defense-in-depth for a sovereign vault.
+func zero(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // gcm builds an AES-256-GCM AEAD from a 32-byte data key.
