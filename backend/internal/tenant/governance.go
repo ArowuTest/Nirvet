@@ -476,7 +476,7 @@ func (s *Service) SetAuthorityPolicy(ctx context.Context, p auth.Principal, tena
 		in.ActionType = "*"
 	}
 	if !validAuthorityMode[in.Mode] {
-		return nil, httpx.ErrBadRequest("invalid mode: observe|approval|pre_authorized|emergency")
+		return nil, httpx.ErrBadRequest("invalid mode: observe|approval|pre_authorized|contractual_auto")
 	}
 	// Round-4 L3: the blanket '*' catch-all may only set a RESTRICTIVE mode (observe|approval).
 	// Permissive modes (pre_authorized|contractual_auto) auto-run actions, so they must be scoped to a

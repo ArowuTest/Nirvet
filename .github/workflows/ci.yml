@@ -70,6 +70,12 @@ jobs:
       - name: Guard — every AI-008 eval category is seeded + defined (§6.12 governance, no silent gap)
         working-directory: backend
         run: bash scripts/check-ai-eval-categories.sh
+      - name: Guard — authority_policies written only via the guarded governance usecase (crown-jewel authz chokepoint)
+        working-directory: backend
+        run: bash scripts/check-authority-single-path.sh
+      - name: Guard — every mutating route is authz-guarded or explicitly allowlisted (no silent authz bypass)
+        working-directory: backend
+        run: bash scripts/check-route-authz-coverage.sh
       - name: Apply migrations
         working-directory: backend
         env:
