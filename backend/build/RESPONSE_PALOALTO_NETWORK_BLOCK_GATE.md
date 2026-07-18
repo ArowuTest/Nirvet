@@ -1,6 +1,6 @@
 # Pre-code Gate — Palo Alto (PAN-OS) network-block Actioner (`block_ip` ⇄ `unblock_ip`)
 
-Status: **DRAFT — awaiting reviewer pass.** Loop: this note → reviewer pass → build → CI-green → reviewer source-verification.
+Status: **CLEARED TO BUILD.** Reviewer PASS conditional on resolving §7.2 (reachability) — now folded in below. §7.1 settled by the reviewer at source (see §7.1). Loop: gate → reviewer pass ✔ → build → CI-green → reviewer source-verification.
 Owner pick: Palo Alto firewall = next response vendor (new network-containment axis).
 
 ## 1. Why this slice — and the armed-but-dead gap it closes (verified at source)
@@ -54,15 +54,17 @@ Reuse the existing connector-config mechanism (whatever backs CS/Okta base-URL +
 ## 6. Migration 0135 (minimal)
 
 - `KindPaloAlto` const (`entity.go`).
-- Repoint the **catalog** `block_ip` row `connector_key` `defender`→`palo-alto` (so the catalog names the real backing connector). `block_domain`/`network_block_all` untouched.
+- Repoint the **catalog** `block_ip` row `connector_key` `defender`→`palo-alto` (so the catalog names the real backing connector). This alone closes the armed-but-dead gap (§7.1 — catalog wins). `block_domain`/`network_block_all` untouched.
+- **Audit-honesty (reviewer note):** the seeded playbook step JSON in mig 0108 still reads `"connector_key":"defender"` for the "Block the source IP" step. Execution now routes to `palo-alto` (catalog wins), so the step JSON is "says-one-thing-does-another" drift. Repoint that step's `connector_key` `defender`→`palo-alto` too in 0135 so the audit trail matches execution. (Correctness doesn't require it; honesty does.)
 - Add `unblock_ip` as a catalog row? **No** — inverses are registry-only (cf. `cs_allow_hash` is not a catalog step). Confirm from-zero validity.
 
 ## 7. Premises to VERIFY at source during build (NOT assumed — this is the O-3 discipline)
 
-The gate does **not** assert these; the build must read them and the reviewer must check them:
+1. **Step→actioner resolution key — RESOLVED at source (reviewer, in the gate pass).** `service.go:264-269`: `act := lookupAction(actMap, st.Action)` (`resolveAction` keys on `action_key` ALONE, `catalog.go:68`); `if act.ConnectorKey == "" { act.ConnectorKey = st.ConnectorKey }` — the step's `connector_key` is a FALLBACK, used only when the catalog row's is empty. The `block_ip` catalog row's `connector_key` is non-empty (`'defender'`), so the step JSON is never consulted for it. → **Repointing the catalog row is sufficient** to close armed-but-dead. Not an open question. (Build must still re-read to confirm no drift.)
 
-1. **Step→actioner resolution key.** When a run executes a playbook step, is the actioner looked up by the STEP's `connector_key` (seeded `"defender"` in mig 0108) or by the CATALOG row's `connector_key`? If it's the step's, then repointing only the catalog does NOT make the seeded "Block the source IP" step live — the seeded step JSON's `connector_key` must also move `defender`→`palo-alto` (or the gap persists under a new name). **This determines whether §1's armed-but-dead is actually closed.** Trace `runFor`/`resolveAction`/`resolveActionCatalogMap` → the exact key passed to `reg.lookup`. Do not claim the gap closed until this is read.
-2. **Connector egress allow-path.** How do Defender/CrowdStrike actioners reach their (often non-public) API hosts under `netsafe.SafeClient` in prod? Mirror exactly; do not weaken the SSRF guard.
+2. **Reachability / egress path — RESOLVED (the reviewer's PASS condition). Palo Alto is the FIRST actioner whose target may be unreachable from Nirvet-cloud.** Every prior actioner targets a public cloud API (`api.crowdstrike.com`, `graph.microsoft.com`, `*.okta.com`); a PAN-OS *management* interface is typically on-prem/RFC-1918 behind the customer perimeter. So this is not just SafeClient reconciliation — it's "can a cloud SOCaaS reach the customer's firewall at all?"
+   - **Slice A ASSUMES a Nirvet-cloud-reachable management endpoint:** Panorama with an exposed API, or a cloud NGFW (VM-Series in the customer VPC / an NGFW reachable over HTTPS). The connector's `base URL` is the admin-set management host; SafeClient-allowlist it exactly like the other connector hosts (mirror the Defender/CS egress allow-path — verify that path at build, do NOT weaken the SSRF guard). Build proceeds on this assumption.
+   - **On-prem NGFW behind the perimeter is OUT of Slice A.** Nirvet-cloud cannot reach it directly; it needs a collector/relay INSIDE the customer network — the SAME on-prem-reach problem as the telemetry-sourcing gap (the open-agent forwarder, see the telemetry-sourcing note). That is a materially bigger slice (actioner + relay), deferred and explicitly NOT covered here. Slice A must FAIL LOUD (clear connector error), never silently, when the management endpoint is unreachable — no fake success.
 3. **PAN-OS registered-IP metadata.** Confirm a registered IP can carry multiple tags and that unregister can target a single (ip, tag) — the attribution scheme depends on it. If PAN-OS can't do per-(ip,tag) unregister, fall back to: our reverse unregisters the IP from the quarantine tag ONLY if PreCheck attributed it as ours (correlator tag present), else no-op.
 4. **`fleet_wide` clamp on repointed row.** After repointing `block_ip` to `palo-alto`, re-confirm `resolveActionCatalogMap` still yields `FleetWide=true` for it (the override-only-tightens path).
 
@@ -78,8 +80,11 @@ The gate does **not** assert these; the build must read them and the reviewer mu
 `block_domain` (EDL/URL-category + commit), `network_block_all` (break-glass), and the Palo Alto connector's Direction flip Read→Read+Write in the connector registry catalog card (cosmetic; confirm it doesn't gate execution).
 
 ---
-### Reviewer sign-off
-- [ ] Scope (block_ip only; domain/all deferred, not silently covered) — OK?
-- [ ] Mechanism (DAG registered-IP, no commit) — OK vs address-object+commit?
-- [ ] Attribution via per-run correlator TAG (PAN-OS has no comment field) — sound for own-vs-foreign?
-- [ ] Premise list §7 (esp. #1 step-vs-catalog resolution) is the right set to verify at source before claiming armed-but-dead closed?
+### Reviewer sign-off — PASS (conditional on §7.2, now folded in)
+- [x] Scope (block_ip only; domain/all deferred, not silently covered) — OK.
+- [x] Mechanism (DAG registered-IP, no commit) — right call over address-object+commit (designs out the commit fail-open).
+- [x] Attribution via per-run correlator TAG (PAN-OS has no comment field) — sound; PAN-OS analogue of the CS IOC `action_id`.
+- [x] §7.1 step-vs-catalog resolution — reviewer SETTLED at source: catalog `connector_key` wins, step is fallback → repoint the catalog row is sufficient. (Not left as an open premise — "the kind that, unverified, becomes the next O-3.")
+- [x] §7.2 reachability — ELEVATED to a build-blocker and RESOLVED: Slice A assumes a Nirvet-cloud-reachable mgmt endpoint (Panorama API / cloud NGFW); on-prem NGFW → relay-required, deferred (tied to the telemetry-sourcing forwarder gap); must fail loud when unreachable.
+
+**At landing the reviewer will verify:** catalog row repointed (and `fleet_wide` survives it) · reverse keys on `prior_action_id` (unregisters exactly our ip+correlator, not a bare-IP match) · foreign-registration reverse-skip · fleet-wide-never-auto-runs test drives the real `svc.Run`.

@@ -28,6 +28,13 @@ type Credentials struct {
 	// is REGION-specific (US-1 api.crowdstrike.com, US-2, EU-1, GovCloud api.laggar.gcw.crowdstrike.com — GovCloud
 	// matters for the Ghana-sovereign posture). Empty base ⇒ US-1 default.
 	CrowdStrikeBaseURL string `json:"crowdstrike_base_url"`
+	// Palo Alto NGFW / Panorama network-containment vendor: block_ip via User-ID registered-IP tagging (no commit).
+	// BaseURL = the mgmt API host (Panorama or a Nirvet-cloud-reachable NGFW). APIKey = PAN-OS API key. Tag = the
+	// quarantine tag the customer's Dynamic Address Group + deny rule match (admin-config; empty ⇒ seeded default
+	// "nirvet-quarantine"). No default base — a missing/unreachable mgmt host fails closed, never simulates.
+	PaloAltoBaseURL string `json:"palo_alto_base_url"`
+	PaloAltoAPIKey  string `json:"palo_alto_api_key"`
+	PaloAltoTag     string `json:"palo_alto_tag"`
 }
 
 // connectorSecret is a tenant connector's sealed credential + config for an authorized action call.

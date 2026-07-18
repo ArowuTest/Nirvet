@@ -26,6 +26,12 @@ const (
 	// §6.11 G1 #2: CrowdStrike Falcon EDR containment (isolate/release host). Ingestion (crowdstrike-falcon)
 	// already exists; this Kind selects the outbound Actioner client.
 	KindCrowdStrike Kind = "crowdstrike"
+	// §6.11 response — first NETWORK-containment vendor: Palo Alto NGFW / Panorama block_ip via the User-ID
+	// registered-IP + Dynamic Address Group mechanism (no config commit). Ingestion (palo-alto) already exists;
+	// this Kind selects the outbound Actioner client. Reachability caveat: the mgmt endpoint must be reachable
+	// from Nirvet-cloud (Panorama API / cloud NGFW) — an on-prem NGFW behind the perimeter needs a relay (out of
+	// this slice); SafeClient blocks its RFC-1918 address, so that case fails loud rather than faking success.
+	KindPaloAlto Kind = "palo-alto"
 )
 
 // ConnectorConfig is a tenant's configured integration. Secrets are stored
