@@ -43,3 +43,13 @@ DROP POLICY IF EXISTS mfa_floor_write ON mfa_enforcement_floor;
 CREATE POLICY mfa_floor_write ON mfa_enforcement_floor FOR ALL
   USING (app_current_tenant() IS NULL) WITH CHECK (app_current_tenant() IS NULL);
 GRANT SELECT, INSERT, UPDATE ON mfa_enforcement_floor TO nirvet_app;
+
+-- owner_bypass (mig 0118 pattern / schemacheck guard #5): FORCE RLS also constrains the table OWNER, so a
+-- SECURITY DEFINER function running as the non-superuser managed-DB owner would silently read ZERO rows without
+-- this. Restores the owner's exemption without weakening nirvet_app (never the owner). Every RLS table needs it.
+DROP POLICY IF EXISTS owner_bypass ON mfa_enforcement_floor;
+DO $$
+BEGIN
+  EXECUTE format('CREATE POLICY owner_bypass ON mfa_enforcement_floor USING (current_user = %L) WITH CHECK (current_user = %L)',
+                 current_user, current_user);
+END $$;
