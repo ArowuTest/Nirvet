@@ -1,13 +1,12 @@
 package iam
 
-// S1 force-MFA — DB-gated, mutation-sensitive enforcement tests (gate §5, the close-out bar). Enforcement is at the
-// MintSession chokepoint (covers password/SSO/refresh), so these exercise MintSession directly. Each test sets the
-// operator floor explicitly, so they are order-independent (the floor is a global singleton) and never depend on
-// the seeded default. Reuses genDB/genSvc from session_generation_test.go.
-//
-// The load-bearing assertion: an in-scope, no-MFA user is REFUSED a full session (auth.ErrMFAEnrollmentRequired),
-// while the MFAPending grace mint succeeds. Removing the enforcement block in MintSession makes the refusal
-// disappear → these go RED (the exact mfa.enforce regression).
+// S1 force-MFA tests (gate §5). Two layers:
+//   1. TestMFARoleRequired — the PURE decision (floor ∪ tenant scope + zero-config), no DB. Covers the operator
+//      floor (all-roles, role-list, tighten-only) WITHOUT mutating the global mfa_enforcement_floor singleton, which
+//      would race cross-package integration tests on the shared CI DB.
+//   2. TestForceMFA_TenantEnforcement — the DB wiring, driven by the TENANT-scoped session_policies only (no global
+//      floor touched). Proves MintSession reads the policy and REFUSES a full session for an in-scope no-MFA user,
+//      while the grace mint succeeds. Mutation-sensitive: neutralise the MintSession enforcement → RED.
 
 import (
 	"context"
@@ -21,32 +20,49 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestForceMFA_Enforcement(t *testing.T) {
+func TestMFARoleRequired(t *testing.T) {
+	viewer := string(auth.RoleCustomerViewer)
+	admin := string(auth.RolePlatformAdmin)
+	cases := []struct {
+		name          string
+		role          auth.Role
+		tenantRequire bool
+		tenantRoles   []string
+		floorAll      bool
+		floorRoles    []string
+		want          bool
+	}{
+		{"no policy → not required", auth.RoleCustomerViewer, false, nil, false, nil, false},
+		{"operator floor all-roles → any role required", auth.RoleCustomerViewer, false, nil, true, nil, true},
+		{"operator floor all-roles → admin required", auth.RolePlatformAdmin, false, nil, true, nil, true},
+		{"floor role-list hits", auth.RolePlatformAdmin, false, nil, false, []string{admin}, true},
+		{"floor role-list misses other role", auth.RoleCustomerViewer, false, nil, false, []string{admin}, false},
+		{"tenant policy adds a role", auth.RoleCustomerViewer, true, []string{viewer}, false, nil, true},
+		{"tenant policy other role not required", auth.RoleSOCManager, true, []string{viewer}, false, nil, false},
+		{"zero-config floor → privileged required", auth.RolePlatformAdmin, true, nil, false, nil, true},
+		{"zero-config floor → viewer NOT required", auth.RoleCustomerViewer, true, nil, false, nil, false},
+		{"tighten-only: floor wins over tenant-off", auth.RoleAnalystT1, false, nil, false, []string{string(auth.RoleAnalystT1)}, true},
+	}
+	for _, c := range cases {
+		if got := mfaRoleRequired(c.role, c.tenantRequire, c.tenantRoles, c.floorAll, c.floorRoles); got != c.want {
+			t.Errorf("%s: mfaRoleRequired=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestForceMFA_TenantEnforcement(t *testing.T) {
 	db := genDB(t)
 	svc := genSvc(t, db)
 	ctx := context.Background()
 
-	newTenant := func() uuid.UUID {
-		t.Helper()
-		tn, err := tenant.NewService(tenant.NewRepository(db)).Create(ctx, tenant.CreateInput{Name: "mfa-" + uuid.NewString()})
-		if err != nil {
-			t.Fatalf("create tenant: %v", err)
-		}
-		return tn.ID
+	tn, err := tenant.NewService(tenant.NewRepository(db)).Create(ctx, tenant.CreateInput{Name: "mfa-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
 	}
-	setFloor := func(all bool, roles []string) {
-		t.Helper()
-		if roles == nil {
-			roles = []string{}
-		}
-		if err := db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-			_, e := tx.Exec(ctx, `UPDATE mfa_enforcement_floor SET require_all_roles=$1, floor_roles=$2 WHERE id=1`, all, roles)
-			return e
-		}); err != nil {
-			t.Fatalf("set floor: %v", err)
-		}
-	}
-	setTenantMFA := func(tid uuid.UUID, require bool, roles []string) {
+	tid := tn.ID
+
+	// TENANT-scoped policy only — never touches the global mfa_enforcement_floor (no cross-package pollution).
+	setTenantMFA := func(require bool, roles []string) {
 		t.Helper()
 		if roles == nil {
 			roles = []string{}
@@ -61,7 +77,7 @@ func TestForceMFA_Enforcement(t *testing.T) {
 			t.Fatalf("set tenant mfa: %v", err)
 		}
 	}
-	mkUser := func(tid uuid.UUID, role auth.Role, mfaOn bool) auth.Principal {
+	mkUser := func(role auth.Role, mfaOn bool) auth.Principal {
 		t.Helper()
 		uid := uuid.New()
 		if err := db.WithTenant(ctx, tid, func(ctx context.Context, tx pgx.Tx) error {
@@ -78,7 +94,7 @@ func TestForceMFA_Enforcement(t *testing.T) {
 		if _, err := svc.MintSession(ctx, &p, time.Hour); !errors.Is(err, auth.ErrMFAEnrollmentRequired) {
 			t.Fatalf("%s: expected ErrMFAEnrollmentRequired, got %v", name, err)
 		}
-		gp := p // the grace (MFAPending) mint is the escape hatch — it MUST succeed so the user can enroll.
+		gp := p // grace (MFAPending) mint is the escape hatch — MUST succeed so the user can enroll.
 		gp.MFAPending = true
 		if _, err := svc.MintSession(ctx, &gp, time.Hour); err != nil {
 			t.Fatalf("%s: grace mint must succeed, got %v", name, err)
@@ -90,37 +106,16 @@ func TestForceMFA_Enforcement(t *testing.T) {
 			t.Fatalf("%s: expected a full session, got %v", name, err)
 		}
 	}
-	tid := newTenant()
 
-	// 1. Operator floor = ALL roles → any in-scope no-MFA user is refused. Mutation-sensitive: remove the
-	//    enforcement block in MintSession → mustRefuse's first mint returns no error → RED. customer_viewer proves
-	//    it is not privileged-only.
-	setFloor(true, nil)
-	setTenantMFA(tid, false, nil)
-	mustRefuse("all-roles floor / viewer", mkUser(tid, auth.RoleCustomerViewer, false))
-	mustRefuse("all-roles floor / admin", mkUser(tid, auth.RolePlatformAdmin, false))
-
-	// 2. An enrolled user (mfa_enabled=true) is unaffected — full session even under the all-roles floor.
-	mustAllow("enrolled user", mkUser(tid, auth.RoleCustomerViewer, true))
-
-	// 3. Floor OFF + tenant OFF = unchanged legacy behaviour: a no-MFA user gets a full session (no regression).
-	setFloor(false, nil)
-	setTenantMFA(tid, false, nil)
-	mustAllow("no policy", mkUser(tid, auth.RoleSOCManager, false))
-
-	// 4. Zero-config floor (2d): tenant require_mfa=true with an EMPTY role scope enforces PRIVILEGED roles, never
-	//    "no one" — a privileged no-MFA user is refused; a non-privileged one is not.
-	setFloor(false, nil)
-	setTenantMFA(tid, true, nil)
-	mustRefuse("zero-config / privileged", mkUser(tid, auth.RolePlatformAdmin, false))
-	mustAllow("zero-config / non-privileged", mkUser(tid, auth.RoleCustomerViewer, false))
-
-	// 5. Tighten-only: the operator floor wins even when the tenant policy is OFF — a tenant can never drop below
-	//    the floor. Floor=all-roles, tenant require_mfa=false → a no-MFA user is still refused.
-	setFloor(true, nil)
-	setTenantMFA(tid, false, nil)
-	mustRefuse("floor tightens-only", mkUser(tid, auth.RoleAnalystT1, false))
-
-	// Reset the singleton floor OFF so other iam integration tests (which mint no-MFA users) are unaffected.
-	setFloor(false, nil)
+	// Tenant requires MFA for customer_viewer.
+	setTenantMFA(true, []string{string(auth.RoleCustomerViewer)})
+	// In-scope, no MFA → refused (mutation-sensitive: neutralise the MintSession enforcement → RED).
+	mustRefuse("in-scope no-MFA", mkUser(auth.RoleCustomerViewer, false))
+	// In-scope but enrolled → full session.
+	mustAllow("in-scope enrolled", mkUser(auth.RoleCustomerViewer, true))
+	// Out-of-scope role (not in the tenant list, floor off) → full session, no regression.
+	mustAllow("out-of-scope role", mkUser(auth.RoleSOCManager, false))
+	// Policy off entirely → full session.
+	setTenantMFA(false, nil)
+	mustAllow("policy off", mkUser(auth.RoleCustomerViewer, false))
 }

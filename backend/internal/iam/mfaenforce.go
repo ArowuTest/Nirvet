@@ -66,8 +66,16 @@ func (s *Service) mfaEnrollmentRequired(ctx context.Context, p *auth.Principal) 
 	if userHasMFA {
 		return false, nil // already protected — never enrollment-required
 	}
+	return mfaRoleRequired(p.Role, tenantRequire, tenantRoles, floorAll, floorRoles), nil
+}
+
+// mfaRoleRequired is the PURE decision: given the operator floor and the tenant policy, is MFA required for this
+// role? Split out so it can be unit-tested exhaustively without touching the DB (and without mutating the global
+// mfa_enforcement_floor singleton, which would race cross-package integration tests on a shared DB). Effective
+// required-role set = floor ∪ tenant scope, with the 2d zero-config guarantee.
+func mfaRoleRequired(role auth.Role, tenantRequire bool, tenantRoles []string, floorAll bool, floorRoles []string) bool {
 	if floorAll {
-		return true, nil // operator floor: MFA mandatory for every role (Option 2 default)
+		return true // operator floor: MFA mandatory for every role (Option 2, when the operator flips it on)
 	}
 	required := make(map[string]bool, len(floorRoles)+len(tenantRoles)+len(privilegedMFARoles))
 	for _, r := range floorRoles {
@@ -75,7 +83,7 @@ func (s *Service) mfaEnrollmentRequired(ctx context.Context, p *auth.Principal) 
 	}
 	if tenantRequire {
 		if len(tenantRoles) == 0 {
-			for _, r := range privilegedMFARoles { // 2d zero-config floor
+			for _, r := range privilegedMFARoles { // 2d zero-config floor: armed-but-empty → privileged, never no-one
 				required[string(r)] = true
 			}
 		}
@@ -83,7 +91,7 @@ func (s *Service) mfaEnrollmentRequired(ctx context.Context, p *auth.Principal) 
 			required[r] = true
 		}
 	}
-	return required[string(p.Role)], nil
+	return required[string(role)]
 }
 
 // MintFullSessionAfterMFA promotes a restricted forced-enrollment grace session to a FULL session immediately
