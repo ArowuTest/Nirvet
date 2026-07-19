@@ -185,6 +185,15 @@ func (h *Handler) mfaAction(w http.ResponseWriter, r *http.Request, activate boo
 		httpx.Error(w, err)
 		return
 	}
+	// S1: if this activation completed a forced-enrollment grace session, promote it to a FULL session in place
+	// (fresh cookies) so the user continues without a re-login. Best-effort — on a mint hiccup they simply re-login.
+	if activate && p.MFAPending {
+		if tok, ttl, mErr := h.svc.MintFullSessionAfterMFA(r.Context(), p); mErr == nil {
+			full := p
+			full.MFAPending = false
+			h.issueSessionCookies(w, r, full, tok, ttl)
+		}
+	}
 	httpx.JSON(w, http.StatusOK, map[string]bool{"mfa_enabled": activate})
 }
 

@@ -66,6 +66,11 @@ type Principal struct {
 	// feature (still valid until the first bump).
 	Gen  int64
 	TGen int64
+	// MFAPending marks a RESTRICTED forced-enrollment grace session (S1 force-MFA): an in-scope user with no
+	// active MFA factor is not locked out and not let in — this token can reach ONLY the MFA enroll/activate
+	// endpoints (the route factories 403 it everywhere else), and MintSession is the ONE mint that issues it.
+	// A full session never carries it. Not settable via API — only the login/SSO grace path sets it.
+	MFAPending bool
 }
 
 // Claims is the JWT payload.
@@ -76,8 +81,15 @@ type Claims struct {
 	ElevationID string `json:"eid,omitempty"`  // elevated tokens only (Round-4 M6)
 	Gen         int64  `json:"gen,omitempty"`  // per-user session generation at mint (session revocation)
 	TGen        int64  `json:"tgen,omitempty"` // per-tenant session generation at mint (tenant-wide kill)
+	MFAPending  bool   `json:"mfap,omitempty"` // restricted forced-MFA-enrollment grace session (S1)
 	jwt.RegisteredClaims
 }
+
+// ErrMFAEnrollmentRequired is returned by the session-mint chokepoint (iam.Service.MintSession) when an in-scope
+// user has no active MFA factor (S1 force-MFA). It lives here in the leaf auth package so both the mint owner
+// (iam) and the SSO login path (sso) can recognise it and respond by minting the restricted grace session, without
+// an import cycle. It is NOT a login failure.
+var ErrMFAEnrollmentRequired = errors.New("mfa enrollment required")
 
 // Manager issues and verifies tokens.
 type Manager struct {
@@ -109,6 +121,7 @@ func (m *Manager) IssueWithTTL(p Principal, ttl time.Duration) (string, error) {
 		ElevationID: p.ElevationID,
 		Gen:         p.Gen,
 		TGen:        p.TGen,
+		MFAPending:  p.MFAPending,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.issuer,
 			Subject:   p.UserID.String(),
@@ -140,7 +153,7 @@ func (m *Manager) Verify(token string) (Principal, error) {
 		return Principal{}, errors.New("invalid tenant")
 	}
 	return Principal{UserID: uid, TenantID: tid, Role: Role(claims.Role), Email: claims.Email,
-		ElevationID: claims.ElevationID, Gen: claims.Gen, TGen: claims.TGen}, nil
+		ElevationID: claims.ElevationID, Gen: claims.Gen, TGen: claims.TGen, MFAPending: claims.MFAPending}, nil
 }
 
 // HashPassword returns a bcrypt hash.

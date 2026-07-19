@@ -129,6 +129,24 @@ func apiKeyFromRequest(r *http.Request) string {
 	return ""
 }
 
+// RequireMFAComplete blocks a RESTRICTED forced-enrollment grace session (S1 force-MFA): a principal carrying
+// MFAPending may reach ONLY the MFA enroll/activate routes (which are wired WITHOUT this middleware). Every other
+// route returns 403 until MFA is active — the restriction is the security-critical half of the grace design (a
+// grace session that could reach anything else would defeat the mandatory-MFA control). Applied inside the shared
+// route factories so it covers every authenticated route by construction, not by per-route memory.
+func RequireMFAComplete() httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if p, ok := PrincipalFrom(r.Context()); ok && p.MFAPending {
+				httpx.Error(w, &httpx.APIError{Status: http.StatusForbidden, Code: "mfa_enrollment_required",
+					Message: "MFA enrollment required — complete MFA setup to continue"})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // RequireRole allows the request only if the principal holds one of the roles.
 func RequireRole(roles ...Role) httpx.Middleware {
 	allowed := make(map[Role]bool, len(roles))

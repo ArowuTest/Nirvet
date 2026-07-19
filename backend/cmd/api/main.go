@@ -489,14 +489,27 @@ func main() {
 	// (limiter, roles) combination, never a chain without the gate. `lim` lets a chain swap in a tighter bucket
 	// (e.g. the AI bucket). Only `padmin` (platform-only) is built outside this, and AccessGate exempts platform
 	// staff anyway, so it needs no gate.
+	// mfaGate (S1 force-MFA) blocks a restricted forced-enrollment grace session (MFAPending) from reaching any
+	// normal route — it belongs in the shared factories so EVERY authenticated route enforces it by construction,
+	// not by per-route memory. Runs right after authn (principal resolved) and before the role check. The MFA
+	// enroll/activate routes are deliberately wired WITHOUT it (authedMFAEnroll below) — the one escape hatch.
+	mfaGate := auth.RequireMFAComplete()
 	interactive := func(lim httpx.Middleware, roles ...auth.Role) func(http.HandlerFunc) http.Handler {
 		return func(h http.HandlerFunc) http.Handler {
-			return httpx.Chain(h, authn, bsuspend, lim, auditMut, auth.RequireRole(roles...))
+			return httpx.Chain(h, authn, mfaGate, bsuspend, lim, auditMut, auth.RequireRole(roles...))
 		}
 	}
 	// authed: any authenticated principal (no role floor), but still suspension-gated — a suspended tenant's
-	// own users are blocked from general reads too.
-	authed := func(h http.HandlerFunc) http.Handler { return httpx.Chain(h, authn, bsuspend, apiLimit, auditMut) }
+	// own users are blocked from general reads too. Also MFA-gated (grace sessions can't reach general routes).
+	authed := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, mfaGate, bsuspend, apiLimit, auditMut)
+	}
+	// authedMFAEnroll is authed WITHOUT the MFA gate — the ONLY chain a forced-enrollment grace session may reach,
+	// wired to exactly the MFA enroll/activate routes so an in-scope no-MFA user can complete enrollment. Adding any
+	// other route to this chain would poke a hole in the mandatory-MFA control (kept to enroll/activate only).
+	authedMFAEnroll := func(h http.HandlerFunc) http.Handler {
+		return httpx.Chain(h, authn, bsuspend, apiLimit, auditMut)
+	}
 	provider := interactive(apiLimit, providerRoles...)
 	// aiProvider is the provider chain with the tight AI bucket swapped in for apiLimit — same roles (T1 keeps
 	// assistive AI), stricter throughput (R3 AI-rate). Now also suspension-gated (M-1): a suspended tenant can no
@@ -505,7 +518,7 @@ func main() {
 	// padmin is platform-admin only and intentionally NOT built from interactive: platform staff manage suspended
 	// tenants (and AccessGate exempts them regardless), so this chain carries no suspension gate.
 	padmin := func(h http.HandlerFunc) http.Handler {
-		return httpx.Chain(h, authn, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin))
+		return httpx.Chain(h, authn, mfaGate, apiLimit, auditMut, auth.RequireRole(auth.RolePlatformAdmin))
 	}
 	detEng := interactive(apiLimit, auth.RolePlatformAdmin, auth.RoleSOCManager, auth.RoleDetectionEng)
 	// oversight: the metadata-only posture read for the oversight family — platform_admin (whole instance) +
@@ -608,8 +621,10 @@ func main() {
 	mux.Handle("DELETE /admin/ticketing/{id}", ssoAdmin(ticketingH.Delete))
 	mux.Handle("GET /me", authed(iamH.Me))
 	mux.Handle("POST /me/password", authed(iamH.ChangePassword))
-	mux.Handle("POST /mfa/enroll", authed(iamH.EnrollMFA))
-	mux.Handle("POST /mfa/activate", authed(iamH.ActivateMFA))
+	// MFA enroll/activate use authedMFAEnroll (no mfaGate) so a forced-enrollment grace session can REACH them —
+	// the one intended hole in the mandatory-MFA control (S1 §2c). Every other authed route keeps the gate.
+	mux.Handle("POST /mfa/enroll", authedMFAEnroll(iamH.EnrollMFA))
+	mux.Handle("POST /mfa/activate", authedMFAEnroll(iamH.ActivateMFA))
 	mux.Handle("POST /mfa/disable", authed(iamH.DisableMFA))
 	// Privileged elevation + break-glass (§6.2 IAM-004/006). Self-service request/break-glass/
 	// mint; approval/reject/review + full list are manager-gated (four-eyes in the service).

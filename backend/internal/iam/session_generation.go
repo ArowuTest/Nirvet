@@ -153,6 +153,21 @@ func (s *Service) BumpTenantGeneration(ctx context.Context, tenantID uuid.UUID) 
 // It stamps the passed principal (pointer) with the resolved gen/tgen, so the caller's principal reflects exactly
 // what the issued token carries (a LoginResult.Principal thus matches its token).
 func (s *Service) MintSession(ctx context.Context, p *auth.Principal, ttl time.Duration) (string, error) {
+	// S1 force-MFA enforcement — the LIVE CONSUMER of the require_mfa policy + operator floor, at the single mint
+	// chokepoint (so password login, SSO, and refresh are all covered; reachability, not one caller). An in-scope
+	// user with no active MFA factor is refused a full session; the caller mints a restricted grace session so they
+	// enroll instead of being locked out. A grace (MFAPending) mint is the ONE exception — it IS that escape hatch.
+	// Service accounts (API keys) never mint sessions and are exempt defensively. (Removing this block is the exact
+	// mfa.enforce regression — a mutation test asserts it goes RED, and check-mfa-enforcement-consumed.sh fails.)
+	if !p.MFAPending && !p.ServiceAccount {
+		required, mErr := s.mfaEnrollmentRequired(ctx, p)
+		if mErr != nil {
+			return "", httpx.ErrUnavailable("could not mint session (MFA policy unavailable)")
+		}
+		if required {
+			return "", auth.ErrMFAEnrollmentRequired
+		}
+	}
 	ugen, err := s.currentUserGen(ctx, p.TenantID, p.UserID)
 	if err != nil {
 		return "", httpx.ErrUnavailable("could not mint session (generation unavailable)")

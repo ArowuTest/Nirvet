@@ -46,4 +46,8 @@ type LoginResult struct {
 	Created   bool           `json:"created"` // true if the user was JIT-provisioned
 	Principal auth.Principal `json:"-"`       // for cookie-based session issuance (ADR-0007)
 	AccessTTL time.Duration  `json:"-"`       // access-cookie lifetime
+	// MFAEnrollmentRequired is true when Token is a RESTRICTED forced-enrollment grace session (S1 force-MFA): the
+	// SSO login succeeded but the user is in-scope for mandatory MFA with no active factor. The grace cookie is set;
+	// the SPA reaches only MFA enroll/activate (every other route 403s) until MFA is active.
+	MFAEnrollmentRequired bool `json:"mfa_enrollment_required,omitempty"`
 }

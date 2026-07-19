@@ -140,6 +140,10 @@ type LoginResult struct {
 	Principal auth.Principal `json:"-"`
 	User      *User          `json:"user"`
 	AccessTTL time.Duration  `json:"-"` // access-cookie lifetime (ADR-0007); not serialized to the body
+	// MFAEnrollmentRequired is true when Token is a RESTRICTED forced-enrollment grace session (S1 force-MFA): the
+	// user authenticated but is in-scope for mandatory MFA with no active factor. The handler sets the session
+	// cookie to this grace token and signals the SPA to route to MFA enrollment (reachable; every other route 403s).
+	MFAEnrollmentRequired bool `json:"mfa_enrollment_required,omitempty"`
 }
 
 // Brute-force lockout policy (SEC). After maxFailedLogins consecutive failed attempts
@@ -207,6 +211,24 @@ func (s *Service) Login(ctx context.Context, email, password, mfaCode, requestID
 	ttl := s.sessionTTL(ctx, u.TenantID)
 	token, err := s.MintSession(ctx, &p, ttl)
 	if err != nil {
+		// S1 force-MFA: an in-scope user with no active MFA factor is not let in with a full session and not
+		// locked out — mint a RESTRICTED grace session (MFAPending) that reaches only MFA enroll/activate, and
+		// signal the SPA to enroll. The grace mint bypasses the enforcement check (it IS the escape hatch).
+		if errors.Is(err, auth.ErrMFAEnrollmentRequired) {
+			p.MFAPending = true
+			grace, gerr := s.MintSession(ctx, &p, mfaGraceTTL)
+			if gerr != nil {
+				return nil, gerr
+			}
+			_ = s.db.WithTenant(ctx, u.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+				return audit.Record(ctx, tx, audit.Entry{
+					ActorID: u.ID, ActorEmail: u.Email, Action: "auth.login_mfa_enrollment_required",
+					Target: "user:" + u.ID.String(), RequestID: requestID,
+				})
+			})
+			u.PasswordHash = ""
+			return &LoginResult{Token: grace, Principal: p, User: u, AccessTTL: mfaGraceTTL, MFAEnrollmentRequired: true}, nil
+		}
 		return nil, err
 	}
 	// Audit the login within the user's tenant context.

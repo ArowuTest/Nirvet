@@ -25,6 +25,10 @@ type SessionPolicy struct {
 	AccessTTLSeconds  int       `json:"access_ttl_seconds"`
 	IPAllowlist       []string  `json:"ip_allowlist"`
 	GeoAnomalyLogging bool      `json:"geo_anomaly_logging"`
+	// S1 force-MFA (2a): a tenant admin may REQUIRE MFA for their tenant's roles. This ADDS to the operator
+	// instance floor (override-only-tightens) — it can never drop a floor role. Enforcement is at MintSession.
+	RequireMFA       bool     `json:"require_mfa"`
+	MFARequiredRoles []string `json:"mfa_required_roles"`
 }
 
 // sessionPolicyCache caches policies per tenant with a short TTL so the auth middleware does
@@ -43,15 +47,18 @@ func (s *Service) getSessionPolicyRow(ctx context.Context, tenantID uuid.UUID) (
 	var p SessionPolicy
 	err := s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT tenant_id, access_ttl_seconds, ip_allowlist, geo_anomaly_logging
+			`SELECT tenant_id, access_ttl_seconds, ip_allowlist, geo_anomaly_logging, require_mfa, mfa_required_roles
 			   FROM session_policies WHERE tenant_id=$1`, tenantID).
-			Scan(&p.TenantID, &p.AccessTTLSeconds, &p.IPAllowlist, &p.GeoAnomalyLogging)
+			Scan(&p.TenantID, &p.AccessTTLSeconds, &p.IPAllowlist, &p.GeoAnomalyLogging, &p.RequireMFA, &p.MFARequiredRoles)
 	})
 	if err != nil {
 		return nil, err
 	}
 	if p.IPAllowlist == nil {
 		p.IPAllowlist = []string{}
+	}
+	if p.MFARequiredRoles == nil {
+		p.MFARequiredRoles = []string{}
 	}
 	return &p, nil
 }
@@ -73,11 +80,21 @@ func (s *Service) GetSessionPolicy(ctx context.Context, tenantID uuid.UUID) (*Se
 	return p, nil
 }
 
+// validMFARoleSet is every valid platform role — a tenant's mfa_required_roles entries are checked against it so a
+// typo can't create a rule that matches no principal (silent under-enforcement). Includes the oversight roles.
+var validMFARoleSet = map[auth.Role]bool{
+	auth.RolePlatformAdmin: true, auth.RoleSOCManager: true, auth.RoleAnalystT1: true, auth.RoleAnalystT2: true,
+	auth.RoleAnalystT3: true, auth.RoleDetectionEng: true, auth.RoleCustomerAdmin: true, auth.RoleCustomerViewer: true,
+	auth.RoleOrgSubAdmin: true, auth.RolePayer: true,
+}
+
 // SessionPolicyInput updates the policy (nil fields unchanged).
 type SessionPolicyInput struct {
 	AccessTTLSeconds  *int      `json:"access_ttl_seconds"`
 	IPAllowlist       *[]string `json:"ip_allowlist"`
 	GeoAnomalyLogging *bool     `json:"geo_anomaly_logging"`
+	RequireMFA        *bool     `json:"require_mfa"`        // S1 force-MFA (2a)
+	MFARequiredRoles  *[]string `json:"mfa_required_roles"` // roles this tenant additionally requires MFA for
 }
 
 // UpdateSessionPolicy applies a partial update, validating the TTL bound and every allow-list
@@ -104,10 +121,25 @@ func (s *Service) UpdateSessionPolicy(ctx context.Context, p auth.Principal, ten
 	if in.GeoAnomalyLogging != nil {
 		cur.GeoAnomalyLogging = *in.GeoAnomalyLogging
 	}
+	if in.RequireMFA != nil {
+		cur.RequireMFA = *in.RequireMFA
+	}
+	if in.MFARequiredRoles != nil {
+		// Reject unknown role strings so a typo can't silently create a rule that protects no one. The tenant
+		// list only ADDS to the operator floor (union at enforce time) — it can never weaken it.
+		for _, r := range *in.MFARequiredRoles {
+			if !validMFARoleSet[auth.Role(r)] {
+				return nil, httpx.ErrBadRequest("unknown role in mfa_required_roles: " + r)
+			}
+		}
+		cur.MFARequiredRoles = *in.MFARequiredRoles
+	}
 	err = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		if _, e := tx.Exec(ctx,
-			`UPDATE session_policies SET access_ttl_seconds=$2, ip_allowlist=$3, geo_anomaly_logging=$4, updated_at=now()
-			   WHERE tenant_id=$1`, tenantID, cur.AccessTTLSeconds, cur.IPAllowlist, cur.GeoAnomalyLogging); e != nil {
+			`UPDATE session_policies SET access_ttl_seconds=$2, ip_allowlist=$3, geo_anomaly_logging=$4,
+			        require_mfa=$5, mfa_required_roles=$6, updated_at=now()
+			   WHERE tenant_id=$1`, tenantID, cur.AccessTTLSeconds, cur.IPAllowlist, cur.GeoAnomalyLogging,
+			cur.RequireMFA, cur.MFARequiredRoles); e != nil {
 			return e
 		}
 		return audit.Record(ctx, tx, audit.Entry{ActorID: p.UserID, ActorEmail: p.Email,

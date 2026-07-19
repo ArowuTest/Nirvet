@@ -3,6 +3,7 @@ package sso
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/audit"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -68,8 +69,21 @@ func completeSSO(ctx context.Context, dir Directory, tokens *auth.Manager, db *d
 	// (MA-SR-9) — SSO must not call the token Manager directly.
 	ttl := dir.SessionTTL(ctx, tenantID)
 	token, terr := dir.MintSession(ctx, &p, ttl)
+	mfaEnroll := false
 	if terr != nil {
-		return nil, httpx.ErrInternal("could not issue session")
+		// S1 force-MFA: an in-scope SSO user with no active MFA factor is refused a full session at the mint
+		// chokepoint. Mint a RESTRICTED grace session (MFAPending) so they enroll rather than being locked out —
+		// the grace mint bypasses enforcement (it IS the escape hatch). Enforcement covers SSO because the hook is
+		// at MintSession, not just password Login.
+		if errors.Is(terr, auth.ErrMFAEnrollmentRequired) {
+			p.MFAPending = true
+			ttl = ssoMFAGraceTTL
+			token, terr = dir.MintSession(ctx, &p, ttl)
+			mfaEnroll = true
+		}
+		if terr != nil {
+			return nil, httpx.ErrInternal("could not issue session")
+		}
 	}
 
 	if meta == nil {
@@ -81,5 +95,9 @@ func completeSSO(ctx context.Context, dir Directory, tokens *auth.Manager, db *d
 			ActorID: uid, ActorEmail: email, Action: action, Target: target, Metadata: meta,
 		})
 	})
-	return &LoginResult{Token: token, Email: email, TenantID: tid, Created: created, Principal: p, AccessTTL: ttl}, nil
+	return &LoginResult{Token: token, Email: email, TenantID: tid, Created: created, Principal: p, AccessTTL: ttl, MFAEnrollmentRequired: mfaEnroll}, nil
 }
+
+// ssoMFAGraceTTL bounds the restricted forced-enrollment grace session issued to an in-scope no-MFA SSO user
+// (mirrors iam's grace window). It is not a full session — MFAPending gates it to enroll/activate only.
+const ssoMFAGraceTTL = 15 * time.Minute

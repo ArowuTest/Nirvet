@@ -76,6 +76,9 @@ jobs:
       - name: Guard — every mutating route is authz-guarded or explicitly allowlisted (no silent authz bypass)
         working-directory: backend
         run: bash scripts/check-route-authz-coverage.sh
+      - name: Guard — force-MFA policy is consumed at the MintSession chokepoint (no decorative mfa.enforce v2)
+        working-directory: backend
+        run: bash scripts/check-mfa-enforcement-consumed.sh
       - name: Apply migrations
         working-directory: backend
         env:

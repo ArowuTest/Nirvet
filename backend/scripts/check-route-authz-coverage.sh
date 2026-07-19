@@ -21,7 +21,10 @@ MAIN="cmd/api/main.go"
 
 # Closed set of authz-guard wrappers (each is `interactive(...)`-derived or a role gate in main.go). A route whose
 # 2nd arg begins with one of these is guarded. A NEW guard name must be added here deliberately (a reviewed act).
-GUARDS=" authed provider aiProvider padmin detEng oversight soarApprover soarAuthor senior manager ssoAdmin customerRead customerWrite "
+# authedMFAEnroll is the authenticated chain WITHOUT the force-MFA-complete gate — wired ONLY to the MFA
+# enroll/activate routes so a forced-enrollment grace session can reach them (S1 §2c). It is still a real authz
+# guard (authn + suspension + audit); it just omits the mfaGate. A deliberate, reviewed member of the closed set.
+GUARDS=" authed authedMFAEnroll provider aiProvider padmin detEng oversight soarApprover soarAuthor senior manager ssoAdmin customerRead customerWrite "
 
 # PUBLIC_ALLOWLIST — the ONLY mutating routes that legitimately carry no session guard. Each has its own auth:
 #   pre-auth session-establishing endpoints (rate-limited via httpx.Chain(..., loginLimit)):
