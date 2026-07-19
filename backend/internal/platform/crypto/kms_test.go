@@ -269,3 +269,56 @@ func TestGCPKMS_REST_RoundTrip(t *testing.T) {
 		t.Fatal("KMS 403 must surface as an error")
 	}
 }
+
+// ── bootProbe (reviewer LOW follow-on: single-key-mode wrap+unwrap probe at boot) ─────────────────────────────
+
+const singleKeyTmpl = "projects/p/locations/l/keyRings/nirvet/cryptoKeys/pilot-single"
+
+func TestBootProbe_SingleKey_OK(t *testing.T) {
+	fw := &fakeWrapper{}
+	e := newEnvelopeCipher(fw, singleKeyTmpl)
+	if err := e.bootProbe(context.Background()); err != nil {
+		t.Fatalf("bootProbe: %v", err)
+	}
+	// The probe must exercise the CONFIGURED key name verbatim (that's what it is proving).
+	if len(fw.wrapKeys) != 1 || fw.wrapKeys[0] != singleKeyTmpl {
+		t.Fatalf("probe wrapped with %v, want exactly [%s]", fw.wrapKeys, singleKeyTmpl)
+	}
+}
+
+func TestBootProbe_WrapDenied_Fails(t *testing.T) {
+	e := newEnvelopeCipher(&fakeWrapper{failWrap: true}, singleKeyTmpl)
+	if err := e.bootProbe(context.Background()); err == nil {
+		t.Fatal("bootProbe succeeded with wrap denied — must fail closed")
+	}
+}
+
+// The exact misconfig the probe exists for: IAM grants encrypter but not decrypter, so the app would
+// happily WRITE vault entries that nothing can ever read back.
+func TestBootProbe_UnwrapDenied_Fails(t *testing.T) {
+	e := newEnvelopeCipher(&fakeWrapper{failUnwrap: true}, singleKeyTmpl)
+	if err := e.bootProbe(context.Background()); err == nil {
+		t.Fatal("bootProbe succeeded with unwrap denied — must fail closed (encrypter-without-decrypter)")
+	}
+}
+
+// corruptingWrapper unwraps "successfully" but returns the wrong bytes — the round-trip equality check must catch it.
+type corruptingWrapper struct{ fakeWrapper }
+
+func (c *corruptingWrapper) Unwrap(ctx context.Context, keyName string, ct, aad []byte) ([]byte, error) {
+	out, err := c.fakeWrapper.Unwrap(ctx, keyName, ct, aad)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		out[0] ^= 0xFF
+	}
+	return out, nil
+}
+
+func TestBootProbe_RoundTripMismatch_Fails(t *testing.T) {
+	e := newEnvelopeCipher(&corruptingWrapper{}, singleKeyTmpl)
+	if err := e.bootProbe(context.Background()); err == nil {
+		t.Fatal("bootProbe succeeded despite round-trip mismatch — must fail closed")
+	}
+}

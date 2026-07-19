@@ -41,4 +41,32 @@ if [ -n "$offenders" ]; then
   exit 1
 fi
 
-echo "check-authority-single-path: OK — authority_policies is written only via the guarded governance.go usecase."
+# ── Stage 2: WITHIN governance.go, each write must sit inside one of the two known-safe functions ──
+#
+# The file-level allowlist above leaves a residual: a NEW function added to governance.go could write
+# authority_policies directly without the R-3/L3 guards — same bypass, same file, invisible to stage 1.
+# This stage maps every write in governance.go to its enclosing function and requires it to be:
+#   - SetAuthorityPolicy  (the R-3/L3-guarded usecase — guards precede the INSERT in-function)
+#   - seedGovernanceTx    (the safe default-'observe' seed; cannot set a permissive mode)
+# Anything else — including a new helper in this file — fails the build.
+in_file_offenders="$(awk '
+  /^func / {
+    fn = $0
+    sub(/^func[ \t]+(\([^)]*\)[ \t]+)?/, "", fn)   # strip "func " and any "(r *Repository) " receiver
+    sub(/\(.*/, "", fn)                            # strip params — bare function name remains
+  }
+  /(INSERT[ \t]+INTO|UPDATE)[ \t]+authority_policies/ { print NR ":" fn }
+' internal/tenant/governance.go | grep -vE ":(SetAuthorityPolicy|seedGovernanceTx)$" || true)"
+
+if [ -n "$in_file_offenders" ]; then
+  echo "AUTHORITY-SINGLE-PATH VIOLATION (stage 2): authority_policies is written inside governance.go but" >&2
+  echo "OUTSIDE the guarded functions (SetAuthorityPolicy / seedGovernanceTx). Offending line:function —" >&2
+  echo "$in_file_offenders" | sed 's/^/  - governance.go:/' >&2
+  echo "" >&2
+  echo "A write in a new/unguarded function bypasses the R-3 (platform_admin for permissive modes) and" >&2
+  echo "L3 ('*' catch-all stays restrictive) guards even though it lives in the allowed file. Route it" >&2
+  echo "through SetAuthorityPolicy instead." >&2
+  exit 1
+fi
+
+echo "check-authority-single-path: OK — authority_policies is written only via the guarded governance.go usecase (and each in-file write sits inside SetAuthorityPolicy/seedGovernanceTx)."

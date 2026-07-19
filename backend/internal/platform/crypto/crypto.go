@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -133,6 +134,20 @@ func New(kmsKeyName, masterKeyB64 string, log *slog.Logger) (SecretCipher, error
 		return nil, err
 	}
 	env := newEnvelopeCipher(kms, kmsKeyName)
+	// Boot probe (reviewer LOW follow-on): in single-key mode one wrap+unwrap round-trip proves key name, IAM,
+	// and both KMS verbs before the app serves — an encrypter-without-decrypter IAM misconfig would otherwise
+	// write vault entries nobody can read, surfacing only at first customer decrypt. Per-tenant mode has one
+	// key per agency and cannot probe them all at boot; skipped with a log line.
+	if !strings.Contains(kmsKeyName, tenantPlaceholder) {
+		pctx, pcancel := context.WithTimeout(context.Background(), kmsOpTimeout)
+		defer pcancel()
+		if err := env.bootProbe(pctx); err != nil {
+			return nil, err
+		}
+		log.Info("crypto: KMS single-key boot probe OK (wrap+unwrap round-trip verified)")
+	} else {
+		log.Info("crypto: KMS per-tenant key template — boot probe skipped (keys are per-agency; verified at onboarding)")
+	}
 	if masterKeyB64 == "" {
 		return env, nil
 	}

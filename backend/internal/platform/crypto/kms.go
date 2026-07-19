@@ -144,6 +144,37 @@ func (e *envelopeCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte,
 	return aead.Open(nil, nonce, sealed, aad)
 }
 
+// bootProbe verifies the configured CryptoKey actually wraps AND unwraps at boot (reviewer LOW follow-on).
+// Single-key mode only: without {tenant} in the template there is exactly one key, so one probe proves the
+// whole configuration — key name, IAM permission, and both :encrypt and :decrypt. In per-tenant mode the keys
+// are per-agency and cannot all be probed at boot; the caller logs the skip instead.
+//
+// Fail-closed on ANY mismatch: a deploy whose key can wrap but not unwrap (asymmetric IAM — roles/cloudkms
+// encrypter without decrypter is a real GCP misconfig) would otherwise WRITE vault entries nobody can ever
+// read back, and surface only at first customer decrypt.
+func (e *envelopeCipher) bootProbe(ctx context.Context) error {
+	probe := make([]byte, 32)
+	if _, err := rand.Read(probe); err != nil {
+		return err
+	}
+	defer zero(probe)
+	aad := []byte("nirvet-kms-boot-probe")
+	keyName := e.keyTemplate // single-key mode: template IS the key name
+	wrapped, err := e.wrapper.Wrap(ctx, keyName, probe, aad)
+	if err != nil {
+		return fmt.Errorf("crypto: KMS boot probe wrap failed (fail-closed — key/IAM misconfig?): %w", err)
+	}
+	got, err := e.wrapper.Unwrap(ctx, keyName, wrapped, aad)
+	if err != nil {
+		return fmt.Errorf("crypto: KMS boot probe unwrap failed (fail-closed — encrypter-without-decrypter IAM would write unreadable vault entries): %w", err)
+	}
+	defer zero(got)
+	if !bytes.Equal(got, probe) {
+		return errors.New("crypto: KMS boot probe round-trip mismatch (fail-closed)")
+	}
+	return nil
+}
+
 // transitionCipher is the dual-read cutover cipher (M4 KMS+master path). Encrypt always emits v2; Decrypt dispatches
 // on the version byte so pre-cutover v1 (localCipher) blobs keep opening while new writes are KMS-wrapped v2.
 type transitionCipher struct {
