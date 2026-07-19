@@ -7,17 +7,51 @@ package ai_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/ArowuTest/nirvet/internal/ai"
+	"github.com/ArowuTest/nirvet/internal/incident"
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
 	"github.com/ArowuTest/nirvet/internal/platform/database"
 	"github.com/ArowuTest/nirvet/internal/platform/testsupport"
 	"github.com/ArowuTest/nirvet/internal/tenant"
 )
+
+// noIncidents is a stand-in Incidents dep for which no incident exists — so any incident_ref is "not found".
+type noIncidents struct{}
+
+func (noIncidents) Get(context.Context, uuid.UUID, uuid.UUID) (*incident.Incident, error) {
+	return nil, errors.New("not found")
+}
+
+// S2a: StartCopilotSession must validate a grounding incident_ref against the caller's own tenant at create time —
+// a dangling / foreign / non-existent ref must never be persisted (integrity). A nil ref (ungrounded) stays fine.
+func TestCopilot_RejectsUnknownIncidentRef(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Connect(ctx, testsupport.RequireDSN(t))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(db.Close)
+	tn, err := tenant.NewService(tenant.NewRepository(db)).Create(ctx, tenant.CreateInput{Name: "cop-" + uuid.NewString()})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	svc := ai.NewService(ai.NewGateway("", ""), nil, db).WithIncidentContext(noIncidents{}, nil)
+	analyst := auth.Principal{UserID: uuid.New(), TenantID: tn.ID, Email: "a@corp.test"}
+
+	ref := uuid.New()
+	if _, err := svc.StartCopilotSession(ctx, analyst, "look", &ref); err == nil {
+		t.Fatal("StartCopilotSession must reject an incident_ref that is not a real same-tenant incident")
+	}
+	if _, err := svc.StartCopilotSession(ctx, analyst, "look", nil); err != nil {
+		t.Fatalf("ungrounded session (nil incident_ref) must be allowed: %v", err)
+	}
+}
 
 func TestCopilot_PersistsAndIsolates(t *testing.T) {
 	ctx := context.Background()

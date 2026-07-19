@@ -251,6 +251,12 @@ func (r *Repository) MoveCell(ctx context.Context, p auth.Principal, notebookID,
 		if _, err := ownedNotebook(ctx, tx, p, notebookID); err != nil {
 			return err
 		}
+		// Serialise position mutation on this notebook — SAME lock AddCell takes. The read-two-positions /
+		// swap-two-UPDATEs below is a read-then-write on `position`; without this lock a concurrent AddCell
+		// (max()+1) or MoveCell could interleave and corrupt the ordering (duplicate/gapped positions).
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM investigation_notebooks WHERE id = $1 FOR UPDATE`, notebookID); err != nil {
+			return err
+		}
 		var pos int
 		if err := tx.QueryRow(ctx, `SELECT position FROM investigation_notebook_cells WHERE id = $2 AND notebook_id = $1`, notebookID, cellID).Scan(&pos); err != nil {
 			return httpx.ErrNotFound("cell not found")

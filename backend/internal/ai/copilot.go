@@ -54,6 +54,14 @@ func (s *Service) StartCopilotSession(ctx context.Context, p auth.Principal, tit
 	if len(title) > 200 {
 		return nil, httpx.ErrBadRequest("title too long")
 	}
+	// Validate the grounding incident is a REAL incident in the caller's own tenant before storing the ref
+	// (integrity — retrieval is already tenant-scoped, but a dangling/foreign ref should never be persisted).
+	// incidents.Get is tenant-scoped, so a foreign or non-existent id fails here.
+	if incidentRef != nil && s.incidents != nil {
+		if _, err := s.incidents.Get(ctx, p.TenantID, *incidentRef); err != nil {
+			return nil, httpx.ErrBadRequest("incident not found")
+		}
+	}
 	sess := &CopilotSession{ID: uuid.New(), UserID: p.UserID, Title: title, IncidentRef: incidentRef}
 	err := s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
@@ -193,7 +201,11 @@ func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID
 		return nil, httpx.ErrBadRequest("message too long")
 	}
 
-	// Load the session (ownership) + recent history for context.
+	// Load the session (ownership) + recent history for context, and persist the analyst's message in the SAME
+	// tx — BEFORE the (possibly slow / failure-prone) external AI call. If the provider hangs or the process
+	// crashes mid-call, the analyst's typed words are already durably recorded; only the assistant reply is lost
+	// (and a retry re-asks). loadTurns runs first, so the just-inserted user turn is NOT double-counted into this
+	// call's own history. The assistant reply + session bump + audit are persisted in a second tx after the call.
 	var sess *CopilotSession
 	var history []CopilotTurn
 	err := s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -202,7 +214,11 @@ func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID
 			return err
 		}
 		sess = c
-		history, err = loadTurns(ctx, tx, sessionID, maxCopilotHistory)
+		if history, err = loadTurns(ctx, tx, sessionID, maxCopilotHistory); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO ai_copilot_turns (session_id, role, content) VALUES ($1,'user',$2)`, sessionID, message)
 		return err
 	})
 	if err != nil {
@@ -248,12 +264,9 @@ func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID
 		model = "offline (no provider)"
 	}
 
+	// The analyst's message is already persisted (first tx). Persist the assistant reply + session bump + audit.
 	assistant := &CopilotTurn{ID: uuid.New(), Role: "assistant", Content: reply, Model: model}
 	err = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO ai_copilot_turns (session_id, role, content) VALUES ($1,'user',$2)`, sessionID, message); err != nil {
-			return err
-		}
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO ai_copilot_turns (session_id, role, content, model, redaction)
 			 VALUES ($1,'assistant',$2,$3,$4) RETURNING id, created_at`,
