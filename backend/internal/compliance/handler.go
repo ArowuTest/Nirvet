@@ -69,3 +69,82 @@ func frameworkParam(r *http.Request) string {
 	}
 	return "nist_csf_2_0"
 }
+
+// CreateFramework handles POST /compliance/frameworks — author a tenant-custom framework (COMP-002).
+func (h *Handler) CreateFramework(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in FrameworkInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	f, err := h.svc.CreateFramework(r.Context(), p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, f)
+}
+
+// UpdateFramework handles PUT /compliance/frameworks/{key} — edit an own framework's metadata/enabled.
+func (h *Handler) UpdateFramework(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in FrameworkInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	f, err := h.svc.UpdateFramework(r.Context(), p.TenantID, r.PathValue("key"), in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, f)
+}
+
+// DeleteFramework handles DELETE /compliance/frameworks/{key} — remove an own framework + its controls/statuses.
+func (h *Handler) DeleteFramework(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	if err := h.svc.DeleteFramework(r.Context(), p.TenantID, r.PathValue("key")); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// UpsertControl handles POST /compliance/controls — add/update a tenant-custom control (refinement).
+func (h *Handler) UpsertControl(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in ControlInput
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	c, err := h.svc.UpsertControl(r.Context(), p.TenantID, in)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, c)
+}
+
+// DeleteControl handles DELETE /compliance/controls?framework=&ref= — remove a tenant-custom control.
+func (h *Handler) DeleteControl(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	if err := h.svc.DeleteControl(r.Context(), p.TenantID, r.URL.Query().Get("framework"), r.URL.Query().Get("ref")); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// AuditPack handles GET /compliance/audit-pack?framework= — the auditor-facing readiness artifact.
+func (h *Handler) AuditPack(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	pack, err := h.svc.BuildAuditPack(r.Context(), p.TenantID, frameworkParam(r))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, pack)
+}

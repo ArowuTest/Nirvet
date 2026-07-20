@@ -945,6 +945,17 @@ func main() {
 	mux.Handle("GET /compliance/controls", provider(complianceH.Controls))
 	mux.Handle("GET /compliance/coverage", provider(complianceH.Coverage))
 	mux.Handle("PUT /compliance/status", manager(complianceH.SetStatus)) // R5-M4: auditor-facing attestation is manager-gated
+	// §6.14 slice B: tenant-custom framework/control AUTHORING (COMP-002 refinements — e.g. a sovereign operator adds
+	// its national reporting-window/regulator/statute controls as DATA, no migration). Manager-gated (auditor-facing
+	// config, same floor as attestation) + audited by the mutation middleware; RLS keeps writes to own rows only.
+	mux.Handle("POST /compliance/frameworks", manager(complianceH.CreateFramework))
+	mux.Handle("PUT /compliance/frameworks/{key}", manager(complianceH.UpdateFramework))
+	mux.Handle("DELETE /compliance/frameworks/{key}", manager(complianceH.DeleteFramework))
+	mux.Handle("POST /compliance/controls", manager(complianceH.UpsertControl))
+	mux.Handle("DELETE /compliance/controls", manager(complianceH.DeleteControl))
+	// §6.14 slice B: audit-readiness pack — the honest per-control assessment + coverage + provenance, packaged for
+	// an auditor. Read (same tier as coverage).
+	mux.Handle("GET /compliance/audit-pack", provider(complianceH.AuditPack))
 	// billing / entitlements
 	mux.Handle("GET /billing/entitlements", provider(billingH.Get))
 	mux.Handle("PUT /billing/entitlements", padmin(billingH.Set))

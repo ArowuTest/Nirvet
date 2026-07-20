@@ -927,6 +927,16 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+    post:
+      tags: [compliance]
+      summary: Add/update a tenant-custom control (COMP-002 refinement; manager). auto_signal must be a real resolver/manual/''; ref may not shadow a built-in; nesting <=2 levels.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [framework_key, control_ref, title, weight], properties: { framework_key: { type: string }, control_ref: { type: string }, parent_ref: { type: string }, title: { type: string }, description: { type: string }, weight: { type: integer }, auto_signal: { type: string } } } } } }
+      responses: { '201': { description: control }, '400': { description: bad request }, '403': { description: forbidden }, '404': { description: unknown framework }, '409': { description: shadows a built-in control } }
+    delete:
+      tags: [compliance]
+      summary: Delete a tenant-custom control (manager; built-ins cannot be deleted)
+      parameters: [{ name: framework, in: query, required: true, schema: { type: string } }, { name: ref, in: query, required: true, schema: { type: string } }]
+      responses: { '200': { description: deleted }, '403': { description: forbidden }, '404': { description: not found } }
   /compliance/frameworks:
     get:
       tags: [compliance]
@@ -936,6 +946,29 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+    post:
+      tags: [compliance]
+      summary: Author a tenant-custom framework (COMP-002; manager). key must be a slug and may not shadow a built-in framework.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [key, name], properties: { key: { type: string }, name: { type: string }, version: { type: string }, description: { type: string }, enabled: { type: boolean } } } } } }
+      responses: { '201': { description: framework }, '400': { description: bad request }, '403': { description: forbidden }, '409': { description: key exists or shadows a built-in } }
+  /compliance/frameworks/{key}:
+    put:
+      tags: [compliance]
+      summary: Edit an own framework's metadata/enabled (manager; built-ins cannot be edited)
+      parameters: [{ name: key, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string }, version: { type: string }, description: { type: string }, enabled: { type: boolean } } } } } }
+      responses: { '200': { description: framework }, '400': { description: bad request }, '403': { description: forbidden }, '404': { description: not found } }
+    delete:
+      tags: [compliance]
+      summary: Delete an own framework + its controls/statuses (manager; built-ins cannot be deleted)
+      parameters: [{ name: key, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: deleted }, '403': { description: forbidden }, '404': { description: not found } }
+  /compliance/audit-pack:
+    get:
+      tags: [compliance]
+      summary: Audit-readiness pack — framework metadata + full per-control assessment + coverage + provenance (auditor-facing)
+      parameters: [{ name: framework, in: query, schema: { type: string } }]
+      responses: { '200': { description: audit pack }, '404': { description: unknown framework } }
   /compliance/status:
     put:
       tags: [compliance]
