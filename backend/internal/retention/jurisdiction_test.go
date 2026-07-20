@@ -115,9 +115,11 @@ func jLedger(t *testing.T, db *database.DB, tid uuid.UUID) (count int, key strin
 	t.Helper()
 	_ = db.WithTenant(context.Background(), tid, func(ctx context.Context, tx pgx.Tx) error {
 		_ = tx.QueryRow(ctx, `SELECT count(*) FROM retention_jurisdiction_ledger WHERE tenant_id=$1`, tid).Scan(&count)
+		// A sweep writes one ledger row per store (raw_events, events); pick the one carrying the actual delete
+		// (raw_events had the row; events had none) by ordering on deleted_count so attribution reflects the delete.
 		_ = tx.QueryRow(ctx,
 			`SELECT jurisdiction_key, ceiling_binds, armed, deleted_count FROM retention_jurisdiction_ledger
-			  WHERE tenant_id=$1 ORDER BY at DESC LIMIT 1`, tid).Scan(&key, &ceilingBinds, &armed, &deleted)
+			  WHERE tenant_id=$1 ORDER BY deleted_count DESC, at DESC LIMIT 1`, tid).Scan(&key, &ceilingBinds, &armed, &deleted)
 		return nil
 	})
 	return
