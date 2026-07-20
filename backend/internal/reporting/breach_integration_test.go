@@ -83,14 +83,22 @@ func TestBreachReport_GenerateContainsIncident(t *testing.T) {
 	ctx := context.Background()
 
 	incID := seedBreachIncident(t, db, tid, "unauthorized access")
-	rep, err := svc.GenerateBreachReport(ctx, repActor(tid), incID, FormatCSV)
+	author := repActor(tid)
+	rep, err := svc.GenerateBreachReport(ctx, author, incID, FormatCSV)
 	if err != nil {
 		t.Fatalf("generate breach: %v", err)
 	}
 	if rep.Type != "breach_report" || rep.Status != "ready" || rep.RowCount < 1 {
 		t.Fatalf("breach report should be ready with content: %+v", rep)
 	}
-	data, format, err := svc.Download(ctx, repActor(tid), rep.ID)
+	// #173: breach_report is review-required (seeded) — it is not releasable until a distinct senior approves it.
+	if rep.ReviewStatus != "pending_review" {
+		t.Fatalf("a breach report must land pending_review, got %q", rep.ReviewStatus)
+	}
+	if _, err := svc.Approve(ctx, managerActor(tid), rep.ID); err != nil {
+		t.Fatalf("approve breach report: %v", err)
+	}
+	data, format, err := svc.Download(ctx, author, rep.ID)
 	if err != nil || format != FormatCSV {
 		t.Fatalf("download: err=%v format=%s", err, format)
 	}
@@ -110,11 +118,16 @@ func TestBreachReport_FormulaTitleNeutralized(t *testing.T) {
 	ctx := context.Background()
 
 	incID := seedBreachIncident(t, db, tid, "=1+2")
-	rep, err := svc.GenerateBreachReport(ctx, repActor(tid), incID, FormatCSV)
+	author := repActor(tid)
+	rep, err := svc.GenerateBreachReport(ctx, author, incID, FormatCSV)
 	if err != nil {
 		t.Fatalf("generate breach: %v", err)
 	}
-	data, _, err := svc.Download(ctx, repActor(tid), rep.ID)
+	// #173: review-required → approve (distinct senior) before it can be released.
+	if _, err := svc.Approve(ctx, managerActor(tid), rep.ID); err != nil {
+		t.Fatalf("approve breach report: %v", err)
+	}
+	data, _, err := svc.Download(ctx, author, rep.ID)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
