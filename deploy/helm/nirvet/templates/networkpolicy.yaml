@@ -1,0 +1,81 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-DENY for all pods in the namespace: nothing is allowed unless an explicit rule below permits it (2d).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" . }}-default-deny
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  # no ingress/egress rules → deny all
+---
+# Ingress: allow traffic to the API pods on 8080 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" . }}-api-ingress
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "nirvet.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8080 }
+---
+# /metrics is on 8080 but MUST be scraped ONLY from the monitoring namespace — allow that source explicitly; the
+# default-deny keeps it off the public ingress path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" . }}-metrics-monitoring-only
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "nirvet.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Values.metrics.monitoringNamespace | quote }} }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Egress: app/worker/migrate may reach ONLY the self-hosted data-plane deps (postgres/clickhouse/nats/redis/vault/
+# object-store) on the CIDRs the operator declares, plus DNS. In the air-gap profile there is NO public-internet
+# egress rule — so telemetry / update-checks / a public LLM endpoint are structurally unreachable (no phone-home).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" . }}-egress
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+spec:
+  podSelector: {{- include "nirvet.selectorLabels" . | nindent 4 }}
+  policyTypes: [Egress]
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Self-hosted dependencies on the operator-declared CIDRs.
+    - to:
+        {{- range .Values.networkPolicy.dependencyCIDRs }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 5432 }   # postgres
+        - { protocol: TCP, port: 9000 }   # clickhouse
+        - { protocol: TCP, port: 4222 }   # nats
+        - { protocol: TCP, port: 6379 }   # redis
+        - { protocol: TCP, port: 8200 }   # vault
+        - { protocol: TCP, port: 443 }    # object-store (in-cluster MinIO/S3 gateway)
+  {{- if not .Values.networkPolicy.airgap }}
+  # NON-air-gap profiles MAY reach the public internet (e.g. cloud KMS, hosted LLM). The air-gap profile omits this
+  # block entirely, so egress is confined to the data plane above.
+  {{- end }}
+{{- end }}

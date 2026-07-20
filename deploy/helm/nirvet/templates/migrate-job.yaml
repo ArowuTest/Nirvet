@@ -1,0 +1,33 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nirvet.fullname" . }}-migrate
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+  annotations:
+    # Runs BEFORE the app serves. Helm waits for this hook to succeed; a FAILED migration fails the release
+    # (fail-closed) — the app is never scheduled against a half-migrated database (gate 2g).
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels: {{- include "nirvet.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "nirvet.fullname" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      securityContext: {{- include "nirvet.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "nirvet.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/migrate"]
+          securityContext: {{- include "nirvet.containerSecurityContext" . | nindent 12 }}
+          envFrom: {{- include "nirvet.envFrom" . | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+{{- end }}

@@ -88,6 +88,9 @@ jobs:
       - name: Guard — KMS providers are wrap/unwrap-only (KEK never leaves the backend; crypto funnels through envelopeCipher)
         working-directory: backend
         run: bash scripts/check-kms-provider-boundary.sh
+      - name: Guard — deployment packaging is secure (no secret in chart, nonroot/readonly, default-deny netpol, digest-pinned, /metrics monitoring-only)
+        working-directory: backend
+        run: bash scripts/check-deploy-security.sh
       - name: Apply migrations
         working-directory: backend
         env:

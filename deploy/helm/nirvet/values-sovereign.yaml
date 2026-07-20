@@ -1,0 +1,20 @@
+# Nirvet sovereign / air-gap profile: helm install -f values.yaml -f values-sovereign.yaml
+# This profile makes the deployment refuse to boot on the dev master key (require-KMS, ties KMS gate 2b) and denies
+# all egress to the public internet (air-gap — no telemetry / update-check / public-LLM phone-home).
+config:
+  env: "production"
+  requireKMS: true       # localCipher UNREACHABLE — a Vault/KMS provider must be configured or the app fails closed
+  cryptoProvider: "vault"
+  vaultMount: "transit"
+
+networkPolicy:
+  enabled: true
+  airgap: true           # egress default-deny to the public internet; only the in-cluster data plane is reachable
+
+replicaCount: 2
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+worker:
+  enabled: true

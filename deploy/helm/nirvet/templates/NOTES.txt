@@ -1,0 +1,14 @@
+Nirvet {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}".
+
+SECURITY — the chart ships NO secrets. Before this release can serve:
+  1. Create a Kubernetes Secret with the runtime secret env and set existingSecretName={{ .Values.existingSecretName | default "<REQUIRED>" }}:
+        NIRVET_DATABASE_URL, NIRVET_JWT_SECRET, NIRVET_SECRET_MASTER_KEY (or a KMS/Vault provider),
+        NIRVET_VAULT_TOKEN (if crypto provider=vault), NIRVET_CLICKHOUSE_DSN, NIRVET_REDIS_ADDR, S3/object-store creds.
+     Prefer an external secret manager (Vault Agent / External Secrets Operator / Secrets Store CSI).
+  2. Pin the image by digest (image.digest) — the release rejects a floating tag.
+  3. Sovereign/air-gap: install with -f values-sovereign.yaml → require-KMS=true (no boot on the dev master key) and
+     egress default-deny to the public internet.
+
+Migrations ran as a pre-install/upgrade hook; the app serves only after they succeed (fail-closed).
+/metrics is unauthenticated by design and is reachable ONLY from the "{{ .Values.metrics.monitoringNamespace }}"
+namespace via NetworkPolicy — never wire it to public ingress.

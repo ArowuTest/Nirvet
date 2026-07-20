@@ -1,0 +1,10 @@
+apiVersion: v2
+name: nirvet
+description: Nirvet SOCaaS platform — sovereign/on-prem Helm chart (API + worker + migration hook).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords: [soc, siem, soar, sovereign, on-prem, air-gap]
+sources:
+  - https://github.com/ArowuTest/Nirvet

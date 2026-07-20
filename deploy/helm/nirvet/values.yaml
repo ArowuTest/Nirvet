@@ -1,0 +1,72 @@
+# Nirvet Helm values — DEFAULTS. Security posture (enforced by scripts/check-deploy-security.sh):
+#   - NO secret value ever lives here. Secrets (DB/CH/Redis passwords, Vault token, master key, KMS creds) come from
+#     a Kubernetes Secret the OPERATOR supplies (existingSecretName) — ideally via Vault Agent / External Secrets /
+#     CSI. A missing secret fails the pod closed at boot; there is NO working default.
+#   - The image is pinned by DIGEST (never :latest). Set image.digest to the sha256 of the released image.
+#   - Every workload runs non-root, read-only-rootfs, no-privesc, all caps dropped, seccomp RuntimeDefault.
+
+image:
+  repository: ghcr.io/arowutest/nirvet
+  # Digest-pinned (immutable). Replace with the released image digest; the fence rejects :latest / floating tags.
+  digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  pullPolicy: IfNotPresent
+
+# Operator-supplied Kubernetes Secret holding ALL secret env (NIRVET_DATABASE_URL, NIRVET_JWT_SECRET,
+# NIRVET_SECRET_MASTER_KEY, NIRVET_VAULT_TOKEN, NIRVET_CLICKHOUSE_DSN, etc.). The chart does NOT create it and
+# never templates secret values — it only references it by name. Empty => the deployment fails to render (fail-safe).
+existingSecretName: ""
+
+replicaCount: 2   # HA default; the fence flags a single-replica-only prod chart.
+
+# Non-secret configuration → ConfigMap. Never put a secret here.
+config:
+  env: "production"
+  httpAddr: ":8080"
+  corsOrigin: ""
+  aiModel: "claude-sonnet-5"
+  vaultAddr: ""          # NIRVET_VAULT_ADDR (operator infra host — non-secret)
+  vaultMount: "transit"
+  cryptoProvider: ""     # "" | gcp | vault
+  requireKMS: false      # sovereign profile flips this true (values-sovereign.yaml)
+  clickhouseHost: ""     # non-secret host part; the DSN with creds is a Secret
+
+resources:
+  requests: { cpu: "100m", memory: "128Mi" }
+  limits:   { cpu: "1", memory: "512Mi" }
+
+worker:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests: { cpu: "50m", memory: "128Mi" }
+    limits:   { cpu: "500m", memory: "512Mi" }
+
+# Network segmentation. default-deny is always on; the allowed egress peers are the self-hostable deps.
+networkPolicy:
+  enabled: true
+  airgap: false          # sovereign profile sets true → egress to the public internet is denied (no phone-home)
+  # CIDR blocks for the in-cluster/self-hosted dependencies the app may reach (postgres/clickhouse/nats/redis/vault/
+  # object-store). Ports are fixed below. Operators narrow these to their data-plane subnet.
+  dependencyCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+# /metrics is intentionally unauthenticated for the scrape collector — it must be reachable ONLY from monitoring.
+metrics:
+  monitoringNamespace: "monitoring"
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: false         # operator wires ingress + TLS (cert-manager or supplied). /metrics is NEVER exposed here.
+  className: ""
+  host: ""
+  tlsSecretName: ""
+
+migrations:
+  # Run as a Helm pre-install/pre-upgrade hook; the release fails closed if migrations fail (no half-migrated serving).
+  enabled: true
+
+serviceAccount:
+  # A plain web service needs no Kubernetes API access — the SA token is NOT auto-mounted.
+  automountToken: false

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nirvet.fullname" . }}-api
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  # Only the HTTP app port is exposed. /metrics is served on the same port but MUST be reachable ONLY from the
+  # monitoring namespace (enforced by the NetworkPolicy) — this Service is NOT wired to ingress for /metrics.
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector: {{- include "nirvet.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
