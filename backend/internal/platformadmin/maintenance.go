@@ -34,6 +34,12 @@ func (m *MaintenanceService) CreateWindow(ctx context.Context, actor auth.Princi
 	return m.repo.CreateWindow(ctx, scope, scopeRef, startsAt, endsAt, suppressNotif, pauseSLA, banner, actor.UserID)
 }
 
+// ListWindows returns maintenance windows newest-first (padmin read) — the read side of CreateWindow, with each
+// window's Active state computed server-side. Bounded to a sane page (the operator's own window history).
+func (m *MaintenanceService) ListWindows(ctx context.Context) ([]Window, error) {
+	return m.repo.listWindows(ctx, 200)
+}
+
 // SuppressNotification — M-2: a window may hold a notification, but a CRITICAL (P1) ALWAYS delivers. On any read
 // error, do NOT suppress (fail toward delivery — a missed critical is the silent gap).
 func (m *MaintenanceService) SuppressNotification(ctx context.Context, tenantID uuid.UUID, severity string) bool {

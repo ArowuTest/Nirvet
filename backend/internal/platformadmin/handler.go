@@ -14,13 +14,47 @@ import (
 
 // Handler exposes the platform-admin config/lifecycle/maintenance endpoints.
 type Handler struct {
-	svc   *Service
-	maint *MaintenanceService
+	svc          *Service
+	maint        *MaintenanceService
+	settingsBase PlatformSettings // NON-SECRET static config snapshot, captured once at boot
 }
 
 // NewHandler builds the handler.
 func NewHandler(svc *Service, maint *MaintenanceService) *Handler {
 	return &Handler{svc: svc, maint: maint}
+}
+
+// WithSettingsBase supplies the non-secret static configuration for GET /admin/settings (set once at boot).
+func (h *Handler) WithSettingsBase(b PlatformSettings) *Handler { h.settingsBase = b; return h }
+
+// ListWindows handles GET /admin/maintenance-windows — the read side of CreateWindow (with per-window Active state).
+func (h *Handler) ListWindows(w http.ResponseWriter, r *http.Request) {
+	windows, err := h.maint.ListWindows(r.Context())
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list maintenance windows"))
+		return
+	}
+	if windows == nil {
+		windows = []Window{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"maintenance_windows": windows})
+}
+
+// Settings handles GET /admin/settings — a NON-SECRET operational configuration snapshot (names/modes/counts only).
+func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
+	s := h.settingsBase // static, non-secret
+	if flags, err := h.svc.ListFlags(r.Context()); err == nil {
+		s.FlagCount = len(flags)
+	}
+	if windows, err := h.maint.ListWindows(r.Context()); err == nil {
+		s.MaintenanceWindowsTotal = len(windows)
+		for _, win := range windows {
+			if win.Active {
+				s.ActiveMaintenanceCount++
+			}
+		}
+	}
+	httpx.JSON(w, http.StatusOK, s)
 }
 
 // ListFlags handles GET /admin/flags — the configured feature flags with derived safety class + secure default.

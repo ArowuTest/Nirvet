@@ -791,6 +791,28 @@ func main() {
 	platformHealthH := platformhealth.NewHandler(platformhealth.NewService(
 		db.Health, events.Ping, esBackend, queueBackend, blobs.Backend(), redisClient != nil, startedAt))
 	mux.Handle("GET /admin/health", padmin(platformHealthH.Get))
+	// §6.18 #175 slice B (read-only): a NON-SECRET settings snapshot for the admin settings screen (names/modes/counts
+	// only — no secret ever). Provider display: explicit config wins; else infer gcp when a KMS key is set, else local.
+	cryptoProviderDisplay := cfg.CryptoProvider
+	if cryptoProviderDisplay == "" {
+		if cfg.KMSKeyName != "" {
+			cryptoProviderDisplay = "gcp"
+		} else {
+			cryptoProviderDisplay = "local"
+		}
+	}
+	cacheMode := "in-memory"
+	if redisClient != nil {
+		cacheMode = "redis"
+	}
+	padminH.WithSettingsBase(platformadmin.PlatformSettings{
+		Environment: cfg.Env, Instance: "single-sovereign",
+		CryptoProvider: cryptoProviderDisplay, CryptoRequireKMS: cfg.CryptoRequireKMS,
+		AIModel: cfg.AIModel, EventBackend: esBackend, QueueBackend: queueBackend,
+		BlobBackend: blobs.Backend(), CacheMode: cacheMode,
+	})
+	mux.Handle("GET /admin/maintenance-windows", padmin(padminH.ListWindows))
+	mux.Handle("GET /admin/settings", padmin(padminH.Settings))
 	mux.Handle("GET /tenant/ai/provider", ssoAdmin(aiCfgH.GetTenantProvider))
 	mux.Handle("PUT /tenant/ai/provider", ssoAdmin(aiCfgH.SetTenantProvider))
 	// §6.12 #188 AI-egress redaction — tenant-admin manages the mask-by-default policy + config-extensible patterns.

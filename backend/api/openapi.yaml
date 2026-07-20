@@ -728,12 +728,27 @@ paths:
         '401': { description: unauthenticated }
         '403': { description: forbidden }
   /admin/maintenance-windows:
+    get:
+      tags: [admin]
+      summary: List maintenance windows with per-window active state (padmin)
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
     post:
       tags: [admin]
       summary: POST /admin/maintenance-windows
       responses:
         '200': { description: OK }
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/settings:
+    get:
+      tags: [admin]
+      summary: Non-secret platform settings snapshot (names/modes/counts; padmin)
+      responses:
+        '200': { description: OK }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
   /admin/oversight/org-grants:
