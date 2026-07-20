@@ -25,6 +25,7 @@ import (
 
 	"github.com/ArowuTest/nirvet/api"
 	"github.com/ArowuTest/nirvet/internal/ai"
+	"github.com/ArowuTest/nirvet/internal/airesponse"
 	"github.com/ArowuTest/nirvet/internal/alert"
 	"github.com/ArowuTest/nirvet/internal/asset"
 	"github.com/ArowuTest/nirvet/internal/billing"
@@ -390,9 +391,13 @@ func main() {
 	// masks via the built-in floor. Wired into the service so the completeExternal chokepoint applies it.
 	redactionSvc := ai.NewRedactionService(db)
 	aiSvc.WithRedaction(redactionSvc)
-	aiSvc.WithSOARReader(soarHistoryReader{svc: soarSvc}) // S2b: read-only SOAR history for the context assembler
+	aiSvc.WithSOARReader(soarHistoryReader{svc: soarSvc})      // S2b: read-only SOAR history for the context assembler
+	aiSvc.WithActionCatalog(actionCatalogReader{svc: soarSvc}) // S2b i3: validate a proposed action ∈ the tenant's catalog (fail-closed)
 	redactionH := ai.NewRedactionHandler(redactionSvc)
 	aiH := ai.NewHandler(aiSvc)
+	// S2b i3: the AI-response ACCEPT usecase lives OUTSIDE internal/ai (it imports soar to reach the EXISTING run
+	// pipeline). A human senior promotes a proposal → soar.Run → all authority gates. The AI proposes only.
+	aiRespH := airesponse.NewHandler(airesponse.NewService(aiSvc, soarSvc))
 	// §6.12 #117 admin-configurable AI providers: config surface (global default + per-tenant override + platform
 	// allowlist + tenant policy). The vault (line 107) seals api keys; the allowlist is the data-egress/residency
 	// boundary. DORMANT — the seeded global anthropic row keeps current behavior until an admin changes it.
@@ -749,6 +754,14 @@ func main() {
 	mux.Handle("GET /ai/copilot/sessions", aiProvider(aiH.ListCopilotSessions))
 	mux.Handle("GET /ai/copilot/sessions/{id}", aiProvider(aiH.GetCopilotSession))
 	mux.Handle("POST /ai/copilot/sessions/{id}/messages", aiProvider(aiH.PostCopilotMessage))
+	// §6.12 S2b i3 AI response-proposals: the copilot PROPOSES a response (data); a HUMAN promotes it into the
+	// EXISTING soar run pipeline. Propose/list/reject are analyst-usable DATA ops (aiProvider). ACCEPT — which creates
+	// a run — is gated at the destructive-approval floor (soarApprover: platform_admin/soc_manager) and re-checked
+	// in-service; it lives in internal/airesponse (outside internal/ai) so the AI package never imports soar.
+	mux.Handle("POST /ai/proposals", aiProvider(aiH.CreateProposal))
+	mux.Handle("GET /ai/proposals", aiProvider(aiH.ListProposals))
+	mux.Handle("POST /ai/proposals/{id}/reject", aiProvider(aiH.RejectProposal))
+	mux.Handle("POST /ai/proposals/{id}/accept", soarApprover(aiRespH.Accept))
 	// §6.12 #117 AI-provider config. Platform-admin: global default + allowlist + per-tenant policy. Tenant-admin:
 	// own override (kind must be within policy; base_url must be allowlisted — enforced at save in ConfigService).
 	mux.Handle("GET /admin/ai/provider", padmin(aiCfgH.GetGlobalProvider))
@@ -1199,6 +1212,26 @@ func (r soarHistoryReader) RunFactsForIncident(ctx context.Context, tenantID, in
 		}
 	}
 	return out, nil
+}
+
+// actionCatalogReader adapts soar.Service to ai.ActionCatalogReader (S2b i3) — CreateProposal validates a proposed
+// action against the tenant's ENABLED catalog keys before recording the proposal (fail-closed on unknown). It lives
+// OUTSIDE internal/ai (which imports no soar): the AI receives a plain map of valid keys, never a soar type or the
+// execution surface. Read is tenant-scoped (ListActionCatalog(tenantID) under RLS).
+type actionCatalogReader struct{ svc *soar.Service }
+
+func (r actionCatalogReader) ValidActionKeys(ctx context.Context, tenantID uuid.UUID) (map[string]bool, error) {
+	cs, err := r.svc.ListActionCatalog(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	keys := make(map[string]bool, len(cs))
+	for _, c := range cs {
+		if c.Enabled {
+			keys[c.ActionKey] = true
+		}
+	}
+	return keys, nil
 }
 
 // breachIncidentAdapter adapts incident.Service to reporting.BreachIncidentReader for the #188 regulatory breach

@@ -222,6 +222,18 @@ func (s *Service) Run(ctx context.Context, p auth.Principal, playbookID uuid.UUI
 	return s.runFor(ctx, p, p.TenantID, playbookID, incidentID)
 }
 
+// GetPlaybook returns a playbook the tenant owns (READ-ONLY). Used by the AI-response accept path (internal/airesponse)
+// to verify the senior-selected enacting playbook actually contains the AI-proposed action BEFORE promoting it to a
+// run — so a proposal can never be accepted-then-run against an unrelated playbook. This is a pure read; it executes
+// nothing (the run still goes through Run → runFor and every authority gate).
+func (s *Service) GetPlaybook(ctx context.Context, tenantID, id uuid.UUID) (*Playbook, error) {
+	pb, err := s.repo.GetPlaybook(ctx, tenantID, id)
+	if err != nil {
+		return nil, httpx.ErrNotFound("playbook not found")
+	}
+	return pb, nil
+}
+
 // RunForTarget starts a playbook against ANOTHER tenant — the fleet cross-tenant containment path (a fleet
 // operator firing a playbook on a customer/agency's alert). The actor stays the OPERATOR (identity → audit,
 // Role → approver rank), but EVERY tenant-keyed authority/resource seam — playbook, action catalog + §9.5

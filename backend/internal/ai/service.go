@@ -85,14 +85,15 @@ type Assets interface {
 // Service is the AI copilot. It loads only the tenant's own data (isolation),
 // calls the gateway (or falls back offline), and logs every call.
 type Service struct {
-	gw         *Gateway
-	resolver   *Resolver         // §6.12 #117: per-tenant provider resolution (A-5). nil → use the startup gateway (back-compat).
-	redaction  *RedactionService // §6.12 #188: AI-egress redaction. nil → fail-safe built-in mask floor (still masks).
-	alerts     *alert.Service
-	incidents  Incidents
-	assets     Assets
-	soarReader SOARReader // S2b: read-only SOAR run-history reader (injected; no soar import — fence-safe)
-	db         *database.DB
+	gw            *Gateway
+	resolver      *Resolver         // §6.12 #117: per-tenant provider resolution (A-5). nil → use the startup gateway (back-compat).
+	redaction     *RedactionService // §6.12 #188: AI-egress redaction. nil → fail-safe built-in mask floor (still masks).
+	alerts        *alert.Service
+	incidents     Incidents
+	assets        Assets
+	soarReader    SOARReader          // S2b: read-only SOAR run-history reader (injected; no soar import — fence-safe)
+	actionCatalog ActionCatalogReader // S2b i3: proposed-action ∈ catalog validator (injected; no soar import — fence-safe)
+	db            *database.DB
 }
 
 // NewService builds the copilot service.
