@@ -37,12 +37,23 @@ func main() {
 	if dsn == "" {
 		die("NIRVET_DRILL_DSN is required")
 	}
-	// The master key IS the KEK for this drill (crypto.NewFromConfig with only a master key → localCipher, AES-256-GCM).
-	// A real sovereign deployment uses Vault/HSM; the drill + runbook invariant (back the key up SEPARATELY, restore
-	// proves decrypt) is identical.
-	cipher, err := crypto.NewFromConfig(crypto.Config{MasterKeyB64: os.Getenv("NIRVET_SECRET_MASTER_KEY")})
+	// Build the cipher from env so ONE helper serves both drills: the B8 backup/restore drill uses the master key
+	// (localCipher, the KEK held separately in env/a file); the DR-failover drill sets NIRVET_CRYPTO_PROVIDER=vault so
+	// the KEK is a NETWORK-reachable Vault Transit provider — and "reachable from DR" becomes a real, testable
+	// condition (unreachable Vault → crypto init/decrypt fails → the DR replica is a dead SOC, which is the point).
+	mount := os.Getenv("NIRVET_VAULT_MOUNT")
+	if mount == "" {
+		mount = "transit"
+	}
+	cipher, err := crypto.NewFromConfig(crypto.Config{
+		Provider:     os.Getenv("NIRVET_CRYPTO_PROVIDER"),
+		KeyName:      os.Getenv("NIRVET_KMS_KEY_NAME"),
+		MasterKeyB64: os.Getenv("NIRVET_SECRET_MASTER_KEY"),
+		VaultAddr:    os.Getenv("NIRVET_VAULT_ADDR"),
+		VaultMount:   mount,
+	})
 	if err != nil {
-		die("crypto init: %v", err)
+		die("crypto init (KEK provider unreachable/misconfigured — a DR replica cannot serve without its KEK): %v", err)
 	}
 
 	ctx := context.Background()

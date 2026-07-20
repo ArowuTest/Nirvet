@@ -1,0 +1,16 @@
+=== Nirvet DR-failover drill (decrypt-at-DR) — 20260720T233557 ===
+gate: build/GATE_HA_DR_SOVEREIGN_RUNBOOKS.md §2c (a promoted DR replica decrypts ONLY if the KEK is reachable)
+[1] Vault up; transit KEK 'nirvet-dek' created (real Vault Transit provider)
+seeded: 171 bytes of wrapped ciphertext stored; plaintext + KEK held OUTSIDE the DB
+[2] primary seeded with a Vault-wrapped secret
+[3] DR replica restored from primary backup (RTO=2s)
+[4] TRAP PASS: with the KEK provider unreachable, the DR replica CANNOT decrypt (fails closed = dead SOC).
+    → the runbook MUST provision KEK-reachability at DR before failover is possible.
+DECRYPT OK: restored instance decrypted the secret with the separately-held KEK — smoke pass
+[5] DECRYPT-AT-DR PASS: with the KEK reachable, the promoted DR replica decrypted the secret (SOC alive).
+
+=== DR-FAILOVER DRILL RESULT: PASS ===
+Invariant proven (decrypt-at-DR): KEK unreachable → DR fails closed (dead SOC); KEK reachable → DR decrypts.
+This also validated the Vault Transit keyWrapper end-to-end against a REAL Vault (not the httptest fake).
+Split-brain: out of scope for this drill — the runbook fences the old primary on promotion (single-writer).
+DR restore RTO (this hardware): 2s.   Evidence: /c/Users/sanus/AppData/Roaming/Claude/local-agent-mode-sessions/130cecb6-4ff6-46fe-bf2c-690ecd9108fd/86b802e7-4718-4c1a-966c-0d5715707ab5/local_5a50be95-4a7b-45ca-9925-11a0fdb20500/nirvet/deploy/drills/evidence/dr_failover_result_20260720T233557.txt
