@@ -92,6 +92,58 @@ func (h *ReportHandler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, rep)
 }
 
+// PendingApproval handles GET /reports/pending-approval — the senior-gated queue of reports awaiting sign-off.
+func (h *ReportHandler) PendingApproval(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	reps, err := h.svc.ListPendingApproval(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"reports": reps})
+}
+
+// Approve handles POST /reports/{id}/approve — a senior actor (≠ creator) clears a review-required report.
+func (h *ReportHandler) Approve(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := reportID(r)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	rep, err := h.svc.Approve(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, rep)
+}
+
+type rejectReq struct {
+	Reason string `json:"reason"`
+}
+
+// Reject handles POST /reports/{id}/reject — a senior actor (≠ creator) blocks a report from release (terminal).
+func (h *ReportHandler) Reject(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := reportID(r)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	var in rejectReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	rep, err := h.svc.Reject(r.Context(), p, id, in.Reason)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, rep)
+}
+
 // Download handles GET /reports/{id}/download — session-authorized artifact download with a hardened response.
 func (h *ReportHandler) Download(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

@@ -29,18 +29,22 @@ import (
 
 // Report is a generated report record.
 type Report struct {
-	ID          uuid.UUID  `json:"id"`
-	TenantID    uuid.UUID  `json:"tenant_id"`
-	Type        string     `json:"type"`
-	Format      Format     `json:"format"`
-	Status      string     `json:"status"`
-	RowCount    int        `json:"row_count"`
-	ByteSize    int        `json:"byte_size"`
-	Error       string     `json:"error,omitempty"`
-	CreatedBy   uuid.UUID  `json:"created_by"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ReadyAt     *time.Time `json:"ready_at,omitempty"`
-	artifactURI string     // internal — never serialized to the client
+	ID           uuid.UUID  `json:"id"`
+	TenantID     uuid.UUID  `json:"tenant_id"`
+	Type         string     `json:"type"`
+	Format       Format     `json:"format"`
+	Status       string     `json:"status"`
+	ReviewStatus string     `json:"review_status"` // none | pending_review | approved | rejected (#173)
+	ReviewedBy   *uuid.UUID `json:"reviewed_by,omitempty"`
+	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+	ReviewNote   string     `json:"review_note,omitempty"`
+	RowCount     int        `json:"row_count"`
+	ByteSize     int        `json:"byte_size"`
+	Error        string     `json:"error,omitempty"`
+	CreatedBy    uuid.UUID  `json:"created_by"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ReadyAt      *time.Time `json:"ready_at,omitempty"`
+	artifactURI  string     // internal — never serialized to the client
 }
 
 // reportTypes is the code-owned set of report types slice A can generate (config-extensible later).
@@ -72,10 +76,18 @@ func (r *ReportRepository) Create(ctx context.Context, tenantID, actorID uuid.UU
 	return id, err
 }
 
-// MarkReady finalizes a generated report.
+// MarkReady finalizes a generated report AND sets its review_status from the operator review policy in the SAME
+// write (#173). The policy lookup is inline so review-required is decided in ONE place and cannot be bypassed by a
+// second code path: COALESCE(..., true) makes an UNSEEDED/unknown type default to review-REQUIRED (fail-closed
+// toward sign-off). report_review_policy is a global GRANT-SELECT table, so the subquery reads under WithTenant.
 func (r *ReportRepository) MarkReady(ctx context.Context, tenantID, id uuid.UUID, uri string, rowCount, byteSize int) error {
 	return r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, e := tx.Exec(ctx, `UPDATE reports SET status='ready', artifact_uri=$2, row_count=$3, byte_size=$4, ready_at=now() WHERE id=$1`,
+		_, e := tx.Exec(ctx, `UPDATE reports
+			SET status='ready', artifact_uri=$2, row_count=$3, byte_size=$4, ready_at=now(),
+			    review_status = CASE WHEN COALESCE(
+			        (SELECT review_required FROM report_review_policy WHERE type = reports.type), true)
+			      THEN 'pending_review' ELSE 'none' END
+			WHERE id=$1`,
 			id, uri, rowCount, byteSize)
 		return e
 	})
@@ -98,9 +110,11 @@ func (r *ReportRepository) Get(ctx context.Context, tenantID, id uuid.UUID) (*Re
 	var format string
 	err := r.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT id, tenant_id, type, format, status, artifact_uri, row_count, byte_size, error, created_by, created_at, ready_at
+			`SELECT id, tenant_id, type, format, status, review_status, reviewed_by, reviewed_at, review_note,
+			        artifact_uri, row_count, byte_size, error, created_by, created_at, ready_at
 			   FROM reports WHERE id=$1`, id).
-			Scan(&rep.ID, &rep.TenantID, &rep.Type, &format, &rep.Status, &rep.artifactURI,
+			Scan(&rep.ID, &rep.TenantID, &rep.Type, &format, &rep.Status,
+				&rep.ReviewStatus, &rep.ReviewedBy, &rep.ReviewedAt, &rep.ReviewNote, &rep.artifactURI,
 				&rep.RowCount, &rep.ByteSize, &rep.Error, &rep.CreatedBy, &rep.CreatedAt, &rep.ReadyAt)
 	})
 	if err == pgx.ErrNoRows {
@@ -239,6 +253,15 @@ func (rs *ReportService) Download(ctx context.Context, p auth.Principal, id uuid
 	}
 	if rep.Status != "ready" || rep.artifactURI == "" {
 		return nil, "", httpx.ErrConflict("report is not ready for download")
+	}
+	// #173 release gate: a review-required report is not downloadable until a senior actor (≠ creator) approves it.
+	// This is the SAME session-authorized, RLS-confined download path (refinement #3) with one added release
+	// precondition — no new authz surface. 'none' (no review policy) and 'approved' release; the others hold.
+	switch rep.ReviewStatus {
+	case "pending_review":
+		return nil, "", httpx.ErrConflict("report is awaiting review approval before it can be released")
+	case "rejected":
+		return nil, "", httpx.ErrConflict("report was rejected in review and cannot be released")
 	}
 	data, err := rs.blobs.Get(ctx, rep.artifactURI)
 	if err != nil {

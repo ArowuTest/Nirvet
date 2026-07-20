@@ -1908,6 +1908,46 @@ paths:
         '401': { description: unauthenticated }
         '403': { description: forbidden }
         '404': { description: incident not found in tenant, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /reports/pending-approval:
+    get:
+      tags: [reports]
+      summary: List reports awaiting review sign-off (manager+)
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /reports/{id}/approve:
+    post:
+      tags: [reports]
+      summary: Approve a review-required report for release (senior, four-eyes)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: report approved }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden (junior, or the report creator) }
+        '404': { description: report not found in tenant }
+        '409': { description: report is not awaiting review }
+  /reports/{id}/reject:
+    post:
+      tags: [reports]
+      summary: Reject a review-required report (terminal, senior, four-eyes)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: rejection reason recorded on the report }
+      responses:
+        '200': { description: report rejected }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden (junior, or the report creator) }
+        '404': { description: report not found in tenant }
+        '409': { description: report is not awaiting review }
   /reports/{id}:
     get:
       tags: [reports]

@@ -978,6 +978,12 @@ func main() {
 	mux.Handle("POST /reports/breach", manager(reportExportH.Breach))
 	mux.Handle("GET /reports/{id}", provider(reportExportH.Get))
 	mux.Handle("GET /reports/{id}/download", provider(reportExportH.Download))
+	// #173 report-approval workflow: a review-required report (report_review_policy) is 'pending_review' and not
+	// releasable until a senior actor (≠ creator) approves it. Queue + decisions are manager-gated at the mux
+	// (defense-in-depth over the soc_manager floor + four-eyes enforced in the service).
+	mux.Handle("GET /reports/pending-approval", manager(reportExportH.PendingApproval))
+	mux.Handle("POST /reports/{id}/approve", manager(reportExportH.Approve))
+	mux.Handle("POST /reports/{id}/reject", manager(reportExportH.Reject))
 	// compliance (§6.14): config-driven frameworks + real per-tenant assessment; manual override is senior.
 	mux.Handle("GET /compliance/frameworks", provider(complianceH.Frameworks))
 	mux.Handle("GET /compliance/controls", provider(complianceH.Controls))
