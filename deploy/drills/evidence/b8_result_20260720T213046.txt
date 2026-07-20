@@ -1,0 +1,20 @@
+=== Nirvet B8 backup/restore drill — 20260720T213046 ===
+gate: build/GATE_HA_DR_SOVEREIGN_RUNBOOKS.md §2a (backup covers wrapped data; KEK separate; restore decrypts)
+[1] started postgres:17 container (primary) on :55432
+[2] migrations applied (full production schema)
+seeded: 78 bytes of wrapped ciphertext stored; plaintext + KEK held OUTSIDE the DB
+[4] backup taken: pg_dump custom-format, 490239 bytes, 1s
+[5] TRAP (a) PASS: neither the plaintext nor the KEK appears in the backup — DB holds only wrapped ciphertext
+[6] primary DB wiped (simulated loss)
+[6] restore completed into a fresh DB: RTO=2s
+DECRYPT OK: restored instance decrypted the secret with the separately-held KEK — smoke pass
+[7] TRAP (b) PASS: restored instance decrypted the secret with the separately-backed-up KEK (smoke pass)
+[7] NEGATIVE-CONTROL PASS: with a wrong/absent KEK the restored DB is UNREADABLE (as required)
+
+=== B8 DRILL RESULT: PASS ===
+RTO (measured restore time on this hardware): 2s   [backup: 1s, 490239 bytes]
+RPO: 0 for this drill (backup taken immediately after the last write; no committed data lost).
+     Production RPO = the scheduled backup interval (the runbook sets it; e.g. WAL-archiving → seconds).
+Invariants proven: (a) backup = wrapped ciphertext only, KEK separate & absent from dump;
+                   (b) restore + separately-held KEK decrypts (smoke pass); wrong/absent key = unreadable.
+Evidence file: /c/Users/sanus/AppData/Roaming/Claude/local-agent-mode-sessions/130cecb6-4ff6-46fe-bf2c-690ecd9108fd/86b802e7-4718-4c1a-966c-0d5715707ab5/local_5a50be95-4a7b-45ca-9925-11a0fdb20500/nirvet/deploy/drills/evidence/b8_result_20260720T213046.txt
