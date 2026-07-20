@@ -43,6 +43,36 @@ func TestAssembledFact_PIIMaskedAtEgress(t *testing.T) {
 	}
 }
 
+// Reviewer close-out (copilot-P0 C2, broadened by the richer assembler): the assembler egresses MORE customer
+// telemetry (entity/actor/hostname/title), and balanced mode's tokenMask only masks PATTERN hits — so a non-pattern
+// identifier (a plain hostname/name) survives balanced (the documented residual). STRICT mode (gov default,
+// register D2) wholesale-masks it. This proves the mitigation and documents the residual honestly.
+func TestAssembledFact_NonPatternMaskedUnderStrict(t *testing.T) {
+	facts := []CitedFact{{ID: "EVT-1", Fact: "event actor=jsmith target=host-db-01 mitre=T1078"}}
+	bag := evidenceBag(facts)
+
+	// Balanced (the default): the non-pattern hostname + name survive — the documented balanced residual.
+	bal, _ := redactLines(bag, RedactionPolicy{Enabled: true, Mode: RedactBalanced}, floor())
+	if !strings.Contains(bal[0], "host-db-01") || !strings.Contains(bal[0], "jsmith") {
+		t.Fatalf("precondition: balanced should leave the non-pattern identifiers (documented residual): %q", bal[0])
+	}
+
+	// Strict: the free-text value wholesale-masks → no cleartext identifier egresses.
+	strict, _ := redactLines(bag, RedactionPolicy{Enabled: true, Mode: RedactStrict}, floor())
+	for _, raw := range []string{"host-db-01", "jsmith"} {
+		if strings.Contains(strict[0], raw) {
+			t.Fatalf("strict must wholesale-mask the non-pattern identifier %q: %q", raw, strict[0])
+		}
+	}
+	if !strings.Contains(strict[0], "TEXT_") {
+		t.Fatalf("strict must produce a TEXT_ wholesale mask: %q", strict[0])
+	}
+	// The citation id survives redaction in BOTH modes so the model can still cite the evidence.
+	if !strings.Contains(strict[0], "[EVT-1]") {
+		t.Fatalf("citation id must survive strict redaction so the model can cite: %q", strict[0])
+	}
+}
+
 func TestDropInventedCitations(t *testing.T) {
 	valid := validCitationIDs([]CitedFact{{ID: "INC"}, {ID: "ALERT-1"}, {ID: "ENT-2"}})
 	got := dropInventedCitations(
