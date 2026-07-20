@@ -167,8 +167,8 @@ func (rs *ReportService) Generate(ctx context.Context, p auth.Principal, typ str
 	if !reportTypes[typ] {
 		return nil, httpx.ErrBadRequest("unknown report type: " + typ)
 	}
-	if format != FormatJSON && format != FormatCSV && format != FormatXLSX && format != FormatPDF {
-		return nil, httpx.ErrBadRequest("unsupported format (docx is deferred): " + string(format))
+	if format != FormatJSON && format != FormatCSV && format != FormatXLSX && format != FormatPDF && format != FormatDOCX {
+		return nil, httpx.ErrBadRequest("unsupported format: " + string(format))
 	}
 	lim := rs.limits(ctx)
 	params, _ := json.Marshal(map[string]string{"type": typ}) // tenant-fixed; no scope-widening input

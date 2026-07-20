@@ -47,6 +47,52 @@ func TestCSV_TypeAwareNeutralization(t *testing.T) {
 }
 
 // XLSX: a hostile string is an INLINE STRING (formula-proof by type); a number is a native cell; nothing is a formula.
+// DOCX is a valid WordprocessingML zip; a string value is xml-escaped into document.xml (never breaks the markup),
+// and numbers render as text. A Word document has no formula concept, so there is nothing to formula-neutralize.
+func TestDOCX_ValidZipAndXMLEscaped(t *testing.T) {
+	ds := Dataset{
+		Title:   "Service Review",
+		Meta:    map[string]string{"scope": "tenant"},
+		Columns: []string{"metric", "value"},
+		Rows:    [][]Cell{{Str("note<script>&"), Num(42)}},
+	}
+	b, err := ToDOCX(ds)
+	if err != nil {
+		t.Fatalf("docx: %v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatalf("not a valid zip/docx: %v", err)
+	}
+	var doc, hasCT bool
+	var docXML string
+	for _, f := range zr.File {
+		switch f.Name {
+		case "word/document.xml":
+			doc = true
+			rc, _ := f.Open()
+			data, _ := io.ReadAll(rc)
+			rc.Close()
+			docXML = string(data)
+		case "[Content_Types].xml":
+			hasCT = true
+		}
+	}
+	if !doc || !hasCT {
+		t.Fatalf("docx must contain word/document.xml + [Content_Types].xml (doc=%v ct=%v)", doc, hasCT)
+	}
+	// The hostile value must be escaped, never raw markup.
+	if strings.Contains(docXML, "<script>") {
+		t.Fatalf("string value must be xml-escaped, not raw markup:\n%s", docXML)
+	}
+	if !strings.Contains(docXML, "note&lt;script&gt;&amp;") {
+		t.Fatalf("escaped value must be present:\n%s", docXML)
+	}
+	if !strings.Contains(docXML, "42") || !strings.Contains(docXML, "<w:tbl>") {
+		t.Fatalf("docx must render the number + a table:\n%s", docXML)
+	}
+}
+
 func TestXLSX_StringsAreInlineNeverFormula(t *testing.T) {
 	ds := Dataset{
 		Columns: []string{"note", "amount"},

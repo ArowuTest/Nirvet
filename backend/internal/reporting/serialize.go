@@ -17,6 +17,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -214,6 +215,103 @@ func ToXLSX(ds Dataset) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// ---- minimal DOCX (dependency-free) ----
+//
+// A .docx is a WordprocessingML package: [Content_Types].xml + _rels/.rels + word/document.xml. The dataset renders as
+// a Word table. Unlike a spreadsheet, a Word document has NO formula concept — a cell is document TEXT — so the safety
+// here is XML-escaping (the same xmlEscape choke point) so a string value can never inject markup into document.xml;
+// no formula neutralization is needed or applied. Dependency-free: same archive/zip writer as ToXLSX, no third-party
+// lib, no network.
+
+const docxContentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`
+
+const docxRootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
+
+// cellDisplay renders a cell as its plain display text (no CSV formula-quote — that is a spreadsheet-only concern; a
+// Word cell is inert text). The value is xml-escaped by the caller before it enters document.xml.
+func cellDisplay(c Cell) string {
+	switch c.Kind {
+	case KindString:
+		return c.S
+	case KindNumber:
+		return strconv.FormatFloat(c.N, 'f', -1, 64)
+	case KindTime:
+		return c.T.UTC().Format(time.RFC3339)
+	case KindBool:
+		return strconv.FormatBool(c.B)
+	default:
+		return ""
+	}
+}
+
+// docxParagraph is one text paragraph; docxCell wraps a table cell around a paragraph. Both xml-escape their text.
+func docxParagraph(text string) string {
+	return `<w:p><w:r><w:t xml:space="preserve">` + xmlEscape(text) + `</w:t></w:r></w:p>`
+}
+func docxCell(text string) string {
+	return `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr>` + docxParagraph(text) + `</w:tc>`
+}
+
+// ToDOCX serializes the dataset to a minimal .docx: a title, the REP-003 metadata, and a table (header row = the
+// trusted column labels; body = the typed cells as display text). Every text node is xml-escaped so a value can never
+// break out of document.xml.
+func ToDOCX(ds Dataset) ([]byte, error) {
+	var body strings.Builder
+	body.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
+	body.WriteString(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>`)
+	if ds.Title != "" {
+		body.WriteString(docxParagraph(ds.Title))
+	}
+	// Metadata lines (REP-003) — deterministic order so the document is stable/diffable.
+	metaKeys := make([]string, 0, len(ds.Meta))
+	for k := range ds.Meta {
+		metaKeys = append(metaKeys, k)
+	}
+	sort.Strings(metaKeys)
+	for _, k := range metaKeys {
+		body.WriteString(docxParagraph(k + ": " + ds.Meta[k]))
+	}
+	// Table.
+	body.WriteString(`<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>`)
+	body.WriteString(`<w:tr>`)
+	for _, label := range ds.Columns {
+		body.WriteString(docxCell(label))
+	}
+	body.WriteString(`</w:tr>`)
+	for _, row := range ds.Rows {
+		body.WriteString(`<w:tr>`)
+		for _, c := range row {
+			body.WriteString(docxCell(cellDisplay(c)))
+		}
+		body.WriteString(`</w:tr>`)
+	}
+	body.WriteString(`</w:tbl>`)
+	body.WriteString(`<w:sectPr/></w:body></w:document>`)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	parts := []struct{ name, body string }{
+		{"[Content_Types].xml", docxContentTypes},
+		{"_rels/.rels", docxRootRels},
+		{"word/document.xml", body.String()},
+	}
+	for _, p := range parts {
+		f, err := zw.Create(p.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := f.Write([]byte(p.body)); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // Format is an export format.
 type Format string
 
@@ -221,6 +319,7 @@ const (
 	FormatJSON Format = "json"
 	FormatCSV  Format = "csv"
 	FormatXLSX Format = "xlsx"
+	FormatDOCX Format = "docx"
 	FormatPDF  Format = "pdf" // rendered by the fenced pdfrender sub-package (not via Serialize — see pdf.go)
 )
 
@@ -233,6 +332,8 @@ func Serialize(ds Dataset, f Format) ([]byte, error) {
 		return ToCSV(ds)
 	case FormatXLSX:
 		return ToXLSX(ds)
+	case FormatDOCX:
+		return ToDOCX(ds)
 	}
 	return nil, fmt.Errorf("reporting: unsupported format %q", f)
 }
@@ -246,6 +347,8 @@ func (f Format) ContentType() string {
 		return "text/csv"
 	case FormatXLSX:
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case FormatDOCX:
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	case FormatPDF:
 		return "application/pdf"
 	}
