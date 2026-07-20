@@ -79,6 +79,9 @@ jobs:
       - name: Guard — force-MFA policy is consumed at the MintSession chokepoint (no decorative mfa.enforce v2)
         working-directory: backend
         run: bash scripts/check-mfa-enforcement-consumed.sh
+      - name: Guard — the AI copilot never executes a response action (proposes only; human promotes to SOAR)
+        working-directory: backend
+        run: bash scripts/check-ai-no-direct-execution.sh
       - name: Apply migrations
         working-directory: backend
         env:
