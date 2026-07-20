@@ -593,6 +593,68 @@ paths:
         '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { description: unauthenticated }
         '403': { description: forbidden }
+  /admin/billing/finance-export:
+    get:
+      tags: [admin]
+      summary: Per-period finance roll of every billable tenant (padmin); ?format=csv for a CSV attachment
+      parameters:
+        - { name: period, in: query, required: false, schema: { type: string }, description: "YYYY-MM (defaults to current month)" }
+        - { name: format, in: query, required: false, schema: { type: string, enum: [csv] } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/cost-rates:
+    get:
+      tags: [admin]
+      summary: List operator per-metric cost rates (padmin)
+      responses:
+        '200': { description: OK }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+    post:
+      tags: [admin]
+      summary: Set a metric's operator cost (padmin, audited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metric, cost_minor]
+              properties:
+                metric: { type: string }
+                cost_minor: { type: integer, format: int64 }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/tenants/{id}/margin:
+    get:
+      tags: [admin]
+      summary: Tenant margin for a period (padmin) — revenue minus operator cost
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: period, in: query, required: false, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
+  /admin/billing/accounts/{id}/margin:
+    get:
+      tags: [admin]
+      summary: Account margin for a period (padmin) — summed across covered tenants
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: period, in: query, required: false, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '400': { description: bad request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: unauthenticated }
+        '403': { description: forbidden }
   /admin/billing/accounts/{id}/suspend:
     post:
       tags: [admin]

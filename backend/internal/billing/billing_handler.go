@@ -6,6 +6,7 @@ package billing
 
 import (
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -102,6 +103,12 @@ func periodParam(r *http.Request) string {
 	}
 	return time.Now().UTC().Format("2006-01")
 }
+
+// validPeriod accepts a YYYY-MM period. Metering stores/queries period as a bound parameter (no injection risk), but
+// a malformed period should be a clean 400 rather than a silently-empty roll.
+var periodRE = regexp.MustCompile(`^\d{4}-\d{2}$`)
+
+func validPeriod(p string) bool { return periodRE.MatchString(p) }
 
 // Usage handles GET /billing/usage?period= — the caller's own metered usage (tenant-scoped, manager-gated).
 func (h *Handler) Usage(w http.ResponseWriter, r *http.Request) {
@@ -263,4 +270,111 @@ func (h *Handler) AccountInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, inv)
+}
+
+// --- §6.17 slice C: finance export + margin (padmin) ---
+
+// FinanceExport handles GET /admin/billing/finance-export?period=&format=csv — the per-period roll of every billable
+// tenant for finance/AR reconciliation. JSON by default; ?format=csv streams a hardened text/csv attachment.
+func (h *Handler) FinanceExport(w http.ResponseWriter, r *http.Request) {
+	period := periodParam(r)
+	if !validPeriod(period) {
+		httpx.Error(w, httpx.ErrBadRequest("period must be YYYY-MM"))
+		return
+	}
+	exp, err := h.svc.ComputeFinanceExport(r.Context(), period)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if r.URL.Query().Get("format") == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Disposition", `attachment; filename="finance-`+period+`.csv"`) // period is YYYY-MM (CRLF-safe)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(FinanceCSV(exp))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, exp)
+}
+
+// ListCostRates handles GET /admin/billing/cost-rates (padmin) — the operator's per-metric cost book.
+func (h *Handler) ListCostRates(w http.ResponseWriter, r *http.Request) {
+	rates, err := h.svc.ListCostRates(r.Context())
+	if err != nil {
+		httpx.Error(w, httpx.ErrInternal("could not list cost rates"))
+		return
+	}
+	if rates == nil {
+		rates = []CostRate{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"cost_rates": rates})
+}
+
+type setCostRateReq struct {
+	Metric    string `json:"metric"`
+	CostMinor int64  `json:"cost_minor"`
+}
+
+// SetCostRate handles POST /admin/billing/cost-rates (padmin) — set a metric's operator cost. Audited in the service.
+func (h *Handler) SetCostRate(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	var in setCostRateReq
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if !IsMetric(Metric(in.Metric)) {
+		httpx.Error(w, httpx.ErrBadRequest("unknown metric: "+in.Metric))
+		return
+	}
+	if in.CostMinor < 0 {
+		httpx.Error(w, httpx.ErrBadRequest("cost_minor must be non-negative"))
+		return
+	}
+	if err := h.svc.SetCostRate(r.Context(), p, Metric(in.Metric), in.CostMinor); err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("could not set cost rate"))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "cost_rate_set"})
+}
+
+// TenantMargin handles GET /admin/billing/tenants/{id}/margin?period= (padmin).
+func (h *Handler) TenantMargin(w http.ResponseWriter, r *http.Request) {
+	tid, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid tenant id"))
+		return
+	}
+	period := periodParam(r)
+	if !validPeriod(period) {
+		httpx.Error(w, httpx.ErrBadRequest("period must be YYYY-MM"))
+		return
+	}
+	m, err := h.svc.TenantMargin(r.Context(), tid, period)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, m)
+}
+
+// AccountMargin handles GET /admin/billing/accounts/{id}/margin?period= (padmin).
+func (h *Handler) AccountMargin(w http.ResponseWriter, r *http.Request) {
+	aid, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid account id"))
+		return
+	}
+	period := periodParam(r)
+	if !validPeriod(period) {
+		httpx.Error(w, httpx.ErrBadRequest("period must be YYYY-MM"))
+		return
+	}
+	m, err := h.svc.AccountMargin(r.Context(), aid, period)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, m)
 }

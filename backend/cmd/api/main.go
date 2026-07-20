@@ -1026,6 +1026,13 @@ func main() {
 	// padmin (not manager): the umbrella-account invoice is a cross-tenant aggregate; a provider soc_manager must
 	// not read an arbitrary account's spend by id (BOLA). Matches the account WRITES, which are all padmin-only.
 	mux.Handle("GET /admin/billing/accounts/{id}/invoice", padmin(billingH.AccountInvoice))
+	// §6.17 #174 slice C: finance export + margin (padmin). Finance export rolls every billable tenant's charges for
+	// a period; margin = billed revenue − operator cost (config-driven cost rates, honest CostConfigured flag).
+	mux.Handle("GET /admin/billing/finance-export", padmin(billingH.FinanceExport))
+	mux.Handle("GET /admin/billing/cost-rates", padmin(billingH.ListCostRates))
+	mux.Handle("POST /admin/billing/cost-rates", padmin(billingH.SetCostRate))
+	mux.Handle("GET /admin/billing/tenants/{id}/margin", padmin(billingH.TenantMargin))
+	mux.Handle("GET /admin/billing/accounts/{id}/margin", padmin(billingH.AccountMargin))
 	// notifications
 	mux.Handle("POST /notify/test", senior(notifyH.Test))
 	// §6.16 per-tenant email/SMS sender config (COMM-001); secrets vault-encrypted, manager-gated.
