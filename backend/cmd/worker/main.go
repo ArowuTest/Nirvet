@@ -95,7 +95,10 @@ func main() {
 	wk := ingestion.NewWorker(jobs, events, enricher, detEngine, alertSvc, log).WithCorrelator(correlationSvc).WithNormQuality(ingestion.NewNormQuality(db))
 
 	// Connector poller: pulls Microsoft Graph/Defender alerts through ingestion.
-	cipher, err := crypto.New(cfg.KMSKeyName, cfg.SecretMasterKey, log)
+	cipher, err := crypto.NewFromConfig(crypto.Config{
+		Provider: cfg.CryptoProvider, KeyName: cfg.KMSKeyName, MasterKeyB64: cfg.SecretMasterKey,
+		RequireKMS: cfg.CryptoRequireKMS, VaultAddr: cfg.VaultAddr, VaultMount: cfg.VaultMount, Log: log,
+	})
 	if err != nil {
 		log.Error("crypto init failed", "err", err)
 		os.Exit(1)

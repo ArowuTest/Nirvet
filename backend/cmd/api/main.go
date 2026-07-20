@@ -153,7 +153,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	cipher, err := crypto.New(cfg.KMSKeyName, cfg.SecretMasterKey, log)
+	cipher, err := crypto.NewFromConfig(crypto.Config{
+		Provider: cfg.CryptoProvider, KeyName: cfg.KMSKeyName, MasterKeyB64: cfg.SecretMasterKey,
+		RequireKMS: cfg.CryptoRequireKMS, VaultAddr: cfg.VaultAddr, VaultMount: cfg.VaultMount, Log: log,
+	})
 	if err != nil {
 		log.Error("crypto init failed", "err", err)
 		os.Exit(1)

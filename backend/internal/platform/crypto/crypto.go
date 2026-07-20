@@ -114,46 +114,115 @@ func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, er
 	return c.aead.Open(nil, ciphertext[:ns], ciphertext[ns:], aad)
 }
 
-// New selects the cipher backend (M4 — three-way, for the KMS dual-read cutover). The real envelope cipher +
-// gcpKMS wrapper live in kms.go:
-//   - kmsKeyName == ""            → local cipher (dev/pilot; single master key).
-//   - kmsKeyName + masterKeyB64   → transitionCipher: writes KMS-wrapped v2, still reads legacy v1 (zero-downtime cutover).
-//   - kmsKeyName, no masterKeyB64 → pure envelopeCipher (post-cutover; no v1 to read).
-//
-// A configured-but-unprovisioned KMS fails fast at boot (its token source is not yet wired — provision later).
+// Config selects and configures the cipher backend (KMS provider abstraction). It supersedes the positional New()
+// (kept below as a thin backward-compatible wrapper).
+type Config struct {
+	Provider     string       // "" (→ local, or gcp when KeyName is set) | "gcp" | "vault" (pkcs11 reserved)
+	KeyName      string       // key template; contains {tenant} for per-tenant/per-agency separation, else single-key
+	MasterKeyB64 string       // dev/transition v1 master key (enables dual-read of legacy v1 blobs)
+	RequireKMS   bool         // production/sovereign: refuse to boot on localCipher (gate 2b)
+	KeyGen       byte         // current provider key generation stamped into new blobs (default 1; bumps on migration)
+	VaultAddr    string       // vault provider: NIRVET_VAULT_ADDR (operator infra)
+	VaultMount   string       // vault provider: transit mount path (default "transit")
+	VaultToken   tokenSource  // vault provider: injected token source (tests); nil → read NIRVET_VAULT_TOKEN from env
+	Log          *slog.Logger // nil → discard
+}
+
+// errRequireKMSNoProvider is the fail-closed boot error for require-KMS mode with no provider (gate 2b / test #7).
+var errRequireKMSNoProvider = errors.New(
+	"crypto: NIRVET_CRYPTO_REQUIRE_KMS=true but no KMS provider is configured — refusing to boot on the local " +
+		"master key. Set NIRVET_CRYPTO_PROVIDER (gcp|vault) + the key/vault config. localCipher is UNREACHABLE in " +
+		"require-KMS mode.")
+
+// New is the backward-compatible positional constructor: it infers the gcp provider when kmsKeyName is set, else the
+// local cipher, with require-KMS off. New code should call NewFromConfig.
 func New(kmsKeyName, masterKeyB64 string, log *slog.Logger) (SecretCipher, error) {
-	if kmsKeyName == "" {
-		return NewLocal(masterKeyB64, log)
+	return NewFromConfig(Config{KeyName: kmsKeyName, MasterKeyB64: masterKeyB64, Log: log})
+}
+
+// NewFromConfig builds the cipher for the selected provider. Ordering of guarantees:
+//   - require-KMS with no provider → fail closed (localCipher unreachable, gate 2b).
+//   - no provider → local cipher (dev/pilot single master key).
+//   - a provider → build its keyWrapper (fail-fast if the token/creds source is unprovisioned; NO local fallback,
+//     M1), run the single-key boot probe (per-tenant mode skips it — verified at onboarding), then either the pure
+//     envelope cipher or, with a master key, the dual-read transitionCipher (writes v2, still reads legacy v1).
+//
+// Every ciphertext is stamped with the provider tag + key generation, so a later provider switch is a safe
+// transitionCipher dual-read (gate 2c) rather than a big-bang swap that orphans a vault.
+func NewFromConfig(cfg Config) (SecretCipher, error) {
+	if cfg.Log == nil {
+		cfg.Log = slog.New(slog.DiscardHandler)
 	}
-	kms := newGCPKMS()
-	// Fail fast at startup: a KMS-configured deploy whose token source can't be obtained must not silently start
-	// (and must never degrade to the shared master key — M1).
-	tctx, cancel := context.WithTimeout(context.Background(), kmsOpTimeout)
-	defer cancel()
-	if _, err := kms.token(tctx); err != nil {
-		return nil, err
+	provider := cfg.Provider
+	if provider == "" && cfg.KeyName != "" {
+		provider = "gcp" // backward-compat: a bare KeyName means the legacy GCP KMS path
 	}
-	env := newEnvelopeCipher(kms, kmsKeyName)
-	// Boot probe (reviewer LOW follow-on): in single-key mode one wrap+unwrap round-trip proves key name, IAM,
-	// and both KMS verbs before the app serves — an encrypter-without-decrypter IAM misconfig would otherwise
-	// write vault entries nobody can read, surfacing only at first customer decrypt. Per-tenant mode has one
-	// key per agency and cannot probe them all at boot; skipped with a log line.
-	if !strings.Contains(kmsKeyName, tenantPlaceholder) {
+	if cfg.RequireKMS && provider == "" {
+		return nil, errRequireKMSNoProvider // gate 2b / test #7 — localCipher must be unreachable
+	}
+	if provider == "" {
+		return NewLocal(cfg.MasterKeyB64, cfg.Log) // dev/pilot; not reachable under require-KMS
+	}
+
+	wrapper, tag, err := buildWrapper(provider, cfg)
+	if err != nil {
+		return nil, err // fail-fast (unprovisioned creds / unknown provider) — never a silent local fallback (M1)
+	}
+	keyGen := cfg.KeyGen
+	if keyGen == 0 {
+		keyGen = 1
+	}
+	env := newEnvelopeCipher(wrapper, cfg.KeyName, tag, keyGen)
+
+	// Boot probe: single-key mode proves key name, creds/IAM, and BOTH verbs before serving (an encrypt-without-
+	// decrypt misconfig would otherwise write unreadable vault entries). Per-tenant mode has one key per agency and
+	// cannot probe them all at boot — skipped with a log line; verified at onboarding.
+	if !strings.Contains(cfg.KeyName, tenantPlaceholder) {
 		pctx, pcancel := context.WithTimeout(context.Background(), kmsOpTimeout)
 		defer pcancel()
 		if err := env.bootProbe(pctx); err != nil {
 			return nil, err
 		}
-		log.Info("crypto: KMS single-key boot probe OK (wrap+unwrap round-trip verified)")
+		cfg.Log.Info("crypto: KMS single-key boot probe OK (wrap+unwrap verified)", "provider", tag.String())
 	} else {
-		log.Info("crypto: KMS per-tenant key template — boot probe skipped (keys are per-agency; verified at onboarding)")
+		cfg.Log.Info("crypto: KMS per-tenant key template — boot probe skipped (per-agency; verified at onboarding)", "provider", tag.String())
 	}
-	if masterKeyB64 == "" {
+
+	if cfg.MasterKeyB64 == "" {
 		return env, nil
 	}
-	local, err := newLocalCipher(masterKeyB64, log)
+	local, err := newLocalCipher(cfg.MasterKeyB64, cfg.Log)
 	if err != nil {
 		return nil, err
 	}
 	return &transitionCipher{writer: env, local: local}, nil
+}
+
+// buildWrapper constructs the selected provider's keyWrapper and its provider tag, failing fast when the credential
+// source is unprovisioned (so a configured-but-unprovisioned provider never silently starts on the master key).
+func buildWrapper(provider string, cfg Config) (keyWrapper, providerTag, error) {
+	tctx, cancel := context.WithTimeout(context.Background(), kmsOpTimeout)
+	defer cancel()
+	switch provider {
+	case "gcp":
+		kms := newGCPKMS()
+		if _, err := kms.token(tctx); err != nil {
+			return nil, 0, err // not-provisioned → fail fast (M1: never degrade to the shared master key)
+		}
+		return kms, tagGCP, nil
+	case "vault":
+		if cfg.VaultAddr == "" {
+			return nil, 0, errors.New("crypto: vault provider requires NIRVET_VAULT_ADDR")
+		}
+		tok := cfg.VaultToken
+		if tok == nil {
+			tok = vaultTokenFromEnv
+		}
+		if _, err := tok(tctx); err != nil {
+			return nil, 0, err // token not provisioned → fail fast
+		}
+		return newVaultTransit(cfg.VaultAddr, cfg.VaultMount, tok), tagVault, nil
+	default:
+		return nil, 0, fmt.Errorf("crypto: unknown KMS provider %q (want gcp|vault)", provider)
+	}
 }

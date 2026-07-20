@@ -85,6 +85,9 @@ jobs:
       - name: Guard — retention has ONE window producer feeding the delete (floor/ceiling/arm/legal-hold single-path)
         working-directory: backend
         run: bash scripts/check-retention-window-single-path.sh
+      - name: Guard — KMS providers are wrap/unwrap-only (KEK never leaves the backend; crypto funnels through envelopeCipher)
+        working-directory: backend
+        run: bash scripts/check-kms-provider-boundary.sh
       - name: Apply migrations
         working-directory: backend
         env:

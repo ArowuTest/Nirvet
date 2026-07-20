@@ -75,7 +75,7 @@ func (f *fakeWrapper) Unwrap(_ context.Context, keyName string, ct, aad []byte) 
 const tmpl = "projects/p/locations/l/keyRings/nirvet/cryptoKeys/tenant-{tenant}"
 
 func TestEnvelope_RoundTrip(t *testing.T) {
-	e := newEnvelopeCipher(&fakeWrapper{}, tmpl)
+	e := newEnvelopeCipher(&fakeWrapper{}, tmpl, tagGCP, 1)
 	tid := uuid.New()
 	pt := []byte("okta-token-abc123")
 	ct, err := e.Encrypt(tid, pt)
@@ -97,7 +97,7 @@ func TestEnvelope_RoundTrip(t *testing.T) {
 func TestEnvelope_TenantAADBinding(t *testing.T) {
 	// A v2 ciphertext sealed for A must not open under B — the tenant binding survives envelope (GCM AAD +
 	// per-tenant key + fake's aad check all diverge).
-	e := newEnvelopeCipher(&fakeWrapper{}, tmpl)
+	e := newEnvelopeCipher(&fakeWrapper{}, tmpl, tagGCP, 1)
 	a, b := uuid.New(), uuid.New()
 	ct, err := e.Encrypt(a, []byte("secret"))
 	if err != nil {
@@ -111,7 +111,7 @@ func TestEnvelope_TenantAADBinding(t *testing.T) {
 func TestEnvelope_PerTenantKeyRouting(t *testing.T) {
 	// The actual key-separation proof: A wraps under tenant-A's key, B under tenant-B's — not one shared key.
 	fw := &fakeWrapper{}
-	e := newEnvelopeCipher(fw, tmpl)
+	e := newEnvelopeCipher(fw, tmpl, tagGCP, 1)
 	a, b := uuid.New(), uuid.New()
 	if _, err := e.Encrypt(a, []byte("x")); err != nil {
 		t.Fatalf("encrypt a: %v", err)
@@ -128,15 +128,15 @@ func TestEnvelope_PerTenantKeyRouting(t *testing.T) {
 
 func TestEnvelope_FailClosed_NoLocalFallback(t *testing.T) {
 	// M1: a wrap failure must hard-error, NOT silently produce a local/shared-key blob.
-	e := newEnvelopeCipher(&fakeWrapper{failWrap: true}, tmpl)
+	e := newEnvelopeCipher(&fakeWrapper{failWrap: true}, tmpl, tagGCP, 1)
 	if _, err := e.Encrypt(uuid.New(), []byte("s")); err == nil {
 		t.Fatal("M1: Encrypt must fail closed when KMS wrap fails (no local fallback)")
 	}
 	// M1/M2: a v2 blob whose unwrap fails must error, never fall through to another cipher.
-	ok := newEnvelopeCipher(&fakeWrapper{}, tmpl)
+	ok := newEnvelopeCipher(&fakeWrapper{}, tmpl, tagGCP, 1)
 	tid := uuid.New()
 	ct, _ := ok.Encrypt(tid, []byte("s"))
-	broken := newEnvelopeCipher(&fakeWrapper{failUnwrap: true}, tmpl)
+	broken := newEnvelopeCipher(&fakeWrapper{failUnwrap: true}, tmpl, tagGCP, 1)
 	if _, err := broken.Decrypt(tid, ct); err == nil {
 		t.Fatal("M1/M2: Decrypt must fail closed when KMS unwrap fails")
 	}
@@ -144,7 +144,7 @@ func TestEnvelope_FailClosed_NoLocalFallback(t *testing.T) {
 
 func TestEnvelope_BoundsCheck(t *testing.T) {
 	// M3: truncated / malformed v2 blobs return clean errors, never an index panic.
-	e := newEnvelopeCipher(&fakeWrapper{}, tmpl)
+	e := newEnvelopeCipher(&fakeWrapper{}, tmpl, tagGCP, 1)
 	tid := uuid.New()
 	full, _ := e.Encrypt(tid, []byte("hello world"))
 	for _, n := range []int{0, 1, 2, 3, 4, len(full) - 5, len(full) - 1} {
@@ -175,7 +175,7 @@ func TestTransition_DualRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("local: %v", err)
 	}
-	tc := &transitionCipher{writer: newEnvelopeCipher(&fakeWrapper{}, tmpl), local: local}
+	tc := &transitionCipher{writer: newEnvelopeCipher(&fakeWrapper{}, tmpl, tagGCP, 1), local: local}
 	tid := uuid.New()
 
 	// A legacy v1 blob written by the old local cipher must still decrypt through the transition.
@@ -276,7 +276,7 @@ const singleKeyTmpl = "projects/p/locations/l/keyRings/nirvet/cryptoKeys/pilot-s
 
 func TestBootProbe_SingleKey_OK(t *testing.T) {
 	fw := &fakeWrapper{}
-	e := newEnvelopeCipher(fw, singleKeyTmpl)
+	e := newEnvelopeCipher(fw, singleKeyTmpl, tagGCP, 1)
 	if err := e.bootProbe(context.Background()); err != nil {
 		t.Fatalf("bootProbe: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestBootProbe_SingleKey_OK(t *testing.T) {
 }
 
 func TestBootProbe_WrapDenied_Fails(t *testing.T) {
-	e := newEnvelopeCipher(&fakeWrapper{failWrap: true}, singleKeyTmpl)
+	e := newEnvelopeCipher(&fakeWrapper{failWrap: true}, singleKeyTmpl, tagGCP, 1)
 	if err := e.bootProbe(context.Background()); err == nil {
 		t.Fatal("bootProbe succeeded with wrap denied — must fail closed")
 	}
@@ -296,7 +296,7 @@ func TestBootProbe_WrapDenied_Fails(t *testing.T) {
 // The exact misconfig the probe exists for: IAM grants encrypter but not decrypter, so the app would
 // happily WRITE vault entries that nothing can ever read back.
 func TestBootProbe_UnwrapDenied_Fails(t *testing.T) {
-	e := newEnvelopeCipher(&fakeWrapper{failUnwrap: true}, singleKeyTmpl)
+	e := newEnvelopeCipher(&fakeWrapper{failUnwrap: true}, singleKeyTmpl, tagGCP, 1)
 	if err := e.bootProbe(context.Background()); err == nil {
 		t.Fatal("bootProbe succeeded with unwrap denied — must fail closed (encrypter-without-decrypter)")
 	}
@@ -317,7 +317,7 @@ func (c *corruptingWrapper) Unwrap(ctx context.Context, keyName string, ct, aad 
 }
 
 func TestBootProbe_RoundTripMismatch_Fails(t *testing.T) {
-	e := newEnvelopeCipher(&corruptingWrapper{}, singleKeyTmpl)
+	e := newEnvelopeCipher(&corruptingWrapper{}, singleKeyTmpl, tagGCP, 1)
 	if err := e.bootProbe(context.Background()); err == nil {
 		t.Fatal("bootProbe succeeded despite round-trip mismatch — must fail closed")
 	}

@@ -33,7 +33,17 @@ type Config struct {
 	// SecretMasterKey is a base64 32-byte key used by the LOCAL AES-GCM cipher for dev.
 	// In production this is replaced by GCP KMS (KMSKeyName), and the master key is unused.
 	SecretMasterKey string
-	KMSKeyName      string // GCP KMS CryptoKey resource name; empty => use local cipher
+	KMSKeyName      string // KMS key resource/template; empty => local cipher. May contain {tenant} for per-agency keys.
+
+	// KMS provider abstraction (sovereign/on-prem). CryptoProvider selects the wrap/unwrap backend:
+	//   "" => gcp when KMSKeyName is set, else local; "gcp" | "vault" explicit. VaultAddr/Mount configure Vault
+	//   Transit (token comes from NIRVET_VAULT_TOKEN, read by the crypto package — never held here or logged).
+	// CryptoRequireKMS=true makes the local (dev master-key) cipher UNREACHABLE — the app refuses to boot without a
+	// real provider. Seeded false (dev); a documented go-live step sets it true for sovereign deployments.
+	CryptoProvider   string
+	CryptoRequireKMS bool
+	VaultAddr        string
+	VaultMount       string
 
 	// EvidenceSigningKey is a base64 32-byte Ed25519 seed used to sign exported evidence
 	// packs (R2 H-B). Empty => an ephemeral per-process key (dev): packs are still really
@@ -98,6 +108,10 @@ func Load() (*Config, error) {
 		RefreshTTL:         envDuration("NIRVET_REFRESH_TTL", 720*time.Hour),
 		SecretMasterKey:    env("NIRVET_SECRET_MASTER_KEY", ""),
 		KMSKeyName:         env("NIRVET_KMS_KEY_NAME", ""),
+		CryptoProvider:     env("NIRVET_CRYPTO_PROVIDER", ""),
+		CryptoRequireKMS:   envBool("NIRVET_CRYPTO_REQUIRE_KMS", false),
+		VaultAddr:          env("NIRVET_VAULT_ADDR", ""),
+		VaultMount:         env("NIRVET_VAULT_MOUNT", "transit"),
 		EvidenceSigningKey: env("NIRVET_EVIDENCE_SIGNING_KEY", ""),
 		AnthropicAPIKey:    env("NIRVET_ANTHROPIC_API_KEY", ""),
 		AIModel:            env("NIRVET_AI_MODEL", "claude-sonnet-5"),
@@ -159,6 +173,15 @@ func (c *Config) IsProduction() bool { return c.Env == "production" }
 func env(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	if v, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
 	}
 	return def
 }

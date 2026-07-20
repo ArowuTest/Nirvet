@@ -23,45 +23,73 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
-	"github.com/ArowuTest/nirvet/internal/platform/netsafe"
 	"github.com/google/uuid"
 )
 
-// cipherKeyVersionKMS is the stored-layout discriminator for envelope (KMS) ciphertexts. localCipher owns version 1;
-// this owns 2. Decrypt dispatches on this byte (M2) so v1 and v2 blobs coexist during the dual-read cutover.
+// cipherKeyVersionKMS is the stored-layout discriminator for envelope (KMS/HSM/Vault) ciphertexts. localCipher owns
+// version 1; this owns 2. Decrypt dispatches on this byte (M2) so v1 and v2 blobs coexist during the dual-read cutover.
 const cipherKeyVersionKMS byte = 2
 
 const (
 	defaultKMSEndpoint = "https://cloudkms.googleapis.com/v1"
-	tenantPlaceholder  = "{tenant}" // in the key-name template → per-tenant CryptoKey
+	tenantPlaceholder  = "{tenant}" // in the key-name template → per-tenant CryptoKey / transit key / HSM label
 	kmsOpTimeout       = 15 * time.Second
 )
 
-// keyWrapper wraps/unwraps a DEK with a KMS CryptoKey. aad is bound into the KMS operation too (SHOULD). The gcpKMS
-// impl is REST; tests inject a fake, so the envelope logic needs no GCP.
+// providerTag records WHICH wrap/unwrap backend sealed a v2 ciphertext (gate 2c). It is stored in the blob so a
+// provider switch is a safe dual-read (each provider decrypts only its own blobs) instead of a big-bang swap that
+// mis-unwraps or orphans an existing vault. A ciphertext tagged for one provider fed to another REFUSES loudly.
+type providerTag byte
+
+const (
+	tagGCP    providerTag = 1 // GCP Cloud KMS (:encrypt/:decrypt REST)
+	tagVault  providerTag = 2 // HashiCorp Vault Transit (encrypt/decrypt REST)
+	tagPKCS11 providerTag = 3 // PKCS#11 HSM — RESERVED for increment 2 (needs SoftHSM in CI); not yet selectable
+)
+
+func (p providerTag) String() string {
+	switch p {
+	case tagGCP:
+		return "gcp"
+	case tagVault:
+		return "vault"
+	case tagPKCS11:
+		return "pkcs11"
+	default:
+		return fmt.Sprintf("provider(%d)", byte(p))
+	}
+}
+
+// keyWrapper wraps/unwraps a DEK with a KMS/HSM/Vault key-encrypting key (KEK). The KEK NEVER leaves the backend
+// (gate §1): Wrap sends the DEK and returns wrapped bytes; Unwrap sends wrapped bytes and returns the DEK. aad is
+// bound into the backend operation too (SHOULD). A provider does wrap/unwrap ONLY — no DEK↔plaintext AEAD, no key
+// export (enforced by scripts/check-kms-provider-boundary.sh). Impls are REST; tests inject a fake or a loopback.
 type keyWrapper interface {
 	Wrap(ctx context.Context, keyName string, plaintext, aad []byte) ([]byte, error)
 	Unwrap(ctx context.Context, keyName string, ciphertext, aad []byte) ([]byte, error)
 }
 
-// envelopeCipher is the SecretCipher backed by KMS-wrapped per-op DEKs. Writes/reads version 2 only.
+// envelopeCipher is the SecretCipher backed by backend-wrapped per-op DEKs. Writes/reads version 2 only. The DEK
+// generation, AES-256-GCM AEAD, per-tenant key resolution, tenant-as-AAD, and zeroize all live HERE — a provider
+// never touches plaintext. tag+keyGen are stamped into every blob so cross-provider/cross-generation reads refuse.
 type envelopeCipher struct {
 	wrapper     keyWrapper
-	keyTemplate string // full CryptoKey resource name; contains {tenant} for per-tenant separation, else single-key
+	keyTemplate string      // full key resource name; contains {tenant} for per-tenant separation, else single-key
+	tag         providerTag // which backend wrapped — recorded in the ciphertext (2c)
+	keyGen      byte        // provider key generation; bumps on a provider/key-namespace migration (2c). Default 1.
 }
 
-func newEnvelopeCipher(w keyWrapper, keyTemplate string) *envelopeCipher {
-	return &envelopeCipher{wrapper: w, keyTemplate: keyTemplate}
+func newEnvelopeCipher(w keyWrapper, keyTemplate string, tag providerTag, keyGen byte) *envelopeCipher {
+	if keyGen == 0 {
+		keyGen = 1
+	}
+	return &envelopeCipher{wrapper: w, keyTemplate: keyTemplate, tag: tag, keyGen: keyGen}
 }
 
 // keyNameFor resolves the tenant's CryptoKey. With {tenant} it is per-tenant (key separation); without, single-key
@@ -100,9 +128,12 @@ func (e *envelopeCipher) Encrypt(tenantID uuid.UUID, plaintext []byte) ([]byte, 
 	if len(wrapped) > 0xFFFF {
 		return nil, errors.New("crypto: wrapped DEK exceeds uint16 length field")
 	}
-	// Layout: [version=2][uint16 len(wrapped)][wrapped DEK][nonce][gcm ciphertext].
-	out := make([]byte, 0, 1+2+len(wrapped)+len(nonce)+len(sealed))
+	// Layout: [version=2][providerTag][keyGen][uint16 len(wrapped)][wrapped DEK][nonce][gcm ciphertext].
+	// tag+keyGen (2c) let Decrypt refuse a blob from a different provider/generation instead of mis-unwrapping.
+	out := make([]byte, 0, 3+2+len(wrapped)+len(nonce)+len(sealed))
 	out = append(out, cipherKeyVersionKMS)
+	out = append(out, byte(e.tag))
+	out = append(out, e.keyGen)
 	out = binary.BigEndian.AppendUint16(out, uint16(len(wrapped)))
 	out = append(out, wrapped...)
 	out = append(out, nonce...)
@@ -112,11 +143,19 @@ func (e *envelopeCipher) Encrypt(tenantID uuid.UUID, plaintext []byte) ([]byte, 
 
 func (e *envelopeCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, error) {
 	// M3: bounds-check every field before slicing; a truncated/tampered blob is a clean error, never an index panic.
-	if len(ciphertext) < 3 || ciphertext[0] != cipherKeyVersionKMS {
+	if len(ciphertext) < 5 || ciphertext[0] != cipherKeyVersionKMS {
 		return nil, errors.New("crypto: not a v2 (KMS) ciphertext")
 	}
-	wl := int(binary.BigEndian.Uint16(ciphertext[1:3]))
-	pos := 3
+	// 2c / gate test #4: refuse a blob wrapped by a DIFFERENT provider or key-generation. Unwrapping provider-A's
+	// ciphertext with provider-B (or gen-M with gen-N) must fail LOUDLY, never silently mis-unwrap or return garbage.
+	if tag := providerTag(ciphertext[1]); tag != e.tag {
+		return nil, fmt.Errorf("crypto: provider mismatch (blob wrapped by %s, this cipher is %s) — refusing to unwrap", tag, e.tag)
+	}
+	if gen := ciphertext[2]; gen != e.keyGen {
+		return nil, fmt.Errorf("crypto: key-generation mismatch (blob=gen%d, cipher=gen%d) — refusing to unwrap", gen, e.keyGen)
+	}
+	wl := int(binary.BigEndian.Uint16(ciphertext[3:5]))
+	pos := 5
 	if len(ciphertext) < pos+wl {
 		return nil, errors.New("crypto: v2 ciphertext truncated (wrapped DEK)")
 	}
@@ -175,16 +214,26 @@ func (e *envelopeCipher) bootProbe(ctx context.Context) error {
 	return nil
 }
 
-// transitionCipher is the dual-read cutover cipher (M4 KMS+master path). Encrypt always emits v2; Decrypt dispatches
-// on the version byte so pre-cutover v1 (localCipher) blobs keep opening while new writes are KMS-wrapped v2.
+// transitionCipher is the dual-read cutover cipher. Encrypt always writes with the CURRENT provider (writer, v2).
+// Decrypt dispatches: a v1 blob → localCipher (the pre-KMS master key); a v2 blob → the reader whose (tag,keyGen)
+// matches the blob. `readers` holds legacy-PROVIDER envelope ciphers kept alive during a provider migration (gate
+// 2c / test #6: after switching provider, old-provider ciphertext still decrypts — no orphaned vault). The writer is
+// always a candidate reader, so single-provider transitions (M4 KMS+master) need no explicit readers.
 type transitionCipher struct {
-	writer *envelopeCipher
-	local  *localCipher
+	writer  *envelopeCipher   // current provider — all new writes (v2, tagged writer.tag/keyGen)
+	readers []*envelopeCipher // additional legacy-provider readers (old tag/keyGen) for a provider→provider migration
+	local   *localCipher      // v1 reader (pre-KMS master key); may be nil for a pure provider→provider migration
 }
 
 func (t *transitionCipher) Encrypt(tenantID uuid.UUID, plaintext []byte) ([]byte, error) {
-	// M1: always the KMS writer; a wrap failure errors, it does NOT fall back to the local master key.
+	// M1: always the current provider writer; a wrap failure errors, it does NOT fall back to the local master key
+	// or a legacy reader.
 	return t.writer.Encrypt(tenantID, plaintext)
+}
+
+// allReaders is the writer followed by any legacy-provider readers — the candidates a v2 blob may match by tag+gen.
+func (t *transitionCipher) allReaders() []*envelopeCipher {
+	return append([]*envelopeCipher{t.writer}, t.readers...)
 }
 
 func (t *transitionCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, error) {
@@ -192,9 +241,23 @@ func (t *transitionCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byt
 		return nil, errors.New("crypto: empty ciphertext")
 	}
 	if ciphertext[0] == cipherKeyVersionKMS {
-		return t.writer.Decrypt(tenantID, ciphertext) // M2: no fallback for a v2 blob
+		if len(ciphertext) < 3 {
+			return nil, errors.New("crypto: v2 ciphertext truncated (tag)")
+		}
+		tag, gen := providerTag(ciphertext[1]), ciphertext[2]
+		for _, r := range t.allReaders() {
+			if r.tag == tag && r.keyGen == gen {
+				return r.Decrypt(tenantID, ciphertext) // M2: no fallback to another cipher on unwrap failure
+			}
+		}
+		// A v2 blob whose provider/generation matches NO configured reader is refused — never mis-routed to the
+		// local master key or a mismatched provider (that would silently mis-unwrap or fail confusingly).
+		return nil, fmt.Errorf("crypto: no configured provider matches this ciphertext (tag=%s gen=%d) — refusing", tag, gen)
 	}
 	// v1 (version byte 1) and pre-version legacy blobs are handled by localCipher's own dual-layout Decrypt.
+	if t.local == nil {
+		return nil, errors.New("crypto: v1 ciphertext but no local reader configured (provider-only migration) — refusing")
+	}
 	return t.local.Decrypt(tenantID, ciphertext)
 }
 
@@ -213,84 +276,4 @@ func gcm(key []byte) (cipher.AEAD, error) {
 		return nil, err
 	}
 	return cipher.NewGCM(block)
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// gcpKMS — the REST keyWrapper against Cloud KMS :encrypt / :decrypt via SafeClient. Token source is wired at
-// provisioning; until then the default fails fast, so a configured-but-unprovisioned KMS never silently starts.
-
-type tokenSource func(context.Context) (string, error)
-
-// errKMSNotProvisioned is the fail-fast boot error when a KMS key is configured but no GCP token source is wired yet.
-var errKMSNotProvisioned = errors.New(
-	"crypto: NIRVET_KMS_KEY_NAME is set but the GCP token source is not provisioned — wire a Workload Identity/ADC " +
-		"token source (build/GOLIVE_KMS_ENVELOPE_ENCRYPTION_GATE.md, provision-later); until then unset " +
-		"NIRVET_KMS_KEY_NAME and set a persistent NIRVET_SECRET_MASTER_KEY")
-
-func notProvisionedToken(context.Context) (string, error) { return "", errKMSNotProvisioned }
-
-type gcpKMS struct {
-	endpoint string // https://cloudkms.googleapis.com/v1 (no trailing slash)
-	token    tokenSource
-	http     *http.Client
-}
-
-// newGCPKMS builds the production wrapper: public KMS endpoint, SafeClient, and the not-yet-provisioned token source.
-func newGCPKMS() *gcpKMS {
-	return &gcpKMS{endpoint: defaultKMSEndpoint, token: notProvisionedToken, http: netsafe.SafeClient(kmsOpTimeout)}
-}
-
-func (g *gcpKMS) Wrap(ctx context.Context, keyName string, plaintext, aad []byte) ([]byte, error) {
-	var out struct {
-		Ciphertext string `json:"ciphertext"`
-	}
-	body := map[string]string{
-		"plaintext":                   base64.StdEncoding.EncodeToString(plaintext),
-		"additionalAuthenticatedData": base64.StdEncoding.EncodeToString(aad),
-	}
-	if err := g.call(ctx, keyName+":encrypt", body, &out); err != nil {
-		return nil, err
-	}
-	return base64.StdEncoding.DecodeString(out.Ciphertext)
-}
-
-func (g *gcpKMS) Unwrap(ctx context.Context, keyName string, ciphertext, aad []byte) ([]byte, error) {
-	var out struct {
-		Plaintext string `json:"plaintext"`
-	}
-	body := map[string]string{
-		"ciphertext":                  base64.StdEncoding.EncodeToString(ciphertext),
-		"additionalAuthenticatedData": base64.StdEncoding.EncodeToString(aad),
-	}
-	if err := g.call(ctx, keyName+":decrypt", body, &out); err != nil {
-		return nil, err
-	}
-	return base64.StdEncoding.DecodeString(out.Plaintext)
-}
-
-func (g *gcpKMS) call(ctx context.Context, pathAndVerb string, body any, out any) error {
-	tok, err := g.token(ctx)
-	if err != nil {
-		return err
-	}
-	b, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint+"/"+pathAndVerb, bytes.NewReader(b))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := g.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("crypto: KMS request: %w", err)
-	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("crypto: KMS %s: status %d: %s", pathAndVerb, resp.StatusCode, strings.TrimSpace(string(rb)))
-	}
-	if err := json.Unmarshal(rb, out); err != nil {
-		return fmt.Errorf("crypto: KMS %s: bad response: %w", pathAndVerb, err)
-	}
-	return nil
 }
