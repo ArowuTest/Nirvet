@@ -1586,6 +1586,113 @@ paths:
         '200': { description: hunt result }
         '403': { description: forbidden }
         '404': { description: not found }
+  /investigation/war-rooms:
+    get:
+      tags: [investigation]
+      summary: List war-rooms the caller belongs to (owner or member)
+      responses:
+        '200': { description: war rooms }
+    post:
+      tags: [investigation]
+      summary: Open a war-room for an incident the creator can access (creator becomes owner + first member)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [incident_ref]
+              properties:
+                incident_ref: { type: string }
+                title: { type: string }
+      responses:
+        '201': { description: war room }
+        '400': { description: bad request }
+        '403': { description: no incident access }
+  /investigation/war-rooms/{id}:
+    get:
+      tags: [investigation]
+      summary: Get a war-room (+ members) the caller belongs to; incident access re-checked at read (revocation-aware)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: war room }
+        '404': { description: not found }
+  /investigation/war-rooms/{id}/archive:
+    post:
+      tags: [investigation]
+      summary: Archive the war-room (owner only)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: archived }
+        '403': { description: forbidden }
+        '404': { description: not found }
+  /investigation/war-rooms/{id}/members:
+    post:
+      tags: [investigation]
+      summary: Invite a member (OWNER ONLY; invitee must be a tenant user) - data-sharing grant, audited
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string }
+      responses:
+        '200': { description: added }
+        '400': { description: bad request }
+        '403': { description: not the owner }
+        '404': { description: not found }
+  /investigation/war-rooms/{id}/members/{uid}:
+    delete:
+      tags: [investigation]
+      summary: Remove a member (OWNER ONLY; the owner cannot be removed) - audited
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: uid, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: removed }
+        '403': { description: not the owner }
+        '404': { description: not found }
+  /investigation/war-rooms/{id}/entries:
+    get:
+      tags: [investigation]
+      summary: List room entries (members only) - notes as authored, query_refs as query definitions (never result rows)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: entries }
+        '404': { description: not found }
+    post:
+      tags: [investigation]
+      summary: Add a shared entry - a note (prose) or a query_ref (re-runnable, re-masked per viewer; validated for the author)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [note, query_ref] }
+                body: { type: string }
+                all: { type: array, items: { type: object } }
+                any: { type: array, items: { type: object } }
+                lookback_seconds: { type: integer }
+                limit: { type: integer }
+      responses:
+        '201': { description: entry }
+        '400': { description: bad request }
+        '404': { description: not found }
+  /investigation/war-rooms/{id}/entries/{eid}/run:
+    post:
+      tags: [investigation]
+      summary: Run a query_ref entry now-relative, re-masked for the running member (per-viewer masking)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: eid, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: hunt result }
+        '400': { description: not a query_ref }
+        '404': { description: not found }
   /investigation/search-events:
     patch:
       tags: [investigation]

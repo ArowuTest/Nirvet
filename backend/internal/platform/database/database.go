@@ -83,7 +83,7 @@ type TxFunc func(ctx context.Context, tx pgx.Tx) error
 // is parameterised, so it is safe under transaction-pooling connection poolers
 // where a session-level SET would leak across clients.
 func (db *DB) WithTenant(ctx context.Context, tenantID uuid.UUID, fn TxFunc) error {
-	return db.runTx(ctx, tenantID.String(), fn)
+	return db.runTx(ctx, tenantID.String(), "", fn)
 }
 
 // WithSystem runs fn in a transaction WITHOUT a tenant context. Use only for
@@ -91,10 +91,18 @@ func (db *DB) WithTenant(ctx context.Context, tenantID uuid.UUID, fn TxFunc) err
 // SECURITY DEFINER auth lookups. Tenant-owned tables remain protected by RLS
 // and will return nothing here.
 func (db *DB) WithSystem(ctx context.Context, fn TxFunc) error {
-	return db.runTx(ctx, "", fn)
+	return db.runTx(ctx, "", "", fn)
 }
 
-func (db *DB) runTx(ctx context.Context, tenant string, fn TxFunc) (err error) {
+// WithTenantActor runs fn with BOTH app.current_tenant AND app.current_user set (transaction-local). It exists for
+// membership-scoped RLS (e.g. the investigation war-room, whose policies reference app_current_user()): tenant
+// isolation PLUS "is this actor a member of this room" enforced structurally in the DB, not just in Go. Existing
+// tenant tables are unaffected — their policies never read app.current_user, and WithTenant leaves it unset (NULL).
+func (db *DB) WithTenantActor(ctx context.Context, tenantID, userID uuid.UUID, fn TxFunc) error {
+	return db.runTx(ctx, tenantID.String(), userID.String(), fn)
+}
+
+func (db *DB) runTx(ctx context.Context, tenant, user string, fn TxFunc) (err error) {
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("database: begin: %w", err)
@@ -109,6 +117,13 @@ func (db *DB) runTx(ctx context.Context, tenant string, fn TxFunc) (err error) {
 		// Transaction-local tenant GUC read by RLS policies.
 		if _, err = tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenant); err != nil {
 			return fmt.Errorf("database: set tenant: %w", err)
+		}
+	}
+	if user != "" {
+		// Transaction-local actor GUC read by membership-scoped RLS policies (app_current_user()). Only set by
+		// WithTenantActor; unset (NULL) for every other path, so no existing policy is affected.
+		if _, err = tx.Exec(ctx, "SELECT set_config('app.current_user', $1, true)", user); err != nil {
+			return fmt.Errorf("database: set actor: %w", err)
 		}
 	}
 

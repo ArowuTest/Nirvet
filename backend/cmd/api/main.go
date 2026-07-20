@@ -417,13 +417,24 @@ func main() {
 	// first user-predicate surface); RLS-under-WithTenant is the backstop; every query/entity-read is read-audited.
 	// The entity profile+pivot (I-3) composes the existing entitygraph service (tenant-scoped) — no cross-tenant reach.
 	invRepo := investigation.NewRepository(db)
+	// #188 multi-lane case timeline: merge the forensic event lane with the incident journal (analyst/automation/
+	// comms/evidence) via a narrow adapter, keeping investigation decoupled from incident.
+	invSvc := investigation.NewService(invRepo).WithCaseJournal(caseJournalAdapter{inc: incidentSvc}).WithRawStore(blobs) // #188 raw-event fetch
 	investigationH := investigation.NewHandler(
-		// #188 multi-lane case timeline: merge the forensic event lane with the incident journal (analyst/
-		// automation/comms/evidence) via a narrow adapter, keeping investigation decoupled from incident.
-		investigation.NewService(invRepo).WithCaseJournal(caseJournalAdapter{inc: incidentSvc}).WithRawStore(blobs), // #188 raw-event fetch
+		invSvc,
 		investigation.NewEntityService(egSvc, invRepo),
 		// I-5 data-gap panel: unify detection coverage gaps + host-source silence + normalization drift (all tenant-scoped).
 		investigation.NewDataGapService(detectionSvc, normQ, connector.NewRepository(db)),
+	)
+	// §6.9 war-room (collaborative shared space): membership-RLS via WithTenantActor; a query_ref re-runs through the
+	// investigation Service's RunHunt (re-masked per viewer); incident access is re-checked at every read (revocation-
+	// aware) via the tenant-scoped incident.Get. Provider-gated at the mux; owner-only membership mutations.
+	warRoomH := investigation.NewWarRoomHandler(
+		investigation.NewWarRoomService(db, invSvc).WithIncidentAccess(
+			func(ctx context.Context, tenantID, incidentID uuid.UUID) error {
+				_, err := incidentSvc.Get(ctx, tenantID, incidentID)
+				return err
+			}),
 	)
 	reportingSvc := reporting.NewService(db, events)
 	reportingH := reporting.NewHandler(reportingSvc)
@@ -819,6 +830,17 @@ func main() {
 	mux.Handle("GET /investigation/saved-views/{id}", provider(investigationH.GetSavedView))
 	mux.Handle("DELETE /investigation/saved-views/{id}", provider(investigationH.DeleteSavedView))
 	mux.Handle("POST /investigation/saved-views/{id}/run", provider(investigationH.RunSavedView))
+	// §6.9 war-room (collaborative shared space, gated). Provider-tier at the mux; membership RLS + per-read incident
+	// re-check + owner-only membership mutations do the real access control. A query_ref re-runs re-masked per viewer.
+	mux.Handle("POST /investigation/war-rooms", provider(warRoomH.Create))
+	mux.Handle("GET /investigation/war-rooms", provider(warRoomH.List))
+	mux.Handle("GET /investigation/war-rooms/{id}", provider(warRoomH.Get))
+	mux.Handle("POST /investigation/war-rooms/{id}/archive", provider(warRoomH.Archive))
+	mux.Handle("POST /investigation/war-rooms/{id}/members", provider(warRoomH.Invite))
+	mux.Handle("DELETE /investigation/war-rooms/{id}/members/{uid}", provider(warRoomH.RemoveMember))
+	mux.Handle("GET /investigation/war-rooms/{id}/entries", provider(warRoomH.ListEntries))
+	mux.Handle("POST /investigation/war-rooms/{id}/entries", provider(warRoomH.AddEntry))
+	mux.Handle("POST /investigation/war-rooms/{id}/entries/{eid}/run", provider(warRoomH.RunEntry))
 	mux.Handle("PATCH /investigation/search-events", provider(investigationH.RunHunt))
 	// §6.9 #124 I-3 typed entity profile + pivot (INV-003/004 / API-INV-002/003). Composes the tenant-scoped
 	// entitygraph service; a pivot neighbor is derived from the tenant's own alerts, never a cross-tenant ref.
