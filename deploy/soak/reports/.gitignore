@@ -1,0 +1,2 @@
+# Soak run reports are local artifacts, not committed.
+*.txt

@@ -97,8 +97,42 @@ bound; paid PG raises it, as the infra soak's ~1–2 s free-tier DB latency show
 3. Retention-sweep × live-ingest contention (run the retention sweep concurrently with the drive).
 4. audit_log index under a large history (seed millions of audit rows, then time the access-review query).
 
+## Sustained-endurance soak + one-command runner (A2 harness FINISHED, Jul 21 2026)
+
+The two earlier drivers are **one-pass** (throughput + scaling shape). The missing half was **endurance** — the
+48h "does it hold steady state" question — and a turnkey way to run the whole gate. Both now exist; the A2 harness
+is complete and waits only on the load env.
+
+- **`TestValueLoopSustainedSoak`** (gated `NIRVET_SOAK=1`, knob `NIRVET_SOAK_DURATION`) loops the REAL
+  ingest→detect→correlate→incident path for a wall-clock window with N separate drain workers per cycle, sampling
+  the four leak signals every cycle: **heap (runtime.MemStats), goroutine count, pool acquired/max, and dead-letter
+  count**. It fails FAST if dead-letters grow (silent event loss) or the pool over-subscribes mid-soak, and asserts
+  no goroutine leak at the end. This is the endurance signal the one-pass tests structurally cannot give.
+- **Local proof (15 s window, 6 tenants, 2 workers):** 23 cycles / 2070 events; **heap 1.5→2.3 MB (flat, GC
+  healthy), goroutines 3→3 (no leak), worst pool acquired 0/10 (no over-subscription), dead-letters 0 throughout,
+  zero dropped events.** Steady-state holds; the same code path runs 48h in the load env by setting
+  `NIRVET_SOAK_DURATION=48h`.
+- **`deploy/soak/run_soak.sh`** — the ONE command to run the full gate the moment a paid, dedicated (non-prod)
+  Postgres exists: point `NIRVET_TEST_DATABASE_URL` at it, and it runs all three soak tests at the 250-agency spec
+  defaults (`TENANTS=250`, `DRAIN_WORKERS=1,2,4,8`, `DURATION=30m`, all overridable → `48h` for the endurance gate)
+  and captures a timestamped report to `deploy/soak/reports/` (git-ignored). Verified end-to-end locally with smoke
+  knobs (all three tests green, report written).
+
+### Still open for the FULL A2 gate — now purely load-env / owner-driven (no builder code left)
+1. **The env itself**: a paid always-on API + a paid, dedicated (non-prod) Postgres. This is the one hard
+   prerequisite; the corroborating infra soak above showed the free tier adds ~1–2 s DB latency that a SOC SLA
+   can't accept.
+2. **Run `run_soak.sh` at the real spec** (250 tenants / 48h) and attach the report — the code path, scaling shape,
+   and steady-state are already proven locally; the load env proves the 48h endurance + burst ceiling + absolute
+   throughput on prod hardware.
+3. Deeper measurement extensions still worth adding IN the harness when prioritised (each self-contained, none
+   blocking the gate): the SOAR playbook-run N+1 driver (confirmed structurally, not yet timed), retention-sweep ×
+   live-ingest contention, and the audit_log access-review query under a millions-of-rows history.
+
 ## Bottom line
 Infra-layer soak: **app stable, latency gated on free-tier infra.** Value-loop soak: **driver built and green —
 loop is correct at volume, no drops, no pool/leak issues; drain throughput (44 ev/s/worker) is the scale lever and
-needs horizontal workers + prod DB for 2k ev/s.** The always-on API **+ DB** upgrade and a dedicated load env
-remain hard prerequisites to close the full A2 gate at the 250-tenant/48h spec.
+needs horizontal workers + prod DB for 2k ev/s.** Endurance soak: **built and green — steady state holds (no heap/
+goroutine/pool/dead-letter drift), one command (`run_soak.sh`) runs the full 250-tenant/48h gate.** The always-on
+API **+ DB** upgrade and a dedicated load env remain the only hard prerequisites to close the full A2 gate — the
+harness is finished and waiting.
