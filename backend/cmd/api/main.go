@@ -889,6 +889,14 @@ func main() {
 	mux.Handle("GET /retention", provider(retentionH.GetPolicy))
 	mux.Handle("PUT /retention", ssoAdmin(retentionH.SetPolicy))
 	mux.Handle("GET /retention/sweeps", provider(retentionH.ListSweeps))
+	// §6.14 B3 jurisdictional retention (operator-level): manage per-jurisdiction floor/ceiling windows + the go-live
+	// arm for the ceiling's destructive enforcement (jurisdiction_delete_armed, seeded false). platform_admin only — a
+	// sovereign regime is never tenant-self-service. SetArm is the go-live D-arm-retention step (irreversible-deletion
+	// arm; audited by the padmin chain).
+	mux.Handle("GET /admin/retention/jurisdictions", padmin(retentionH.ListJurisdictions))
+	mux.Handle("PUT /admin/retention/jurisdictions", padmin(retentionH.UpsertJurisdiction))
+	mux.Handle("GET /admin/retention/arm", padmin(retentionH.GetArm))
+	mux.Handle("PUT /admin/retention/arm", padmin(retentionH.SetArm))
 	mux.Handle("POST /soar/runs/{id}/reverse", soarApprover(soarH.Reverse)) // §6.11 slice B: undo containment (MUST-3)
 	mux.Handle("POST /soar/authority", padmin(soarH.SetAuthority))
 	mux.Handle("GET /soar/action-catalog", provider(soarH.ListActionCatalog))

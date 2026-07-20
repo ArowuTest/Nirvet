@@ -49,34 +49,153 @@ func NewService(db *database.DB, blobs blobstore.Store) *Service {
 
 // Policy is the tenant-facing view.
 type Policy struct {
-	Enabled         bool `json:"enabled"`
-	WindowDays      *int `json:"window_days,omitempty"` // nil = use the entitlement window
-	EffectiveDays   int  `json:"effective_days"`        // resolved effective window (0 = none → keep)
-	EntitlementDays int  `json:"entitlement_days"`
+	Enabled         bool   `json:"enabled"`
+	WindowDays      *int   `json:"window_days,omitempty"` // nil = use the entitlement window
+	EffectiveDays   int    `json:"effective_days"`        // window the ACTUAL delete uses (armed? full : base); 0 = keep
+	EntitlementDays int    `json:"entitlement_days"`
+	Jurisdiction    string `json:"jurisdiction,omitempty"`
+	FloorDays       int    `json:"floor_days,omitempty"`   // jurisdiction retain-at-least (0 = none)
+	CeilingDays     int    `json:"ceiling_days,omitempty"` // jurisdiction delete-after (0 = none)
+	CeilingArmed    bool   `json:"ceiling_armed"`          // is jurisdictional-ceiling deletion armed (go-live D-arm-retention)
 }
 
-// resolveWindow returns the tenant's effective retention window and whether deletion is enabled. ok=false means
-// there is no usable window (missing/zero entitlement) → the caller KEEPS everything. window = min(policy override,
-// entitlement) — the entitlement is the ceiling; a tenant may only TIGHTEN (keep for less), never extend.
-func (s *Service) resolveWindow(ctx context.Context, tenantID uuid.UUID) (enabled bool, windowDays, entDays int, ok bool) {
+// windowResolution is the SINGLE window computation for a tenant — the ONLY producer of the window that feeds the
+// delete path (check-retention-window-single-path.sh enforces there is no second producer). Semantics: DAYS of
+// retention (larger = keep longer = delete less). B3 gate 2a.
+type windowResolution struct {
+	enabled      bool
+	ok           bool // a usable window exists (entitlement + tenant window > 0)
+	jurisdiction string
+	entDays      int
+	inner        int // min(tenant override, entitlement) — the pre-jurisdiction tighten-only window
+	floorDays    int // jurisdiction floor (retain >=; 0 = none)
+	ceilingDays  int // jurisdiction ceiling (delete after; 0 = none)
+	baseDays     int // max(floor, inner) — window when the ceiling is DORMANT (disarmed)
+	fullDays     int // max(floor, min(inner, ceiling)) — window with the ceiling applied
+	armed        bool
+}
+
+// ceilingBinds reports whether the ceiling actually shortened the window below the (floor-lengthened) base.
+func (wr windowResolution) ceilingBinds() bool { return wr.fullDays < wr.baseDays }
+
+// deleteDays is the window used for the ACTUAL delete: the ceiling only shortens it when jurisdictional deletion is
+// ARMED (go-live). Disarmed, the ceiling is dormant and deletion uses the floor-lengthened base window — so floor and
+// tighten-only-tenant deletions proceed as before, but the destructive ceiling waits for the arm.
+func (wr windowResolution) deleteDays() int {
+	if wr.armed {
+		return wr.fullDays
+	}
+	return wr.baseDays
+}
+
+// reportDays is the window used for the dry-run/report — ALWAYS the ceiling-applied window, so an operator SEES what
+// the ceiling would delete even while it is dormant.
+func (wr windowResolution) reportDays() int { return wr.fullDays }
+
+// clampWindow is the PURE clamp (gate 2a): base = max(floor, inner); full = max(floor, min(inner, ceiling)). The floor
+// is the OUTER max, so a contradictory floor>ceiling resolves to the FLOOR (retain longer), NEVER the ceiling — when
+// rules conflict, resolve toward RETENTION. This is the load-bearing property; the floor-wins test mutates the nesting
+// (to min(max(inner,floor),ceiling)) and goes RED.
+func clampWindow(inner, floor, ceiling int) (base, full int) {
+	base = maxInt(floor, inner)
+	ic := inner
+	if ceiling > 0 && ceiling < ic {
+		ic = ceiling
+	}
+	full = maxInt(floor, ic)
+	return
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// cutoffFor turns a retention window (days) into the delete cutoff. Centralised so the cutoff-from-window computation
+// has ONE home (the single-path fence asserts no other place derives a delete cutoff from a raw duration).
+func cutoffFor(days int) time.Time { return time.Now().Add(-time.Duration(days) * 24 * time.Hour) }
+
+// jurisdictionFor reads the tenant's country → its jurisdiction_retention floor/ceiling. Unknown jurisdiction (no
+// country set, or no matching config row) → (key, 0, 0): NO clamp, fail toward RETENTION — never invent a delete
+// window from an unrecognised regime (gate 2b).
+func (s *Service) jurisdictionFor(ctx context.Context, tenantID uuid.UUID) (key string, floor, ceiling int) {
+	_ = s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var country string
+		if e := tx.QueryRow(ctx, `SELECT COALESCE(country,'') FROM tenants WHERE id=$1`, tenantID).Scan(&country); e != nil || country == "" {
+			return nil
+		}
+		key = country
+		var minD, maxD *int
+		if e := tx.QueryRow(ctx,
+			`SELECT min_retain_days, max_retain_days FROM jurisdiction_retention WHERE jurisdiction_key=$1`, country).Scan(&minD, &maxD); e != nil {
+			return nil // unknown jurisdiction → no clamp
+		}
+		if minD != nil && *minD > 0 {
+			floor = *minD
+		}
+		if maxD != nil && *maxD > 0 {
+			ceiling = *maxD
+		}
+		return nil
+	})
+	return key, floor, ceiling
+}
+
+// armedNow reads the operator's jurisdiction_delete_armed flag (seeded false). Fail-safe: any read error → false (the
+// ceiling's destructive enforcement stays dormant).
+func (s *Service) armedNow(ctx context.Context) bool {
+	armed := false
+	_ = s.db.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_ = tx.QueryRow(ctx, `SELECT armed FROM jurisdiction_delete_armed WHERE id=1`).Scan(&armed)
+		return nil
+	})
+	return armed
+}
+
+// resolveWindow is the SOLE producer of the retention window. It reads the tenant policy + entitlement (tighten-only
+// inner window), then applies the jurisdiction floor/ceiling via clampWindow, and reads the arm flag. ok=false → no
+// usable window → the caller KEEPS everything (fail-safe). No other function computes a window that feeds a delete.
+func (s *Service) resolveWindow(ctx context.Context, tenantID uuid.UUID) windowResolution {
+	var wr windowResolution
 	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var override *int
 		_ = tx.QueryRow(ctx,
 			`SELECT enabled, window_days FROM retention_policy WHERE tenant_id=$1 OR tenant_id IS NULL
-			  ORDER BY tenant_id NULLS LAST LIMIT 1`, tenantID).Scan(&enabled, &override)
-		if e := tx.QueryRow(ctx, `SELECT retention_days FROM entitlements WHERE tenant_id=$1`, tenantID).Scan(&entDays); e != nil {
-			entDays = 0
+			  ORDER BY tenant_id NULLS LAST LIMIT 1`, tenantID).Scan(&wr.enabled, &override)
+		if e := tx.QueryRow(ctx, `SELECT retention_days FROM entitlements WHERE tenant_id=$1`, tenantID).Scan(&wr.entDays); e != nil {
+			wr.entDays = 0
 		}
-		windowDays = entDays
-		if override != nil && *override > 0 && *override < windowDays {
-			windowDays = *override // tighten-only
+		wr.inner = wr.entDays
+		if override != nil && *override > 0 && *override < wr.inner {
+			wr.inner = *override // tighten-only: a tenant may keep for LESS, never more than its entitlement
 		}
 		return nil
 	})
-	if entDays <= 0 || windowDays <= 0 {
-		return enabled, 0, entDays, false // fail-safe: no usable window → KEEP
+	if wr.entDays <= 0 || wr.inner <= 0 {
+		wr.ok = false
+		return wr // fail-safe: no usable window → KEEP (a floor with nothing to delete is trivially satisfied)
 	}
-	return enabled, windowDays, entDays, true
+	wr.ok = true
+	wr.jurisdiction, wr.floorDays, wr.ceilingDays = s.jurisdictionFor(ctx, tenantID)
+	wr.baseDays, wr.fullDays = clampWindow(wr.inner, wr.floorDays, wr.ceilingDays)
+	wr.armed = s.armedNow(ctx)
+	return wr
+}
+
+// writeJurisdictionLedger records, for attribution, every sweep where a jurisdiction rule participated (dry-runs too):
+// the rule + the windows it produced + whether the ceiling bound + whether it was armed. Append-only (mig 0138). So a
+// jurisdictional delete — irreversible — is always attributable to the regime that drove it.
+func (s *Service) writeJurisdictionLedger(ctx context.Context, tenantID uuid.UUID, wr windowResolution, store string, deleted int64, dryRun bool) {
+	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`INSERT INTO retention_jurisdiction_ledger
+			   (tenant_id, jurisdiction_key, floor_days, ceiling_days, base_days, effective_days, ceiling_binds, armed, store, deleted_count, dry_run)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			tenantID, wr.jurisdiction, wr.floorDays, wr.ceilingDays, wr.baseDays, wr.deleteDays(), wr.ceilingBinds(), wr.armed, store, deleted, dryRun)
+		return e
+	})
 }
 
 // heldOrMissing reports whether the tenant is on legal hold (preservation wins) or unreadable (fail-safe skip).
@@ -98,52 +217,65 @@ func (s *Service) heldOrMissing(ctx context.Context, tenantID uuid.UUID) bool {
 // dry-run count (disabled) OR bounded delete (enabled). Returns the number of rows deleted (0 on skip/dry-run).
 func (s *Service) SweepTenant(ctx context.Context, tenantID uuid.UUID) (int, error) {
 	if s.heldOrMissing(ctx, tenantID) {
-		return 0, nil // legal hold / unreadable → preserve, never delete
+		return 0, nil // legal hold / unreadable → preserve, never delete (short-circuit BEFORE any window compute)
 	}
-	enabled, windowDays, _, ok := s.resolveWindow(ctx, tenantID)
-	if !ok {
+	wr := s.resolveWindow(ctx, tenantID)
+	if !wr.ok {
 		return 0, nil // no usable window → keep
 	}
-	cutoff := time.Now().Add(-time.Duration(windowDays) * 24 * time.Hour)
+	hasJurisdiction := wr.floorDays > 0 || wr.ceilingDays > 0
+	// The DELETE uses deleteDays (the ceiling only shortens when armed); the dry-run REPORT uses reportDays (always the
+	// ceiling-applied window, so the ceiling's dormant would-delete is visible).
+	deleteCutoff := cutoffFor(wr.deleteDays())
+	reportCutoff := cutoffFor(wr.reportDays())
 
-	if !enabled {
-		// Dry-run: count what WOULD be deleted, log it, delete NOTHING.
+	if !wr.enabled {
+		// Dry-run: count what WOULD be deleted (at the ceiling-applied report window), log it, delete NOTHING.
 		var rawN, evN int64
 		_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-			_ = tx.QueryRow(ctx, `SELECT count(*) FROM raw_events WHERE received_at < $1`, cutoff).Scan(&rawN)
-			_ = tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE collected_at < $1`, cutoff).Scan(&evN)
+			_ = tx.QueryRow(ctx, `SELECT count(*) FROM raw_events WHERE received_at < $1`, reportCutoff).Scan(&rawN)
+			_ = tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE collected_at < $1`, reportCutoff).Scan(&evN)
 			return nil
 		})
-		s.writeLog(ctx, tenantID, "raw_events", cutoff, rawN, 0, true)
-		s.writeLog(ctx, tenantID, "events", cutoff, evN, 0, true)
+		s.writeLog(ctx, tenantID, "raw_events", reportCutoff, rawN, 0, true)
+		s.writeLog(ctx, tenantID, "events", reportCutoff, evN, 0, true)
+		if hasJurisdiction {
+			s.writeJurisdictionLedger(ctx, tenantID, wr, "raw_events", 0, true)
+			s.writeJurisdictionLedger(ctx, tenantID, wr, "events", 0, true)
+		}
 		return 0, nil
 	}
 
-	// Enabled: delete raw_events (+ their payload blobs) then events, in bounded batches. A batch error aborts the
-	// sweep (partial keep) — under-delete-never-over. Count eligible rows FIRST so the sweep-log ledger records a
-	// real candidate-vs-deleted delta (a positive delta = rows a blob/DB failure left for the next sweep).
+	// Enabled: delete raw_events (+ their payload blobs) then events, in bounded batches, at the DELETE window. A batch
+	// error aborts the sweep (partial keep) — under-delete-never-over. Count eligible rows FIRST so the sweep-log
+	// records a real candidate-vs-deleted delta (a positive delta = rows a blob/DB failure left for the next sweep).
 	var rawCand, evCand int64
 	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_ = tx.QueryRow(ctx, `SELECT count(*) FROM raw_events WHERE received_at < $1`, cutoff).Scan(&rawCand)
-		_ = tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE collected_at < $1`, cutoff).Scan(&evCand)
+		_ = tx.QueryRow(ctx, `SELECT count(*) FROM raw_events WHERE received_at < $1`, deleteCutoff).Scan(&rawCand)
+		_ = tx.QueryRow(ctx, `SELECT count(*) FROM events WHERE collected_at < $1`, deleteCutoff).Scan(&evCand)
 		return nil
 	})
-	rawDeleted, err := s.deleteRawEvents(ctx, tenantID, cutoff)
+	rawDeleted, err := s.deleteRawEvents(ctx, tenantID, deleteCutoff)
 	if err != nil {
-		s.writeLog(ctx, tenantID, "raw_events", cutoff, rawCand, int64(rawDeleted), false) // record the partial delta
+		s.writeLog(ctx, tenantID, "raw_events", deleteCutoff, rawCand, int64(rawDeleted), false) // record the partial delta
 		return rawDeleted, err
 	}
-	evDeleted, err := s.deleteEvents(ctx, tenantID, cutoff)
+	evDeleted, err := s.deleteEvents(ctx, tenantID, deleteCutoff)
 	if err != nil {
-		s.writeLog(ctx, tenantID, "raw_events", cutoff, rawCand, int64(rawDeleted), false)
-		s.writeLog(ctx, tenantID, "events", cutoff, evCand, int64(evDeleted), false)
+		s.writeLog(ctx, tenantID, "raw_events", deleteCutoff, rawCand, int64(rawDeleted), false)
+		s.writeLog(ctx, tenantID, "events", deleteCutoff, evCand, int64(evDeleted), false)
 		return rawDeleted + evDeleted, err
 	}
-	s.writeLog(ctx, tenantID, "raw_events", cutoff, rawCand, int64(rawDeleted), false)
-	s.writeLog(ctx, tenantID, "events", cutoff, evCand, int64(evDeleted), false)
+	s.writeLog(ctx, tenantID, "raw_events", deleteCutoff, rawCand, int64(rawDeleted), false)
+	s.writeLog(ctx, tenantID, "events", deleteCutoff, evCand, int64(evDeleted), false)
+	if hasJurisdiction {
+		s.writeJurisdictionLedger(ctx, tenantID, wr, "raw_events", int64(rawDeleted), false)
+		s.writeJurisdictionLedger(ctx, tenantID, wr, "events", int64(evDeleted), false)
+	}
 	_ = s.db.WithTenant(ctx, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return audit.Record(ctx, tx, audit.Entry{ActorEmail: "system:retention", Action: "retention.sweep",
-			Target: "tenant:" + tenantID.String(), Metadata: map[string]any{"raw_deleted": rawDeleted, "events_deleted": evDeleted, "cutoff": cutoff.UTC()}})
+			Target: "tenant:" + tenantID.String(), Metadata: map[string]any{"raw_deleted": rawDeleted, "events_deleted": evDeleted,
+				"cutoff": deleteCutoff.UTC(), "jurisdiction": wr.jurisdiction, "armed": wr.armed, "ceiling_binds": wr.ceilingBinds()}})
 	})
 	return rawDeleted + evDeleted, nil
 }
@@ -375,18 +507,20 @@ func (s *Service) StartRetentionReaper(ctx context.Context, log *slog.Logger, in
 	}
 }
 
-// GetPolicy returns the tenant's effective retention view.
+// GetPolicy returns the tenant's effective retention view — including the jurisdiction floor/ceiling and whether the
+// ceiling's destructive enforcement is armed (so a tenant admin sees the sovereign window that governs their data).
 func (s *Service) GetPolicy(ctx context.Context, p auth.Principal) Policy {
-	enabled, window, ent, ok := s.resolveWindow(ctx, p.TenantID)
-	eff := window
-	if !ok {
-		eff = 0
+	wr := s.resolveWindow(ctx, p.TenantID)
+	eff := 0
+	if wr.ok {
+		eff = wr.deleteDays()
 	}
 	var override *int
 	_ = s.db.WithTenant(ctx, p.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT window_days FROM retention_policy WHERE tenant_id=$1`, p.TenantID).Scan(&override)
 	})
-	return Policy{Enabled: enabled, WindowDays: override, EffectiveDays: eff, EntitlementDays: ent}
+	return Policy{Enabled: wr.enabled, WindowDays: override, EffectiveDays: eff, EntitlementDays: wr.entDays,
+		Jurisdiction: wr.jurisdiction, FloorDays: wr.floorDays, CeilingDays: wr.ceilingDays, CeilingArmed: wr.armed}
 }
 
 // SetPolicy upserts the tenant's own retention policy (enabled + optional tighten-only window). Audited.

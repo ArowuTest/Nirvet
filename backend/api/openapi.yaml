@@ -421,6 +421,55 @@ paths:
       summary: Recent retention sweep log — what WAS or WOULD BE deleted (dry-run + live) (#188)
       responses:
         '200': { description: '{sweeps:[...]}' }
+  /admin/retention/jurisdictions:
+    get:
+      tags: [retention]
+      summary: List jurisdiction retention rules (floor/ceiling windows) - platform_admin (B3)
+      responses:
+        '200': { description: jurisdictions }
+        '403': { description: forbidden }
+    put:
+      tags: [retention]
+      summary: Upsert a jurisdiction retention rule (floor=min_retain_days, ceiling=max_retain_days; platform_admin). Floor and ceiling may coexist even if floor over ceiling (resolves toward the floor).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jurisdiction_key]
+              properties:
+                jurisdiction_key: { type: string }
+                name: { type: string }
+                min_retain_days: { type: integer, nullable: true }
+                max_retain_days: { type: integer, nullable: true }
+      responses:
+        '200': { description: jurisdiction }
+        '400': { description: bad request }
+        '403': { description: forbidden }
+  /admin/retention/arm:
+    get:
+      tags: [retention]
+      summary: Read whether jurisdictional-ceiling deletion is armed (platform_admin)
+      responses:
+        '200': { description: armed flag }
+        '403': { description: forbidden }
+    put:
+      tags: [retention]
+      summary: Arm/disarm the jurisdiction CEILING destructive enforcement - go-live D-arm-retention (platform_admin; irreversible-deletion arm; audited). Floor and tighten-only deletions are unaffected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [armed]
+              properties:
+                armed: { type: boolean }
+      responses:
+        '200': { description: armed flag }
+        '400': { description: bad request }
+        '403': { description: forbidden }
         '401': { description: unauthenticated }
   /soar/customer-approval:
     get:
