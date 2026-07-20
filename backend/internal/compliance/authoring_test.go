@@ -25,6 +25,24 @@ func TestValidAutoSignal(t *testing.T) {
 	}
 }
 
+// Reviewer LOW-2: hasChildren backs the reparent-to-depth-3 guard — a top-level control WITH children may not be
+// given a parent (that would push its children to depth 3, which Assess's 2-level rollup can't score).
+func TestHasChildren(t *testing.T) {
+	controls := []Control{
+		{ControlRef: "GOV", ParentRef: ""},
+		{ControlRef: "GOV.1", ParentRef: "GOV"},
+	}
+	if !hasChildren(controls, "GOV") {
+		t.Fatal("GOV has a child (GOV.1)")
+	}
+	if hasChildren(controls, "GOV.1") {
+		t.Fatal("GOV.1 is a leaf — no children")
+	}
+	if hasChildren(controls, "ABSENT") {
+		t.Fatal("an absent ref has no children")
+	}
+}
+
 func TestIsTopLevel(t *testing.T) {
 	controls := []Control{
 		{ControlRef: "GOV", ParentRef: ""},

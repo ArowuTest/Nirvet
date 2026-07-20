@@ -1535,6 +1535,57 @@ paths:
     delete: { tags: [investigation], summary: Delete a cell, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }], responses: { '200': { description: deleted }, '404': { description: not found } } }
   /investigation/notebooks/{id}/cells/{cid}/move:
     post: { tags: [investigation], summary: Move a cell up or down, parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }], requestBody: { content: { application/json: { schema: { type: object, properties: { dir: { type: string, enum: [up, down] } } } } } }, responses: { '200': { description: moved }, '404': { description: not found } } }
+  /investigation/saved-views:
+    get:
+      tags: [investigation]
+      summary: List the caller's saved hunt-query views
+      responses:
+        '200': { description: saved views }
+    post:
+      tags: [investigation]
+      summary: Create a saved hunt-query view (validated for the creating actor's role and cost ceiling; private per analyst)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, lookback_seconds]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                all: { type: array, items: { type: object } }
+                any: { type: array, items: { type: object } }
+                lookback_seconds: { type: integer }
+                limit: { type: integer }
+      responses:
+        '201': { description: saved view }
+        '400': { description: bad request }
+        '403': { description: forbidden }
+  /investigation/saved-views/{id}:
+    get:
+      tags: [investigation]
+      summary: Get one of the caller's saved views
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: saved view }
+        '404': { description: not found }
+    delete:
+      tags: [investigation]
+      summary: Delete one of the caller's saved views
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: deleted }
+        '404': { description: not found }
+  /investigation/saved-views/{id}/run:
+    post:
+      tags: [investigation]
+      summary: Re-run a saved view now-relative - re-validated for the running actor (field-visibility + cost ceiling) and read-audited
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: hunt result }
+        '403': { description: forbidden }
+        '404': { description: not found }
   /investigation/search-events:
     patch:
       tags: [investigation]

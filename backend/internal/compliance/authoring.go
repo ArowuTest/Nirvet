@@ -316,6 +316,12 @@ func (s *Service) UpsertControl(ctx context.Context, tenantID uuid.UUID, in Cont
 		if !isTopLevel(controls, parent) {
 			return nil, httpx.ErrBadRequest("parent_ref must be an existing top-level control (nesting is limited to 2 levels)")
 		}
+		// Reviewer LOW-2: re-parenting an EXISTING control that already has children would create depth-3 (this
+		// control becomes a child while its own children hang below it). Assess fails loud on >2 levels; reject here
+		// too so a tenant can never author an un-assessable framework via an update.
+		if hasChildren(controls, ref) {
+			return nil, httpx.ErrBadRequest("this control already has child controls; giving it a parent would create 3-level nesting")
+		}
 	}
 	c := Control{FrameworkKey: fwKey, ControlRef: ref, ParentRef: parent, Title: title,
 		Description: strings.TrimSpace(in.Description), Weight: in.Weight, AutoSignal: in.AutoSignal}
@@ -347,6 +353,16 @@ func isTopLevel(controls []Control, ref string) bool {
 	for _, c := range controls {
 		if c.ControlRef == ref {
 			return c.ParentRef == ""
+		}
+	}
+	return false
+}
+
+// hasChildren reports whether any control in the set is parented on ref (i.e. ref is a top-level control with leaves).
+func hasChildren(controls []Control, ref string) bool {
+	for _, c := range controls {
+		if c.ParentRef == ref {
+			return true
 		}
 	}
 	return false

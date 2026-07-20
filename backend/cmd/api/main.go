@@ -811,6 +811,14 @@ func main() {
 	mux.Handle("PUT /investigation/notebooks/{id}/cells/{cid}", provider(investigationH.UpdateCell))
 	mux.Handle("DELETE /investigation/notebooks/{id}/cells/{cid}", provider(investigationH.DeleteCell))
 	mux.Handle("POST /investigation/notebooks/{id}/cells/{cid}/move", provider(investigationH.MoveCell))
+	// §6.9 slice B saved views: named, re-runnable hunt queries private per analyst. Run re-executes through the
+	// allow-list-compiled RunHunt path (re-validated for the running actor + read-audited) — no escalation via a
+	// stored query. Provider-gated (analyst_t1+).
+	mux.Handle("POST /investigation/saved-views", provider(investigationH.CreateSavedView))
+	mux.Handle("GET /investigation/saved-views", provider(investigationH.ListSavedViews))
+	mux.Handle("GET /investigation/saved-views/{id}", provider(investigationH.GetSavedView))
+	mux.Handle("DELETE /investigation/saved-views/{id}", provider(investigationH.DeleteSavedView))
+	mux.Handle("POST /investigation/saved-views/{id}/run", provider(investigationH.RunSavedView))
 	mux.Handle("PATCH /investigation/search-events", provider(investigationH.RunHunt))
 	// §6.9 #124 I-3 typed entity profile + pivot (INV-003/004 / API-INV-002/003). Composes the tenant-scoped
 	// entitygraph service; a pivot neighbor is derived from the tenant's own alerts, never a cross-tenant ref.
