@@ -22,10 +22,21 @@ func TestPostgresQueue_ReapStale(t *testing.T) {
 	t.Cleanup(pool.Close)
 	q := NewPostgres(pool)
 	tid := uuid.New()
+	// Own-tenant cleanup (test isolation): scoped to this run's unique tenant, so it touches no other test's
+	// rows. Prevents this test's job leaking into the shared ingest_jobs table across `-count` iterations.
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM ingest_jobs WHERE tenant_id=$1`, tid)
+	})
 
 	// Enqueue + claim → the job is now 'running' with claimed_at=now().
 	if err := q.Enqueue(ctx, tid, "normalize", []byte(`{}`)); err != nil {
 		t.Fatalf("enqueue: %v", err)
+	}
+	// Backdate run_at so this tenant's job deterministically outranks any concurrent foreign now() rows other
+	// test packages enqueue to the shared table — otherwise the fair-claim batch of 10 could be filled by
+	// foreign rn=1 jobs and this test's single job would miss it (a shared-table flake, not a queue bug).
+	if _, err := pool.Exec(ctx, `UPDATE ingest_jobs SET run_at = now() - interval '10 minutes' WHERE tenant_id=$1`, tid); err != nil {
+		t.Fatalf("backdate: %v", err)
 	}
 	jobs, err := q.Claim(ctx, 10)
 	if err != nil {
