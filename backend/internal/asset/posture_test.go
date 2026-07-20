@@ -45,9 +45,10 @@ func seedVuln(t *testing.T, db *database.DB, tenantID uuid.UUID, ref, cve, sever
 	t.Helper()
 	if err := db.WithTenant(context.Background(), tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
-			`INSERT INTO vulnerabilities (tenant_id, ref, cve, severity, status) VALUES (app_current_tenant(),$1,$2,$3,$4)
+			`INSERT INTO vulnerabilities (id, tenant_id, ref, cve, title, severity, status)
+			 VALUES (gen_random_uuid(), app_current_tenant(),$1,$2,$3,$4,$5)
 			 ON CONFLICT (tenant_id, ref, cve) DO UPDATE SET severity=EXCLUDED.severity, status=EXCLUDED.status`,
-			ref, cve, severity, status)
+			ref, cve, cve+" vuln", severity, status)
 		return e
 	}); err != nil {
 		t.Fatalf("seed vuln: %v", err)
