@@ -390,6 +390,7 @@ func main() {
 	// masks via the built-in floor. Wired into the service so the completeExternal chokepoint applies it.
 	redactionSvc := ai.NewRedactionService(db)
 	aiSvc.WithRedaction(redactionSvc)
+	aiSvc.WithSOARReader(soarHistoryReader{svc: soarSvc}) // S2b: read-only SOAR history for the context assembler
 	redactionH := ai.NewRedactionHandler(redactionSvc)
 	aiH := ai.NewHandler(aiSvc)
 	// §6.12 #117 admin-configurable AI providers: config surface (global default + per-tenant override + platform
@@ -1178,6 +1179,26 @@ type approverActiveAdapter struct{ iam *iam.Service }
 
 func (a approverActiveAdapter) IsActive(ctx context.Context, tenantID, userID uuid.UUID) bool {
 	return a.iam.ActiveInTenant(ctx, tenantID, userID)
+}
+
+// soarHistoryReader adapts soar.Service to ai.SOARReader (S2b) — the copilot's context assembler cites the response
+// actions ALREADY TAKEN on an incident. It lives OUTSIDE internal/ai (which the AI-no-direct-execution fence keeps
+// free of any soar import): the assembler receives a formatted, read-only fact string, never a soar type or the
+// execution surface. Read is tenant-scoped (ListRuns(tenantID) under RLS), then filtered to the incident.
+type soarHistoryReader struct{ svc *soar.Service }
+
+func (r soarHistoryReader) RunFactsForIncident(ctx context.Context, tenantID, incidentID uuid.UUID) ([]string, error) {
+	runs, err := r.svc.ListRuns(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, run := range runs {
+		if run.IncidentID != nil && *run.IncidentID == incidentID {
+			out = append(out, "soar_run playbook="+run.PlaybookID.String()+" status="+string(run.Status))
+		}
+	}
+	return out, nil
 }
 
 // breachIncidentAdapter adapts incident.Service to reporting.BreachIncidentReader for the #188 regulatory breach
