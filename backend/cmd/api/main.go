@@ -1086,6 +1086,9 @@ func main() {
 	mux.Handle("POST /assets", manager(assetH.Create))
 	mux.Handle("POST /assets/bulk", manager(assetH.BulkCreate)) // #188 bulk import
 	mux.Handle("GET /assets", provider(assetH.List))
+	// §6.15 #179 slice B (read-only): attack-surface posture + identity inventory (more specific than /assets/{id}).
+	mux.Handle("GET /assets/posture", provider(assetH.Posture))
+	mux.Handle("GET /assets/identities", provider(assetH.Identities))
 	mux.Handle("GET /assets/{id}", provider(assetH.Get))
 	// Vulnerability & exposure (§6.15). Writes drive exposure/priority → manager-gated.
 	mux.Handle("POST /vulnerabilities", manager(vulnH.Create))
