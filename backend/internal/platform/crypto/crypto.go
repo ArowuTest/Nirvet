@@ -117,22 +117,26 @@ func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, er
 // Config selects and configures the cipher backend (KMS provider abstraction). It supersedes the positional New()
 // (kept below as a thin backward-compatible wrapper).
 type Config struct {
-	Provider     string       // "" (→ local, or gcp when KeyName is set) | "gcp" | "vault" (pkcs11 reserved)
-	KeyName      string       // key template; contains {tenant} for per-tenant/per-agency separation, else single-key
-	MasterKeyB64 string       // dev/transition v1 master key (enables dual-read of legacy v1 blobs)
-	RequireKMS   bool         // production/sovereign: refuse to boot on localCipher (gate 2b)
-	KeyGen       byte         // current provider key generation stamped into new blobs (default 1; bumps on migration)
-	VaultAddr    string       // vault provider: NIRVET_VAULT_ADDR (operator infra)
-	VaultMount   string       // vault provider: transit mount path (default "transit")
-	VaultToken   tokenSource  // vault provider: injected token source (tests); nil → read NIRVET_VAULT_TOKEN from env
-	Log          *slog.Logger // nil → discard
+	Provider      string       // "" (→ local, or gcp when KeyName is set) | "gcp" | "vault" | "pkcs11"
+	KeyName       string       // key template; contains {tenant} for per-tenant/per-agency separation, else single-key
+	MasterKeyB64  string       // dev/transition v1 master key (enables dual-read of legacy v1 blobs)
+	RequireKMS    bool         // production/sovereign: refuse to boot on localCipher (gate 2b)
+	KeyGen        byte         // current provider key generation stamped into new blobs (default 1; bumps on migration)
+	VaultAddr     string       // vault provider: NIRVET_VAULT_ADDR (operator infra)
+	VaultMount    string       // vault provider: transit mount path (default "transit")
+	VaultToken    tokenSource  // vault provider: injected token source (tests); nil → read NIRVET_VAULT_TOKEN from env
+	HSMModulePath string       // pkcs11 provider: module path; empty → NIRVET_HSM_MODULE_PATH
+	HSMSlotID     string       // pkcs11 provider: decimal slot ID; empty → NIRVET_HSM_SLOT_ID
+	HSMTokenLabel string       // pkcs11 provider: token label; empty → NIRVET_HSM_TOKEN_LABEL
+	HSMPIN        string       // pkcs11 provider: injected PIN for tests only; empty → NIRVET_HSM_PIN secret
+	Log           *slog.Logger // nil → discard
 }
 
 // errRequireKMSNoProvider is the fail-closed boot error for require-KMS mode with no provider (gate 2b / test #7).
 var errRequireKMSNoProvider = errors.New(
 	"crypto: NIRVET_CRYPTO_REQUIRE_KMS=true but no KMS provider is configured — refusing to boot on the local " +
-		"master key. Set NIRVET_CRYPTO_PROVIDER (gcp|vault) + the key/vault config. localCipher is UNREACHABLE in " +
-		"require-KMS mode.")
+		"master key. Set NIRVET_CRYPTO_PROVIDER (gcp|vault|pkcs11) + the provider configuration. localCipher is " +
+		"UNREACHABLE in require-KMS mode.")
 
 // New is the backward-compatible positional constructor: it infers the gcp provider when kmsKeyName is set, else the
 // local cipher, with require-KMS off. New code should call NewFromConfig.
@@ -222,7 +226,9 @@ func buildWrapper(provider string, cfg Config) (keyWrapper, providerTag, error) 
 			return nil, 0, err // token not provisioned → fail fast
 		}
 		return newVaultTransit(cfg.VaultAddr, cfg.VaultMount, tok), tagVault, nil
+	case "pkcs11":
+		return buildPKCS11Wrapper(cfg)
 	default:
-		return nil, 0, fmt.Errorf("crypto: unknown KMS provider %q (want gcp|vault)", provider)
+		return nil, 0, fmt.Errorf("crypto: unknown KMS provider %q (want gcp|vault|pkcs11)", provider)
 	}
 }
