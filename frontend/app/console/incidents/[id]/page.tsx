@@ -10,6 +10,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { apiGet, apiPost, apiPut, errorText } from "@/lib/api";
 import { PageHeader, Panel, SevBadge, StatusTag, stageTone, EmptyState, Button } from "@/components/ui";
+import AiProposals from "./AiProposals";
 
 type Incident = {
   id: string;
@@ -396,6 +397,8 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
               )}
             </div>
           </Panel>
+
+          <AiProposals incidentId={id} playbooks={playbooks} onAccepted={load} />
 
           <Panel title="Lifecycle">
             {closed ? (
