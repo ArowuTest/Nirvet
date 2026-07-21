@@ -109,12 +109,14 @@ func (v *vaultTransit) call(ctx context.Context, pathSuffix string, body any, ou
 	}
 	b, _ := json.Marshal(body)
 	url := v.addr + "/v1/" + v.mount + "/" + pathSuffix
+	// #nosec G704 -- operator-config URL, not user input; SSRF-safe (netsafe waiver).
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("X-Vault-Token", tok) // secret; never logged
 	req.Header.Set("Content-Type", "application/json")
+	// #nosec G704 -- operator-config URL, not user input; SSRF-safe (netsafe waiver).
 	resp, err := v.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("crypto: vault request: %w", err)
