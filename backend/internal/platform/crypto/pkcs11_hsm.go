@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultPKCS11PINEnv        = "NIRVET_HSM_PIN"
+	defaultPKCS11PINEnv = "NIRVET_HSM_PIN" // #nosec G101 -- environment variable name, never credential material
 	defaultPKCS11ModuleEnv     = "NIRVET_HSM_MODULE_PATH"
 	defaultPKCS11SlotEnv       = "NIRVET_HSM_SLOT_ID"
 	defaultPKCS11TokenLabelEnv = "NIRVET_HSM_TOKEN_LABEL"
