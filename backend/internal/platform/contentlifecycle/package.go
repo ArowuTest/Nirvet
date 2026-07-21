@@ -12,37 +12,37 @@ import (
 )
 
 var (
-	ErrMalformedEnvelope   = errors.New("content: malformed envelope")
-	ErrUnknownPublisher    = errors.New("content: untrusted publisher")
-	ErrInvalidSignature    = errors.New("content: invalid signature")
-	ErrMalformedManifest   = errors.New("content: malformed manifest")
-	ErrPublisherMismatch   = errors.New("content: publisher mismatch")
-	ErrHashMismatch        = errors.New("content: content hash mismatch")
-	ErrExpired             = errors.New("content: package expired")
-	ErrInvalidVersion      = errors.New("content: invalid version")
-	ErrMalformedContent    = errors.New("content: malformed content")
-	ErrUnsupportedType     = errors.New("content: unsupported content type")
-	ErrSemanticValidation  = errors.New("content: semantic validation failed")
+	ErrMalformedEnvelope  = errors.New("content: malformed envelope")
+	ErrUnknownPublisher   = errors.New("content: untrusted publisher")
+	ErrInvalidSignature   = errors.New("content: invalid signature")
+	ErrMalformedManifest  = errors.New("content: malformed manifest")
+	ErrPublisherMismatch  = errors.New("content: publisher mismatch")
+	ErrHashMismatch       = errors.New("content: content hash mismatch")
+	ErrExpired            = errors.New("content: package expired")
+	ErrInvalidVersion     = errors.New("content: invalid version")
+	ErrMalformedContent   = errors.New("content: malformed content")
+	ErrUnsupportedType    = errors.New("content: unsupported content type")
+	ErrSemanticValidation = errors.New("content: semantic validation failed")
 )
 
 // Envelope contains only routing metadata and opaque signed bytes. The manifest
 // and content are not parsed until the detached Ed25519 signature verifies.
 type Envelope struct {
-	PublisherID string `json:"publisher_id"`
-	ManifestB64 string `json:"manifest_b64"`
-	ContentB64  string `json:"content_b64"`
+	PublisherID  string `json:"publisher_id"`
+	ManifestB64  string `json:"manifest_b64"`
+	ContentB64   string `json:"content_b64"`
 	SignatureB64 string `json:"signature_b64"`
 }
 
 type Manifest struct {
-	PublisherID string    `json:"publisher_id"`
-	ContentType string    `json:"content_type"`
-	Version     int64     `json:"version"`
-	IssuedAt    time.Time `json:"issued_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	ContentSHA256 string  `json:"content_sha256"`
-	Scope       string    `json:"scope"`
-	TenantID    string    `json:"tenant_id,omitempty"`
+	PublisherID   string    `json:"publisher_id"`
+	ContentType   string    `json:"content_type"`
+	Version       int64     `json:"version"`
+	IssuedAt      time.Time `json:"issued_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	ContentSHA256 string    `json:"content_sha256"`
+	Scope         string    `json:"scope"`
+	TenantID      string    `json:"tenant_id,omitempty"`
 }
 
 type Artifact struct {
@@ -152,10 +152,10 @@ func (v Verifier) VerifyAndParse(raw []byte, now time.Time) (*VerifiedPack, erro
 	}
 
 	return &VerifiedPack{
-		Manifest: manifest,
-		Artifacts: append([]Artifact(nil), content.Artifacts...),
+		Manifest:      manifest,
+		Artifacts:     append([]Artifact(nil), content.Artifacts...),
 		ManifestBytes: append([]byte(nil), manifestBytes...),
-		ContentBytes: append([]byte(nil), contentBytes...),
-		Signature: append([]byte(nil), sig...),
+		ContentBytes:  append([]byte(nil), contentBytes...),
+		Signature:     append([]byte(nil), sig...),
 	}, nil
 }
