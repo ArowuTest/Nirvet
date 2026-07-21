@@ -20,6 +20,7 @@ export default function CopilotPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [investigate, setInvestigate] = useState(false);
   const [err, setErr] = useState("");
   const [newTitle, setNewTitle] = useState("");
   const [newRef, setNewRef] = useState("");
@@ -60,7 +61,10 @@ export default function CopilotPage() {
     setTurns((t) => [...t, { id: `pending-${Date.now()}`, role: "user", content: message, created_at: new Date().toISOString() }]);
     setDraft("");
     try {
-      const turn = await apiPost<Turn>(`/ai/copilot/sessions/${activeId}/messages`, { message });
+      // "Investigate" mode (copilot completion incr2): the copilot may run bounded hunts AS the analyst to gather
+      // evidence before answering. Read-only, redaction-fenced — it never executes a response action.
+      const path = investigate ? "agentic-messages" : "messages";
+      const turn = await apiPost<Turn>(`/ai/copilot/sessions/${activeId}/${path}`, { message });
       setTurns((t) => [...t, turn]);
       loadSessions(); // bump ordering
     } catch (e) {
@@ -129,7 +133,13 @@ export default function CopilotPage() {
                   className="flex-1 resize-none rounded-lg px-3 py-2 text-sm"
                   style={inputStyle}
                 />
-                <Button size="sm" disabled={!draft.trim() || sending} onClick={send}>Send</Button>
+                <div className="flex flex-col items-end gap-1.5">
+                  <label className="flex cursor-pointer items-center gap-1.5 text-[11px]" style={{ color: "var(--c-ink-3)" }} title="The copilot runs bounded hunts as you to gather evidence before answering (read-only, redaction-fenced — it never takes an action).">
+                    <input type="checkbox" checked={investigate} onChange={(e) => setInvestigate(e.target.checked)} />
+                    Investigate
+                  </label>
+                  <Button size="sm" disabled={!draft.trim() || sending} onClick={send}>{investigate ? "Investigate" : "Send"}</Button>
+                </div>
               </div>
             </div>
           )}
