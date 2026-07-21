@@ -156,6 +156,11 @@ jobs:
       - name: Guard — provider boundary includes tagged PKCS#11 source
         working-directory: backend
         run: bash scripts/check-kms-provider-boundary.sh
+      - name: Download pinned PKCS#11 module
+        working-directory: backend
+        env:
+          CGO_ENABLED: "1"
+        run: go mod download github.com/miekg/pkcs11@v1.1.1
       - name: Build HSM variant
         working-directory: backend
         env:
