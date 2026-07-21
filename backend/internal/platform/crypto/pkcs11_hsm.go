@@ -16,11 +16,12 @@ import (
 )
 
 const (
-	defaultPKCS11PINEnv = "NIRVET_HSM_PIN" // #nosec G101 -- environment variable name, never credential material
+	defaultPKCS11PINEnv        = "NIRVET_HSM_PIN"
 	defaultPKCS11ModuleEnv     = "NIRVET_HSM_MODULE_PATH"
 	defaultPKCS11SlotEnv       = "NIRVET_HSM_SLOT_ID"
 	defaultPKCS11TokenLabelEnv = "NIRVET_HSM_TOKEN_LABEL"
 	defaultPKCS11ProbeKeyEnv   = "NIRVET_HSM_PROBE_KEY_LABEL"
+	pkcs11IVSize               = 16
 )
 
 type pkcs11Wrapper struct {
@@ -59,18 +60,18 @@ func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
 		return nil, 0, err
 	}
 
-	w := &pkcs11Wrapper{
+	wrapper := &pkcs11Wrapper{
 		ctx:       p,
 		slotID:    slotID,
 		pin:       pin,
-		mechanism: pkcs11.CKM_AES_KEY_WRAP_PAD,
+		mechanism: pkcs11.CKM_AES_CBC_PAD,
 	}
-	if err := w.probeSession(); err != nil {
+	if err := wrapper.withSession(func(pkcs11.SessionHandle) error { return nil }); err != nil {
 		_ = p.Finalize()
 		p.Destroy()
 		return nil, 0, err
 	}
-	return w, tagPKCS11, nil
+	return wrapper, tagPKCS11, nil
 }
 
 func firstNonBlank(values ...string) string {
@@ -120,10 +121,6 @@ func resolvePKCS11Slot(p *pkcs11.Ctx, configured string, tokenLabel string) (uin
 	return slots[0], nil
 }
 
-func (w *pkcs11Wrapper) probeSession() error {
-	return w.withSession(func(pkcs11.SessionHandle) error { return nil })
-}
-
 func (w *pkcs11Wrapper) Wrap(ctx context.Context, keyName string, plaintext, _ []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -134,13 +131,23 @@ func (w *pkcs11Wrapper) Wrap(ctx context.Context, keyName string, plaintext, _ [
 		if err != nil {
 			return err
 		}
-		if err := w.ctx.EncryptInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(w.mechanism, nil)}, key); err != nil {
+		iv, err := w.ctx.GenerateRandom(session, pkcs11IVSize)
+		if err != nil {
+			return fmt.Errorf("crypto: PKCS#11 generate wrap IV: %w", err)
+		}
+		if len(iv) != pkcs11IVSize {
+			return fmt.Errorf("crypto: PKCS#11 generated IV length %d, want %d", len(iv), pkcs11IVSize)
+		}
+		if err := w.ctx.EncryptInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(w.mechanism, iv)}, key); err != nil {
 			return fmt.Errorf("crypto: PKCS#11 wrap init: %w", err)
 		}
-		out, err = w.ctx.Encrypt(session, plaintext)
+		wrapped, err := w.ctx.Encrypt(session, plaintext)
 		if err != nil {
 			return fmt.Errorf("crypto: PKCS#11 wrap: %w", err)
 		}
+		out = make([]byte, 0, len(iv)+len(wrapped))
+		out = append(out, iv...)
+		out = append(out, wrapped...)
 		return nil
 	})
 	return out, err
@@ -150,16 +157,21 @@ func (w *pkcs11Wrapper) Unwrap(ctx context.Context, keyName string, ciphertext, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if len(ciphertext) <= pkcs11IVSize {
+		return nil, errors.New("crypto: PKCS#11 wrapped DEK is too short")
+	}
+	iv := ciphertext[:pkcs11IVSize]
+	wrapped := ciphertext[pkcs11IVSize:]
 	var out []byte
 	err := w.withSession(func(session pkcs11.SessionHandle) error {
 		key, err := w.findKEK(session, keyName)
 		if err != nil {
 			return err
 		}
-		if err := w.ctx.DecryptInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(w.mechanism, nil)}, key); err != nil {
+		if err := w.ctx.DecryptInit(session, []*pkcs11.Mechanism{pkcs11.NewMechanism(w.mechanism, iv)}, key); err != nil {
 			return fmt.Errorf("crypto: PKCS#11 unwrap init: %w", err)
 		}
-		out, err = w.ctx.Decrypt(session, ciphertext)
+		out, err = w.ctx.Decrypt(session, wrapped)
 		if err != nil {
 			return fmt.Errorf("crypto: PKCS#11 unwrap: %w", err)
 		}
