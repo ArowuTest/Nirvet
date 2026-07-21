@@ -145,36 +145,58 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Guard — default build remains cgo-free
         working-directory: backend
-        env:
-          CGO_ENABLED: "0"
+        env: {CGO_ENABLED: "0"}
         run: go build ./...
       - name: Guard — non-HSM PKCS#11 selection fails clearly
         working-directory: backend
-        env:
-          CGO_ENABLED: "0"
+        env: {CGO_ENABLED: "0"}
         run: go test -count=1 ./internal/platform/crypto -run '^TestPKCS11NotCompiledFailsClearly$'
       - name: Guard — provider boundary includes tagged PKCS#11 source
         working-directory: backend
         run: bash scripts/check-kms-provider-boundary.sh
       - name: Download pinned PKCS#11 module
         working-directory: backend
-        env:
-          CGO_ENABLED: "1"
+        env: {CGO_ENABLED: "1"}
         run: go mod download github.com/miekg/pkcs11@v1.1.1
       - name: Build HSM variant
         working-directory: backend
-        env:
-          CGO_ENABLED: "1"
+        env: {CGO_ENABLED: "1"}
         run: go build -tags hsm ./...
       - name: Vet HSM variant
         working-directory: backend
-        env:
-          CGO_ENABLED: "1"
+        env: {CGO_ENABLED: "1"}
         run: go vet -tags hsm ./...
-      - name: Run real-token HSM falsification suite
+      - name: Test HSM 1+5 — round-trip and tenant isolation
         working-directory: backend
-        env:
-          CGO_ENABLED: "1"
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_RoundTripAndPerTenantIsolation$'
+      - name: Test HSM 2 — KEK cannot be exported
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_KEKCannotBeExported$'
+      - name: Test HSM 3 — wrong PIN fails closed
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_WrongPINFailsClosedAtBoot$'
+      - name: Test HSM 4 — provider confusion refused
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_ProviderConfusionRefused$'
+      - name: Test HSM 6 — dual-read migration
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_DualReadMigrationDoesNotOrphanVault$'
+      - name: Test HSM 7 — require-KMS selects HSM
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_RequireKMSSelectsHSM$'
+      - name: Test HSM 8 — DEK zeroize preserved
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestEnvelope_DEKZeroized$'
+      - name: Run complete tagged crypto suite
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
         run: go test -v -tags hsm -count=1 ./internal/platform/crypto
 
   frontend:
