@@ -21,9 +21,33 @@ throughout, so a failure mid-rotation orphans nothing. A procedure that re-encry
 - Cross-provider/gen confusion is refused loudly (`TestEnvelope_ProviderConfusionRefused`) — a blob is never
   mis-unwrapped by the wrong key.
 
+## PKCS#11 HSM key ceremony and tenant onboarding
+The HSM provider does not create or import production keys. An authorised two-person ceremony provisions them before
+a tenant is activated. The ceremony record must capture the tenant UUID, resolved label, CKA_ID fingerprint, HSM
+cluster/slot, key generation, custodians, approval reference and successful onboarding probe — never the key value or
+PIN.
+
+For every tenant UUID, resolve `NIRVET_KMS_KEY_NAME` by replacing `{tenant}`. Create one AES-256 token object with:
+
+- `CKA_LABEL` = the fully resolved tenant key name;
+- `CKA_ID` = the first 16 bytes of SHA-256 over that exact resolved key name;
+- `CKA_TOKEN=true`, `CKA_PRIVATE=true`, `CKA_KEY_TYPE=CKK_AES`;
+- `CKA_SENSITIVE=true` and **`CKA_EXTRACTABLE=false`**;
+- `CKA_ENCRYPT=true` and `CKA_DECRYPT=true` for on-token `CKM_AES_KEY_WRAP_PAD` operations.
+
+Also provision a separate non-tenant probe KEK named by `NIRVET_HSM_PROBE_KEY_LABEL` with the same security
+attributes. It is used only for the mandatory startup wrap/unwrap probe. The application reads neither `CKA_VALUE`
+nor any export representation. A key with the wrong sensitivity/extractability or operation attributes is rejected
+at runtime by `findKEK`/`validateKEK`; tenant onboarding must not proceed until a real envelope encrypt/decrypt probe
+passes under the tenant's resolved key.
+
+The PIN is supplied through the deployment secret as `NIRVET_HSM_PIN`; it is never entered in the database, command
+history, ticket, ceremony record or logs. Module path, slot ID/token label and probe label are operator configuration,
+not customer-supplied input.
+
 ## Procedure (dry-run / operator)
 1. **Stand up the new key** (new Vault transit key version / new HSM key / new generation) alongside the current one.
-   Do NOT retire the old key yet.
+   For HSM, follow the ceremony above and preserve the per-tenant label/ID mapping. Do NOT retire the old key yet.
 2. **Configure the transition**: the writer = new provider/gen; keep the old provider/gen as a legacy READER. New
    writes are wrapped by the new key; all existing ciphertext keeps decrypting via the old reader.
 3. **Re-wrap forward, lazily/gradually**: on each read-then-write (or a bounded background sweep), re-encrypt under
