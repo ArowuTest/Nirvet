@@ -53,6 +53,30 @@ func (h *Handler) CreateProposal(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, prop)
 }
 
+// DraftProposal handles POST /ai/incidents/{id}/draft-proposal — the analyst asks the AI to AUTHOR a response
+// recommendation for the incident (copilot completion incr 1). On success it returns the created pending proposal
+// (201) — which still requires a human soc_manager+ to accept before anything runs. When the AI declines (thin
+// evidence, AI-off, or an off-catalog suggestion) it returns 200 with {declined:true, reason} — an honest non-answer,
+// never a fabricated recommendation.
+func (h *Handler) DraftProposal(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	incidentID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	prop, declined, err := h.svc.DraftProposal(r.Context(), p, incidentID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if prop == nil {
+		httpx.JSON(w, http.StatusOK, map[string]any{"declined": true, "reason": declined})
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, prop)
+}
+
 // ListProposals handles GET /ai/proposals?incident_ref=... — an incident's proposals, newest first.
 func (h *Handler) ListProposals(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFrom(r.Context())

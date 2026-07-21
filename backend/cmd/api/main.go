@@ -772,6 +772,7 @@ func main() {
 	// EXISTING soar run pipeline. Propose/list/reject are analyst-usable DATA ops (aiProvider). ACCEPT — which creates
 	// a run — is gated at the destructive-approval floor (soarApprover: platform_admin/soc_manager) and re-checked
 	// in-service; it lives in internal/airesponse (outside internal/ai) so the AI package never imports soar.
+	mux.Handle("POST /ai/incidents/{id}/draft-proposal", aiProvider(aiH.DraftProposal)) // copilot incr1: AI authors the proposal
 	mux.Handle("POST /ai/proposals", aiProvider(aiH.CreateProposal))
 	mux.Handle("GET /ai/proposals", aiProvider(aiH.ListProposals))
 	mux.Handle("POST /ai/proposals/{id}/reject", aiProvider(aiH.RejectProposal))
