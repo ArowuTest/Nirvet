@@ -149,8 +149,8 @@ func New(kmsKeyName, masterKeyB64 string, log *slog.Logger) (SecretCipher, error
 //   - require-KMS with no provider → fail closed (localCipher unreachable, gate 2b).
 //   - no provider → local cipher (dev/pilot single master key).
 //   - a provider → build its keyWrapper (fail-fast if the token/creds source is unprovisioned; NO local fallback,
-//     M1), run the single-key boot probe (per-tenant mode skips it — verified at onboarding), then either the pure
-//     envelope cipher or, with a master key, the dual-read transitionCipher (writes v2, still reads legacy v1).
+//     M1), run a real wrap/unwrap boot probe where a deterministic probe key exists, then either the pure envelope
+//     cipher or, with a master key, the dual-read transitionCipher (writes v2, still reads legacy v1).
 //
 // Every ciphertext is stamped with the provider tag + key generation, so a later provider switch is a safe
 // transitionCipher dual-read (gate 2c) rather than a big-bang swap that orphans a vault.
@@ -179,18 +179,27 @@ func NewFromConfig(cfg Config) (SecretCipher, error) {
 	}
 	env := newEnvelopeCipher(wrapper, cfg.KeyName, tag, keyGen)
 
-	// Boot probe: single-key mode proves key name, creds/IAM, and BOTH verbs before serving (an encrypt-without-
-	// decrypt misconfig would otherwise write unreadable vault entries). Per-tenant mode has one key per agency and
-	// cannot probe them all at boot — skipped with a log line; verified at onboarding. PKCS#11 performs its own real
-	// token wrap/unwrap probe during wrapper construction using a separately provisioned probe KEK.
-	if tag != tagPKCS11 && !strings.Contains(cfg.KeyName, tenantPlaceholder) {
+	// A PKCS#11 deployment always supplies a separately provisioned probe KEK. That gives per-tenant HSM mode a
+	// real on-token wrap+unwrap check at boot without guessing a tenant ID. Other providers retain the existing
+	// single-key probe; per-tenant GCP/Vault keys are verified during tenant onboarding.
+	probeKey := cfg.KeyName
+	shouldProbe := !strings.Contains(cfg.KeyName, tenantPlaceholder)
+	if tag == tagPKCS11 {
+		probeKey = strings.TrimSpace(cfg.HSMProbeKeyName)
+		if probeKey == "" {
+			return nil, errors.New("crypto: pkcs11 provider requires NIRVET_HSM_PROBE_KEY_LABEL for a real wrap/unwrap boot probe")
+		}
+		shouldProbe = true
+	}
+	if shouldProbe {
 		pctx, pcancel := context.WithTimeout(context.Background(), kmsOpTimeout)
 		defer pcancel()
-		if err := env.bootProbe(pctx); err != nil {
+		probeEnv := newEnvelopeCipher(wrapper, probeKey, tag, keyGen)
+		if err := probeEnv.bootProbe(pctx); err != nil {
 			return nil, err
 		}
-		cfg.Log.Info("crypto: KMS single-key boot probe OK (wrap+unwrap verified)", "provider", tag.String())
-	} else if tag != tagPKCS11 {
+		cfg.Log.Info("crypto: KMS boot probe OK (wrap+unwrap verified)", "provider", tag.String())
+	} else {
 		cfg.Log.Info("crypto: KMS per-tenant key template — boot probe skipped (per-agency; verified at onboarding)", "provider", tag.String())
 	}
 
