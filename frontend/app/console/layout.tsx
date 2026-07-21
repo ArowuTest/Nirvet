@@ -71,6 +71,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Threat Intel", href: "/console/threat-intel", icon: "shield", ready: true, roles: PROVIDER },
       { label: "Compliance", href: "/console/compliance", icon: "shield", ready: true, roles: PROVIDER },
       { label: "Reports", href: "/console/reports", icon: "file-text", ready: true, roles: PROVIDER },
+      { label: "Report approvals", href: "/console/reports/approvals", icon: "shield", ready: true, roles: MANAGER },
     ],
   },
   {
