@@ -93,6 +93,7 @@ type Service struct {
 	assets        Assets
 	soarReader    SOARReader          // S2b: read-only SOAR run-history reader (injected; no soar import — fence-safe)
 	actionCatalog ActionCatalogReader // S2b i3: proposed-action ∈ catalog validator (injected; no soar import — fence-safe)
+	huntRunner    HuntRunner          // i2 agentic: read-only bounded-hunt tool, runs AS the analyst (injected; no query import — fence-safe)
 	db            *database.DB
 }
 

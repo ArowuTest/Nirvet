@@ -89,3 +89,28 @@ func (h *Handler) PostCopilotMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusCreated, turn)
 }
+
+// PostCopilotAgenticMessage handles POST /ai/copilot/sessions/{id}/agentic-messages — the READ-agency turn (copilot
+// completion incr2). The copilot may run up to a hard cap of bounded hunts AS the analyst to gather evidence, then
+// answers. Same session/ownership + persistence + redaction chokepoint as the plain message; adds a bounded tool loop.
+func (h *Handler) PostCopilotAgenticMessage(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid session id"))
+		return
+	}
+	var in struct {
+		Message string `json:"message"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	turn, err := h.svc.AgenticAsk(r.Context(), p, id, in.Message)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, turn)
+}

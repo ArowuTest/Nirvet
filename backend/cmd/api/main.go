@@ -423,6 +423,7 @@ func main() {
 	// #188 multi-lane case timeline: merge the forensic event lane with the incident journal (analyst/automation/
 	// comms/evidence) via a narrow adapter, keeping investigation decoupled from incident.
 	invSvc := investigation.NewService(invRepo).WithCaseJournal(caseJournalAdapter{inc: incidentSvc}).WithRawStore(blobs) // #188 raw-event fetch
+	aiSvc.WithHuntRunner(agenticHuntRunner{svc: invSvc})                                                                  // copilot incr2: read-only agentic hunt tool, runs AS the analyst via RunHunt
 	investigationH := investigation.NewHandler(
 		invSvc,
 		investigation.NewEntityService(egSvc, invRepo),
@@ -768,6 +769,7 @@ func main() {
 	mux.Handle("GET /ai/copilot/sessions", aiProvider(aiH.ListCopilotSessions))
 	mux.Handle("GET /ai/copilot/sessions/{id}", aiProvider(aiH.GetCopilotSession))
 	mux.Handle("POST /ai/copilot/sessions/{id}/messages", aiProvider(aiH.PostCopilotMessage))
+	mux.Handle("POST /ai/copilot/sessions/{id}/agentic-messages", aiProvider(aiH.PostCopilotAgenticMessage)) // incr2: copilot runs bounded hunts AS the analyst
 	// §6.12 S2b i3 AI response-proposals: the copilot PROPOSES a response (data); a HUMAN promotes it into the
 	// EXISTING soar run pipeline. Propose/list/reject are analyst-usable DATA ops (aiProvider). ACCEPT — which creates
 	// a run — is gated at the destructive-approval floor (soarApprover: platform_admin/soc_manager) and re-checked
@@ -1323,6 +1325,56 @@ func (r actionCatalogReader) ValidActionKeys(ctx context.Context, tenantID uuid.
 		}
 	}
 	return keys, nil
+}
+
+// agenticHuntRunner adapts investigation.Service to ai.HuntRunner (copilot incr2 — agentic investigation). The
+// copilot's read-agency loop requests a STRUCTURED hunt; this maps it to the verified investigation.HuntQuery and runs
+// it via RunHunt WITH THE CONVERSING ANALYST'S PRINCIPAL — so RunHunt re-validates it for that analyst's
+// field-visibility, cost ceiling, tenant, and read-audits it (gate 2a: the tool runs AS the user, never a service
+// identity). It lives OUTSIDE internal/ai (which imports no query package): the AI passes a bounded structured request
+// and gets redactable fact strings back, never an investigation type or a raw query. An off-registry field / over-cost
+// request is rejected by RunHunt's Validate+compiler (gate 2b) and surfaced as an error the loop reports, not widens.
+type agenticHuntRunner struct{ svc *investigation.Service }
+
+func (r agenticHuntRunner) RunHuntForAgent(ctx context.Context, p auth.Principal, req ai.AgentHuntRequest) ([]ai.HuntFact, int, error) {
+	hours := req.LookbackHrs
+	if hours <= 0 {
+		hours = 24
+	}
+	if hours > 24*30 {
+		hours = 24 * 30 // 30-day ceiling (defense-in-depth; the cost ceiling also bounds it)
+	}
+	to := time.Now()
+	q := investigation.HuntQuery{
+		All:   toInvPredicates(req.All),
+		Any:   toInvPredicates(req.Any),
+		From:  to.Add(-time.Duration(hours) * time.Hour),
+		To:    to,
+		Limit: req.Limit,
+	}
+	res, err := r.svc.RunHunt(ctx, p, q) // AS the analyst — re-validated for field-visibility, masked, cost-bounded, read-audited
+	if err != nil {
+		return nil, 0, err
+	}
+	facts := make([]ai.HuntFact, 0, len(res.Rows))
+	for i, row := range res.Rows {
+		facts = append(facts, ai.HuntFact{
+			ID: fmt.Sprintf("row%d", i+1),
+			Fact: fmt.Sprintf("event class=%s activity=%s severity=%s actor=%s target=%s source=%s",
+				row.Class, row.Activity, row.Severity, row.ActorRef, row.TargetRef, row.Source),
+		})
+	}
+	return facts, res.Count, nil
+}
+
+// toInvPredicates maps the AI-local structured predicates to investigation.Predicate — a plain field/op/value copy; the
+// investigation compiler (allow-list → bound-params) is the actual injection gate, not this mapping.
+func toInvPredicates(in []ai.AgentPredicate) []investigation.Predicate {
+	out := make([]investigation.Predicate, 0, len(in))
+	for _, p := range in {
+		out = append(out, investigation.Predicate{Field: p.Field, Op: p.Op, Value: p.Value})
+	}
+	return out
 }
 
 // breachIncidentAdapter adapts incident.Service to reporting.BreachIncidentReader for the #188 regulatory breach

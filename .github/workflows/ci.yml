@@ -82,6 +82,9 @@ jobs:
       - name: Guard — the AI copilot never executes a response action (proposes only; human promotes to SOAR)
         working-directory: backend
         run: bash scripts/check-ai-no-direct-execution.sh
+      - name: Guard — the AI copilot's agentic tool set is a closed read-only allowlist (read agency, never execute)
+        working-directory: backend
+        run: bash scripts/check-ai-tool-registry.sh
       - name: Guard — retention has ONE window producer feeding the delete (floor/ceiling/arm/legal-hold single-path)
         working-directory: backend
         run: bash scripts/check-retention-window-single-path.sh
