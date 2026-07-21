@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -222,13 +221,9 @@ func TestPKCS11_RequireKMSSelectsHSM(t *testing.T) {
 	}
 }
 
-// #8 is shared machinery: envelopeCipher still owns and zeroizes the DEK. This assertion
-// ensures the HSM provider remains a keyWrapper only; the mutation-sensitive zeroize test
-// itself is TestEnvelope_DEKZeroized in provider_test.go and runs in this same tagged job.
-func TestPKCS11_ProviderSurfaceRemainsWrapOnly(t *testing.T) {
+// #8 is shared machinery: envelopeCipher still owns and zeroizes the DEK. The
+// mutation-sensitive TestEnvelope_DEKZeroized runs in this same tagged CI job.
+func TestPKCS11_ProviderImplementsKeyWrapperOnly(t *testing.T) {
 	_, wrapper, _, _ := preparedHSM(t)
 	var _ keyWrapper = wrapper
-	if errors.Is(errPKCS11NotCompiled, nil) {
-		t.Fatal("unreachable compile-fence sanity check")
-	}
 }
