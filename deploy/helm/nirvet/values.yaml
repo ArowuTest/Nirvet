@@ -41,6 +41,32 @@ worker:
     requests: { cpu: "50m", memory: "128Mi" }
     limits:   { cpu: "500m", memory: "512Mi" }
 
+# Self-hosted / local LLM (GATE_SELF_HOSTED_LLM.md). OFF by default — unset ⇒ NO LLM egress at all, which is
+# fail-safe: no LLM = AI-off, and the SOC still works (deterministic fallbacks). Turning the copilot ON against a
+# local model is done in the app (per-tenant provider allowlist + tenant_ai_policy); this block only opens the
+# NARROW network path to reach it. Choose exactly ONE shape:
+#   (a) In-cluster inference server (SOVEREIGN-PREFERRED — no external egress): set enabled=true to deploy the
+#       reference ollama/vLLM Deployment+Service; the app reaches it in-cluster on modelPort, reachable app-only
+#       (never Ingress-exposed). Point the tenant's provider base_url at http://<release>-llm:<modelPort>/v1.
+#   (b) An EXISTING internal GPU box OUTSIDE the cluster: leave enabled=false and set egress.cidr + egress.port to
+#       add ONE narrow egress rule to exactly that host/port. NEVER 0.0.0.0/0 — the fence rejects a wide CIDR.
+ai:
+  selfHostedLLM:
+    # (a) in-cluster inference server:
+    enabled: false            # deploy the reference LLM Deployment+Service (default OFF)
+    image: ""                 # operator-pinned GPU image by DIGEST (e.g. ollama/ollama@sha256:...); floating tags rejected
+    modelPort: 11434          # LLM Service port (ollama default 11434; vLLM 8000)
+    gpu:
+      enabled: false          # request nvidia.com/gpu; sizing guidance in the runbook
+      count: 1
+    resources:
+      requests: { cpu: "1", memory: "4Gi" }
+      limits:   { cpu: "4", memory: "16Gi" }
+    # (b) narrow egress to an EXISTING external/internal LLM host (used only when enabled=false):
+    egress:
+      cidr: ""                # a SPECIFIC host, /32 preferred; the fence rejects 0.0.0.0/0 and masks wider than /24
+      port: 0                 # a SINGLE port (e.g. 11434); the fence rejects an unset/0 port
+
 # Network segmentation. default-deny is always on; the allowed egress peers are the self-hostable deps.
 networkPolicy:
   enabled: true

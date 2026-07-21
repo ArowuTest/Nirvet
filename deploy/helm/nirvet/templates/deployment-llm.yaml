@@ -1,0 +1,66 @@
+{{- if .Values.ai.selfHostedLLM.enabled }}
+{{- if not .Values.ai.selfHostedLLM.image }}{{ fail "ai.selfHostedLLM.enabled=true but ai.selfHostedLLM.image is unset — pin a GPU inference image by DIGEST (e.g. ollama/ollama@sha256:...)" }}{{- end }}
+{{- if not (regexMatch "@sha256:" .Values.ai.selfHostedLLM.image) }}{{ fail "ai.selfHostedLLM.image must be digest-pinned (@sha256:...), never a floating tag" }}{{- end }}
+# In-cluster inference server (GATE_SELF_HOSTED_LLM.md 1b) — the sovereign-preferred shape: the model runs INSIDE the
+# cluster, so no external egress is opened; the app reaches it pod-to-pod (see the -llm-* NetworkPolicies). Default
+# OFF. The model sees every prompt+context — it is reachable app-only (never Ingress), enforced by the NetworkPolicy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nirvet.fullname" . }}-llm
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "nirvet.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: llm
+  template:
+    metadata:
+      labels: {{- include "nirvet.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: llm
+    spec:
+      automountServiceAccountToken: false
+      # Default hardened posture — same floor as the app. GPU inference images that CANNOT run non-root/read-only are
+      # a DOCUMENTED operator exception (override securityContext via -f), never a silent privileged run — see
+      # build/runbooks/SELF_HOSTED_LLM.md. The chart default stays hardened so the deploy-security fence holds.
+      securityContext: {{- include "nirvet.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: llm
+          image: {{ .Values.ai.selfHostedLLM.image | quote }}
+          securityContext: {{- include "nirvet.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: model
+              containerPort: {{ .Values.ai.selfHostedLLM.modelPort }}
+          resources:
+            requests: {{- toYaml .Values.ai.selfHostedLLM.resources.requests | nindent 14 }}
+            limits:
+              {{- toYaml .Values.ai.selfHostedLLM.resources.limits | nindent 14 }}
+              {{- if .Values.ai.selfHostedLLM.gpu.enabled }}
+              nvidia.com/gpu: {{ .Values.ai.selfHostedLLM.gpu.count }}
+              {{- end }}
+          # Writable model cache so readOnlyRootFilesystem can stay TRUE (the model dir is the only writable path).
+          # emptyDir = ephemeral (re-pull on restart); swap for a PVC for a persistent model cache (runbook).
+          volumeMounts:
+            - { name: model-cache, mountPath: /models }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: model-cache, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+# App-only ClusterIP Service — NOT wired to any Ingress (the -llm-ingress NetworkPolicy also enforces app-only).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nirvet.fullname" . }}-llm
+  labels: {{- include "nirvet.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+spec:
+  type: ClusterIP
+  ports:
+    - name: model
+      port: {{ .Values.ai.selfHostedLLM.modelPort }}
+      targetPort: model
+  selector: {{- include "nirvet.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+{{- end }}

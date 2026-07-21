@@ -63,6 +63,33 @@ if [ -n "$metr" ]; then echo "❌ /metrics routed via ingress (must be monitorin
 # 8. The air-gap bundle is integrity-checksummed.
 grep -q 'SHA256SUMS' "$ROOT/deploy/airgap/make-bundle.sh" 2>/dev/null || { echo "❌ air-gap bundle tooling lacks SHA256SUMS integrity"; fail=1; }
 
+# 9. Self-hosted LLM egress (GATE_SELF_HOSTED_LLM.md §2) must be NARROW — a specific host/CIDR + a single port, never
+# a wide/all-ports allow that re-opens the default-deny egress. The ONLY scalar `cidr:` key in values is
+# ai.selfHostedLLM.egress.cidr (networkPolicy.dependencyCIDRs is a list), so a bare `cidr:` line is that value.
+for vf in "$CHART/values.yaml" "$CHART/values-sovereign.yaml"; do
+  [ -f "$vf" ] || continue
+  llm_cidr="$(grep -E '^[[:space:]]*cidr:' "$vf" | head -1 | sed -E "s/.*cidr:[[:space:]]*//; s/[\"']//g; s/[[:space:]]*(#.*)?$//" || true)"
+  [ -n "$llm_cidr" ] || continue
+  mask="${llm_cidr##*/}"
+  if [ "$llm_cidr" = "0.0.0.0/0" ] || ! printf '%s' "$llm_cidr" | grep -qE '^[0-9.]+/[0-9]+$' || { [ "$mask" -lt 24 ] 2>/dev/null; }; then
+    echo "❌ $vf: ai.selfHostedLLM.egress.cidr '$llm_cidr' is too wide — must be a specific host/CIDR (mask >= /24), never 0.0.0.0/0"; fail=1
+  fi
+  llm_port="$(grep -E '^[[:space:]]*port:' "$vf" | head -1 | sed -E "s/.*port:[[:space:]]*//; s/[\"']//g; s/[[:space:]]*(#.*)?$//" || true)"
+  if [ -z "$llm_port" ] || [ "$llm_port" = "0" ]; then
+    echo "❌ $vf: ai.selfHostedLLM.egress.cidr is set but egress.port is unset/0 — the LLM egress needs a single specific port"; fail=1
+  fi
+done
+# The NetworkPolicy template must keep the render-time reject of a 0.0.0.0/0 LLM egress (belt-and-suspenders vs. a -f override).
+grep -q '0.0.0.0/0' "$CHART/templates/networkpolicy.yaml" 2>/dev/null || { echo "❌ networkpolicy.yaml lost the 0.0.0.0/0 LLM-egress reject guard"; fail=1; }
+
+# 10. The in-cluster self-hosted LLM must default OFF and NEVER be Ingress-exposed (the model sees every prompt — an
+# Ingress/broadly-reachable LLM is a data-exfil surface).
+grep -A3 'selfHostedLLM:' "$CHART/values.yaml" 2>/dev/null | grep -qE 'enabled:[[:space:]]*false' \
+  || { echo "❌ ai.selfHostedLLM.enabled must default to false"; fail=1; }
+llm_ing="$(grep -rlE 'kind:[[:space:]]*Ingress' "$CHART/templates/" 2>/dev/null | xargs grep -l 'component: llm' 2>/dev/null || true)"
+if [ -n "$llm_ing" ]; then echo "❌ self-hosted LLM referenced by an Ingress (must be app-only, never Ingress-exposed):"; echo "$llm_ing"; fail=1; fi
+
 if [ "$fail" -ne 0 ]; then exit 1; fi
 echo "✓ deploy-security: chart hardened (nonroot/readonly/drop-all/no-privesc), default-deny NetworkPolicy,"
-echo "  digest-pinned image, no secret literals, /metrics monitoring-only, air-gap bundle checksummed"
+echo "  digest-pinned image, no secret literals, /metrics monitoring-only, air-gap bundle checksummed,"
+echo "  self-hosted LLM egress narrow (specific host/CIDR+port, no 0.0.0.0/0) + LLM app-only (not Ingress-exposed)"

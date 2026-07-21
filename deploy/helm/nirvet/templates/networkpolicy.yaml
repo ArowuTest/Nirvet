@@ -78,4 +78,74 @@ spec:
   # NON-air-gap profiles MAY reach the public internet (e.g. cloud KMS, hosted LLM). The air-gap profile omits this
   # block entirely, so egress is confined to the data plane above.
   {{- end }}
+{{- /* Self-hosted LLM egress (GATE_SELF_HOSTED_LLM.md 1a) — a NARROW, explicit allow, ADDED to the app/worker
+       egress ONLY when the operator configures an EXISTING external LLM host. Default-deny is preserved: unset ⇒
+       this block renders nothing ⇒ no LLM egress. In-cluster LLM (1b) uses the pod-to-pod rules below instead and
+       needs no external egress at all. */ -}}
+{{- with .Values.ai }}{{- if and .selfHostedLLM (not .selfHostedLLM.enabled) .selfHostedLLM.egress.cidr }}
+{{- if eq (.selfHostedLLM.egress.cidr | toString) "0.0.0.0/0" }}{{ fail "ai.selfHostedLLM.egress.cidr must be a specific host/CIDR, never 0.0.0.0/0 — that would re-open the default-deny egress" }}{{- end }}
+{{- if not .selfHostedLLM.egress.port }}{{ fail "ai.selfHostedLLM.egress.cidr is set but egress.port is unset — the LLM egress must be a single specific port" }}{{- end }}
+---
+# Self-hosted LLM egress: exactly the operator's LLM host on the model port, from app/worker only. One rule, one
+# host, one port — the model sees every prompt, so this is the tightest possible allow, and never 0.0.0.0/0.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" $ }}-llm-egress
+  labels: {{- include "nirvet.labels" $ | nindent 4 }}
+spec:
+  podSelector: {{- include "nirvet.selectorLabels" $ | nindent 4 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: {{ .selfHostedLLM.egress.cidr | quote }} }
+      ports:
+        - { protocol: TCP, port: {{ .selfHostedLLM.egress.port }} }
+{{- end }}{{- end }}
+{{- /* In-cluster LLM segmentation (1b) — the LLM Service is reachable ONLY from app/worker pods, NEVER Ingress and
+       NEVER other namespaces. The model sees every prompt+context, so a broadly-reachable LLM is a data-exfil
+       surface. Egress stays inside the cluster (no external egress opened). */ -}}
+{{- with .Values.ai }}{{- if and .selfHostedLLM .selfHostedLLM.enabled }}
+---
+# App/worker MAY reach the in-cluster LLM pod on the model port (pod-to-pod, stays inside the cluster).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" $ }}-llm-app-egress
+  labels: {{- include "nirvet.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: In, values: [api, worker] }
+    matchLabels: {{- include "nirvet.selectorLabels" $ | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {{- include "nirvet.selectorLabels" $ | nindent 14 }}
+              app.kubernetes.io/component: llm
+      ports:
+        - { protocol: TCP, port: {{ .selfHostedLLM.modelPort }} }
+---
+# The LLM pod accepts traffic ONLY from app/worker pods of THIS release, on the model port. No Ingress, no other
+# namespace (same-namespace podSelector, no namespaceSelector) — the model is not an exposed surface.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nirvet.fullname" $ }}-llm-ingress
+  labels: {{- include "nirvet.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "nirvet.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: llm
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/component, operator: In, values: [api, worker] }
+            matchLabels: {{- include "nirvet.selectorLabels" $ | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .selfHostedLLM.modelPort }} }
+{{- end }}{{- end }}
 {{- end }}
