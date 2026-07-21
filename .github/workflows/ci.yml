@@ -106,6 +106,61 @@ jobs:
           NIRVET_OWNER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nirvet?sslmode=disable
         run: go test -race -count=1 ./...
 
+  hsm:
+    name: HSM (SoftHSM2, cgo, blocking falsification suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Install SoftHSM2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y softhsm2 libsofthsm2
+      - name: Initialise real PKCS#11 token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token_dir="$RUNNER_TEMP/softhsm-tokens"
+          mkdir -p "$token_dir"
+          cat > "$RUNNER_TEMP/softhsm2.conf" <<EOF
+          directories.tokendir = $token_dir
+          objectstore.backend = file
+          log.level = ERROR
+          slots.removable = false
+          EOF
+          module_path="$(dpkg -L libsofthsm2 | grep '/libsofthsm2\.so$' | head -n1)"
+          test -n "$module_path"
+          SOFTHSM2_CONF="$RUNNER_TEMP/softhsm2.conf" softhsm2-util \
+            --init-token --free --label nirvet-ci --so-pin 12345678 --pin 123456
+          {
+            echo "SOFTHSM2_CONF=$RUNNER_TEMP/softhsm2.conf"
+            echo "NIRVET_HSM_MODULE_PATH=$module_path"
+            echo "NIRVET_HSM_TOKEN_LABEL=nirvet-ci"
+            echo "NIRVET_HSM_PIN=123456"
+            echo "NIRVET_HSM_PROBE_KEY_LABEL=nirvet-hsm-probe"
+          } >> "$GITHUB_ENV"
+      - name: Guard — default build remains cgo-free and PKCS#11 compiles out clearly
+        working-directory: backend
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build ./...
+          go test -count=1 ./internal/platform/crypto -run 'TestPKCS11NotCompiled' || true
+      - name: Guard — provider boundary includes tagged PKCS#11 source
+        working-directory: backend
+        run: bash scripts/check-kms-provider-boundary.sh
+      - name: Build, vet and run real-token HSM suite
+        working-directory: backend
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go build -tags hsm ./...
+          go vet -tags hsm ./...
+          go test -tags hsm -count=1 ./internal/platform/crypto
+
   frontend:
     name: Frontend (build + typecheck)
     runs-on: ubuntu-latest
