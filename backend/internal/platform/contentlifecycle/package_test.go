@@ -2,7 +2,6 @@ package contentlifecycle
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,9 +49,9 @@ func verifier(t *testing.T) Verifier {
 	}
 }
 
-func validFixture(t *testing.T) []byte {
+func fixture(t *testing.T, name string) []byte {
 	t.Helper()
-	b, err := os.ReadFile("testdata/valid-pack.json")
+	b, err := os.ReadFile("testdata/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +59,7 @@ func validFixture(t *testing.T) []byte {
 }
 
 func TestVerifyThenParse_ValidSignedPack(t *testing.T) {
-	pack, err := verifier(t).VerifyAndParse(validFixture(t), time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC))
+	pack, err := verifier(t).VerifyAndParse(fixture(t, "valid-pack.json"), time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("verify valid fixture: %v", err)
 	}
@@ -69,50 +68,44 @@ func TestVerifyThenParse_ValidSignedPack(t *testing.T) {
 	}
 }
 
-func TestVerifyThenParse_TamperedContentRejectedBeforeParse(t *testing.T) {
-	var env Envelope
-	if err := json.Unmarshal(validFixture(t), &env); err != nil {
-		t.Fatal(err)
+func TestVerifyThenParse_CommittedNegativeFixtures(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		want error
+	}{
+		{"tampered-pack.json", ErrInvalidSignature},
+		{"unsigned-pack.json", ErrMalformedEnvelope},
+		{"untrusted-publisher-pack.json", ErrUnknownPublisher},
+		{"expired-pack.json", ErrExpired},
+		{"malformed-pack.json", ErrMalformedContent},
+		{"unsafe-rule-pack.json", ErrSemanticValidation},
 	}
-	content, err := base64.StdEncoding.DecodeString(env.ContentB64)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pack, err := verifier(t).VerifyAndParse(fixture(t, tc.name), now)
+			if pack != nil {
+				t.Fatalf("partial pack returned for %s", tc.name)
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestVerifyThenParse_DowngradeAndCrossTenantFixturesAreSignedAndTraceable(t *testing.T) {
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	downgrade, err := verifier(t).VerifyAndParse(fixture(t, "downgrade-pack.json"), now)
+	if err != nil || downgrade.Manifest.Version != 1 {
+		t.Fatalf("downgrade fixture not independently verifiable: pack=%+v err=%v", downgrade, err)
+	}
+	crossTenant, err := verifier(t).VerifyAndParse(fixture(t, "cross-tenant-pack.json"), now)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("cross-tenant fixture not independently verifiable: %v", err)
 	}
-	content[len(content)-2] ^= 1
-	env.ContentB64 = base64.StdEncoding.EncodeToString(content)
-	raw, _ := json.Marshal(env)
-	_, err = verifier(t).VerifyAndParse(raw, time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC))
-	if !errors.Is(err, ErrInvalidSignature) {
-		t.Fatalf("want invalid signature, got %v", err)
-	}
-}
-
-func TestVerifyThenParse_UnsignedRejected(t *testing.T) {
-	var env Envelope
-	_ = json.Unmarshal(validFixture(t), &env)
-	env.SignatureB64 = ""
-	raw, _ := json.Marshal(env)
-	_, err := verifier(t).VerifyAndParse(raw, time.Now())
-	if !errors.Is(err, ErrMalformedEnvelope) {
-		t.Fatalf("want malformed envelope, got %v", err)
-	}
-}
-
-func TestVerifyThenParse_UntrustedPublisherRejected(t *testing.T) {
-	var env Envelope
-	_ = json.Unmarshal(validFixture(t), &env)
-	env.PublisherID = "unknown"
-	raw, _ := json.Marshal(env)
-	_, err := verifier(t).VerifyAndParse(raw, time.Now())
-	if !errors.Is(err, ErrUnknownPublisher) {
-		t.Fatalf("want unknown publisher, got %v", err)
-	}
-}
-
-func TestVerifyThenParse_ExpiredRejected(t *testing.T) {
-	_, err := verifier(t).VerifyAndParse(validFixture(t), time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC))
-	if !errors.Is(err, ErrExpired) {
-		t.Fatalf("want expired, got %v", err)
+	if crossTenant.Manifest.Scope != "tenant" || crossTenant.Manifest.TenantID != "tenant-a" {
+		t.Fatalf("unexpected tenant provenance: %+v", crossTenant.Manifest)
 	}
 }
 
@@ -121,7 +114,7 @@ func TestVerifyThenParse_AtomicSemanticFailure(t *testing.T) {
 	v.Validators["detection_rules"] = ArtifactValidatorFunc(func(_ Manifest, _ Artifact) error {
 		return errors.New("manual-authoring validator refused rule")
 	})
-	pack, err := v.VerifyAndParse(validFixture(t), time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC))
+	pack, err := v.VerifyAndParse(fixture(t, "valid-pack.json"), time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC))
 	if pack != nil {
 		t.Fatal("partial pack returned on semantic failure")
 	}
