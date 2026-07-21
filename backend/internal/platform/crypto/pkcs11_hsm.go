@@ -59,12 +59,18 @@ func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
 		return nil, 0, err
 	}
 
-	return &pkcs11Wrapper{
+	w := &pkcs11Wrapper{
 		ctx:       p,
 		slotID:    slotID,
 		pin:       pin,
 		mechanism: pkcs11.CKM_AES_KEY_WRAP_PAD,
-	}, tagPKCS11, nil
+	}
+	if err := w.probeSession(); err != nil {
+		_ = p.Finalize()
+		p.Destroy()
+		return nil, 0, err
+	}
+	return w, tagPKCS11, nil
 }
 
 func firstNonBlank(values ...string) string {
@@ -112,6 +118,10 @@ func resolvePKCS11Slot(p *pkcs11.Ctx, configured string, tokenLabel string) (uin
 		return 0, errors.New("crypto: multiple PKCS#11 token slots found; set NIRVET_HSM_SLOT_ID or NIRVET_HSM_TOKEN_LABEL")
 	}
 	return slots[0], nil
+}
+
+func (w *pkcs11Wrapper) probeSession() error {
+	return w.withSession(func(pkcs11.SessionHandle) error { return nil })
 }
 
 func (w *pkcs11Wrapper) Wrap(ctx context.Context, keyName string, plaintext, _ []byte) ([]byte, error) {
