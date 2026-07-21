@@ -3,7 +3,9 @@
 package crypto
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -15,27 +17,36 @@ import (
 	"github.com/miekg/pkcs11"
 )
 
-const defaultPKCS11PINEnv = "NIRVET_HSM_PIN"
+const (
+	defaultPKCS11PINEnv        = "NIRVET_HSM_PIN"
+	defaultPKCS11ModuleEnv     = "NIRVET_HSM_MODULE_PATH"
+	defaultPKCS11SlotEnv       = "NIRVET_HSM_SLOT_ID"
+	defaultPKCS11TokenLabelEnv = "NIRVET_HSM_TOKEN_LABEL"
+	defaultPKCS11ProbeKeyEnv   = "NIRVET_HSM_PROBE_KEY_LABEL"
+)
 
 type pkcs11Wrapper struct {
-	ctx        *pkcs11.Ctx
-	slotID     uint
-	pin        string
-	mechanism  uint
-	mu         sync.Mutex
+	ctx       *pkcs11.Ctx
+	slotID    uint
+	pin       string
+	mechanism uint
+	mu        sync.Mutex
 }
 
 func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
-	modulePath := strings.TrimSpace(cfg.HSMModulePath)
+	modulePath := firstNonBlank(cfg.HSMModulePath, os.Getenv(defaultPKCS11ModuleEnv))
 	if modulePath == "" {
 		return nil, 0, errors.New("crypto: pkcs11 provider requires NIRVET_HSM_MODULE_PATH")
 	}
-	pin := cfg.HSMPIN
-	if pin == "" {
-		pin = os.Getenv(defaultPKCS11PINEnv)
-	}
+	pin := firstNonBlank(cfg.HSMPIN, os.Getenv(defaultPKCS11PINEnv))
 	if pin == "" {
 		return nil, 0, errors.New("crypto: pkcs11 provider requires NIRVET_HSM_PIN from a secret source")
+	}
+	slot := firstNonBlank(cfg.HSMSlotID, os.Getenv(defaultPKCS11SlotEnv))
+	tokenLabel := firstNonBlank(cfg.HSMTokenLabel, os.Getenv(defaultPKCS11TokenLabelEnv))
+	probeKey := firstNonBlank(cfg.HSMProbeKeyName, os.Getenv(defaultPKCS11ProbeKeyEnv))
+	if probeKey == "" {
+		return nil, 0, errors.New("crypto: pkcs11 provider requires NIRVET_HSM_PROBE_KEY_LABEL for a real wrap/unwrap boot probe")
 	}
 
 	p := pkcs11.New(modulePath)
@@ -47,7 +58,7 @@ func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
 		return nil, 0, fmt.Errorf("crypto: initialize PKCS#11 module: %w", err)
 	}
 
-	slotID, err := resolvePKCS11Slot(p, cfg.HSMSlotID, cfg.HSMTokenLabel)
+	slotID, err := resolvePKCS11Slot(p, slot, tokenLabel)
 	if err != nil {
 		_ = p.Finalize()
 		p.Destroy()
@@ -60,12 +71,21 @@ func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
 		pin:       pin,
 		mechanism: pkcs11.CKM_AES_KEY_WRAP_PAD,
 	}
-	if err := w.probeSession(); err != nil {
+	if err := w.probeRoundTrip(probeKey); err != nil {
 		_ = p.Finalize()
 		p.Destroy()
 		return nil, 0, err
 	}
 	return w, tagPKCS11, nil
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func resolvePKCS11Slot(p *pkcs11.Ctx, configured string, tokenLabel string) (uint, error) {
@@ -106,8 +126,25 @@ func resolvePKCS11Slot(p *pkcs11.Ctx, configured string, tokenLabel string) (uin
 	return slots[0], nil
 }
 
-func (w *pkcs11Wrapper) probeSession() error {
-	return w.withSession(func(pkcs11.SessionHandle) error { return nil })
+func (w *pkcs11Wrapper) probeRoundTrip(keyName string) error {
+	probe := make([]byte, 32)
+	if _, err := rand.Read(probe); err != nil {
+		return fmt.Errorf("crypto: PKCS#11 boot probe random: %w", err)
+	}
+	defer zero(probe)
+	wrapped, err := w.Wrap(context.Background(), keyName, probe, nil)
+	if err != nil {
+		return fmt.Errorf("crypto: PKCS#11 boot probe wrap failed (fail-closed): %w", err)
+	}
+	got, err := w.Unwrap(context.Background(), keyName, wrapped, nil)
+	if err != nil {
+		return fmt.Errorf("crypto: PKCS#11 boot probe unwrap failed (fail-closed): %w", err)
+	}
+	defer zero(got)
+	if !bytes.Equal(got, probe) {
+		return errors.New("crypto: PKCS#11 boot probe round-trip mismatch (fail-closed)")
+	}
+	return nil
 }
 
 func (w *pkcs11Wrapper) Wrap(ctx context.Context, keyName string, plaintext, _ []byte) ([]byte, error) {
@@ -162,17 +199,14 @@ func (w *pkcs11Wrapper) withSession(fn func(pkcs11.SessionHandle) error) error {
 	if err != nil {
 		return fmt.Errorf("crypto: open PKCS#11 session: %w", err)
 	}
-	defer w.ctx.CloseSession(session)
+	defer func() { _ = w.ctx.CloseSession(session) }()
 
 	if err := w.ctx.Login(session, pkcs11.CKU_USER, w.pin); err != nil && err != pkcs11.Error(pkcs11.CKR_USER_ALREADY_LOGGED_IN) {
 		return fmt.Errorf("crypto: PKCS#11 login failed: %w", err)
 	}
 	defer func() { _ = w.ctx.Logout(session) }()
 
-	if err := fn(session); err != nil {
-		return err
-	}
-	return nil
+	return fn(session)
 }
 
 func (w *pkcs11Wrapper) findKEK(session pkcs11.SessionHandle, keyName string) (pkcs11.ObjectHandle, error) {
@@ -182,8 +216,6 @@ func (w *pkcs11Wrapper) findKEK(session pkcs11.SessionHandle, keyName string) (p
 		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_AES),
 		pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyName),
 		pkcs11.NewAttribute(pkcs11.CKA_ID, id[:16]),
-		pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
-		pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
 	}
 	if err := w.ctx.FindObjectsInit(session, template); err != nil {
 		return 0, fmt.Errorf("crypto: PKCS#11 key search init: %w", err)
@@ -197,10 +229,35 @@ func (w *pkcs11Wrapper) findKEK(session pkcs11.SessionHandle, keyName string) (p
 		return 0, fmt.Errorf("crypto: PKCS#11 key search final: %w", finalErr)
 	}
 	if len(objects) == 0 {
-		return 0, fmt.Errorf("crypto: PKCS#11 KEK %q not found (keys must be provisioned as sensitive and non-extractable)", keyName)
+		return 0, fmt.Errorf("crypto: PKCS#11 KEK %q not found", keyName)
 	}
 	if len(objects) != 1 || more {
 		return 0, fmt.Errorf("crypto: PKCS#11 KEK %q is ambiguous", keyName)
 	}
+	if err := w.validateKEK(session, objects[0], keyName); err != nil {
+		return 0, err
+	}
 	return objects[0], nil
+}
+
+func (w *pkcs11Wrapper) validateKEK(session pkcs11.SessionHandle, key pkcs11.ObjectHandle, keyName string) error {
+	attrs, err := w.ctx.GetAttributeValue(session, key, []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, nil),
+		pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, nil),
+		pkcs11.NewAttribute(pkcs11.CKA_ENCRYPT, nil),
+		pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, nil),
+	})
+	if err != nil {
+		return fmt.Errorf("crypto: read PKCS#11 KEK security attributes for %q: %w", keyName, err)
+	}
+	if len(attrs) != 4 || len(attrs[0].Value) == 0 || attrs[0].Value[0] == 0 {
+		return fmt.Errorf("crypto: PKCS#11 KEK %q must have CKA_SENSITIVE=true", keyName)
+	}
+	if len(attrs[1].Value) == 0 || attrs[1].Value[0] != 0 {
+		return fmt.Errorf("crypto: PKCS#11 KEK %q must have CKA_EXTRACTABLE=false", keyName)
+	}
+	if len(attrs[2].Value) == 0 || attrs[2].Value[0] == 0 || len(attrs[3].Value) == 0 || attrs[3].Value[0] == 0 {
+		return fmt.Errorf("crypto: PKCS#11 KEK %q must permit token-side wrap and unwrap operations", keyName)
+	}
+	return nil
 }
