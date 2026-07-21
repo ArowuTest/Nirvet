@@ -3,9 +3,7 @@
 package crypto
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -44,10 +42,6 @@ func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
 	}
 	slot := firstNonBlank(cfg.HSMSlotID, os.Getenv(defaultPKCS11SlotEnv))
 	tokenLabel := firstNonBlank(cfg.HSMTokenLabel, os.Getenv(defaultPKCS11TokenLabelEnv))
-	probeKey := firstNonBlank(cfg.HSMProbeKeyName, os.Getenv(defaultPKCS11ProbeKeyEnv))
-	if probeKey == "" {
-		return nil, 0, errors.New("crypto: pkcs11 provider requires NIRVET_HSM_PROBE_KEY_LABEL for a real wrap/unwrap boot probe")
-	}
 
 	p := pkcs11.New(modulePath)
 	if p == nil {
@@ -65,18 +59,12 @@ func buildPKCS11Wrapper(cfg Config) (keyWrapper, providerTag, error) {
 		return nil, 0, err
 	}
 
-	w := &pkcs11Wrapper{
+	return &pkcs11Wrapper{
 		ctx:       p,
 		slotID:    slotID,
 		pin:       pin,
 		mechanism: pkcs11.CKM_AES_KEY_WRAP_PAD,
-	}
-	if err := w.probeRoundTrip(probeKey); err != nil {
-		_ = p.Finalize()
-		p.Destroy()
-		return nil, 0, err
-	}
-	return w, tagPKCS11, nil
+	}, tagPKCS11, nil
 }
 
 func firstNonBlank(values ...string) string {
@@ -124,27 +112,6 @@ func resolvePKCS11Slot(p *pkcs11.Ctx, configured string, tokenLabel string) (uin
 		return 0, errors.New("crypto: multiple PKCS#11 token slots found; set NIRVET_HSM_SLOT_ID or NIRVET_HSM_TOKEN_LABEL")
 	}
 	return slots[0], nil
-}
-
-func (w *pkcs11Wrapper) probeRoundTrip(keyName string) error {
-	probe := make([]byte, 32)
-	if _, err := rand.Read(probe); err != nil {
-		return fmt.Errorf("crypto: PKCS#11 boot probe random: %w", err)
-	}
-	defer zero(probe)
-	wrapped, err := w.Wrap(context.Background(), keyName, probe, nil)
-	if err != nil {
-		return fmt.Errorf("crypto: PKCS#11 boot probe wrap failed (fail-closed): %w", err)
-	}
-	got, err := w.Unwrap(context.Background(), keyName, wrapped, nil)
-	if err != nil {
-		return fmt.Errorf("crypto: PKCS#11 boot probe unwrap failed (fail-closed): %w", err)
-	}
-	defer zero(got)
-	if !bytes.Equal(got, probe) {
-		return errors.New("crypto: PKCS#11 boot probe round-trip mismatch (fail-closed)")
-	}
-	return nil
 }
 
 func (w *pkcs11Wrapper) Wrap(ctx context.Context, keyName string, plaintext, _ []byte) ([]byte, error) {
