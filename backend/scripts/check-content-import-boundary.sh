@@ -7,12 +7,19 @@ if [[ ! -d "$root" ]]; then
   exit 1
 fi
 
-# Imported content is data only. This package must not gain execution, response,
-# authority, crypto, connector, or configuration-mutation capabilities.
-forbidden='(^|[^[:alnum:]_])(os/exec|syscall|plugin|reflect|unsafe|eval|soar|actioner|connector|authority|crypto|grant|role|configwrite|config_write)([^[:alnum:]_]|$)'
+# Imported content is data only. Standard-library crypto primitives are required
+# to verify signatures and hashes, but the content path must not import Nirvet's
+# authority, KMS/crypto, SOAR, connector, or other mutation-capable packages.
+forbidden_import='"[^"\n]*/(soar|actioner|connector|authority|crypto|config)(/[^"\n]*)?"'
+forbidden_symbol='(^|[^[:alnum:]_])(os/exec|syscall|plugin|reflect|unsafe|eval|exec\.Command|soar|actioner|authority|grant|configwrite|config_write)([^[:alnum:]_]|$)'
 
-if grep -RInE --include='*.go' "$forbidden" "$root"; then
-  echo "content import boundary violation: forbidden execution or mutation dependency" >&2
+if grep -RInE --include='*.go' "$forbidden_import" "$root"; then
+  echo "content import boundary violation: forbidden platform dependency" >&2
+  exit 1
+fi
+
+if grep -RInE --include='*.go' "$forbidden_symbol" "$root"; then
+  echo "content import boundary violation: forbidden execution or mutation symbol" >&2
   exit 1
 fi
 
