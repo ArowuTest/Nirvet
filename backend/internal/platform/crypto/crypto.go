@@ -156,7 +156,10 @@ func NewFromConfig(cfg Config) (SecretCipher, error) {
 	probeKey := cfg.KeyName
 	shouldProbe := !strings.Contains(cfg.KeyName, tenantPlaceholder)
 	if tag == tagPKCS11 {
-		probeKey = firstNonBlank(cfg.HSMProbeKeyName, os.Getenv(defaultPKCS11ProbeKeyEnv))
+		probeKey = strings.TrimSpace(cfg.HSMProbeKeyName)
+		if probeKey == "" {
+			probeKey = strings.TrimSpace(os.Getenv("NIRVET_HSM_PROBE_KEY_LABEL"))
+		}
 		if probeKey == "" {
 			return nil, errors.New("crypto: pkcs11 provider requires NIRVET_HSM_PROBE_KEY_LABEL for a real wrap/unwrap boot probe")
 		}
