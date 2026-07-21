@@ -117,19 +117,20 @@ func (c *localCipher) Decrypt(tenantID uuid.UUID, ciphertext []byte) ([]byte, er
 // Config selects and configures the cipher backend (KMS provider abstraction). It supersedes the positional New()
 // (kept below as a thin backward-compatible wrapper).
 type Config struct {
-	Provider      string       // "" (→ local, or gcp when KeyName is set) | "gcp" | "vault" | "pkcs11"
-	KeyName       string       // key template; contains {tenant} for per-tenant/per-agency separation, else single-key
-	MasterKeyB64  string       // dev/transition v1 master key (enables dual-read of legacy v1 blobs)
-	RequireKMS    bool         // production/sovereign: refuse to boot on localCipher (gate 2b)
-	KeyGen        byte         // current provider key generation stamped into new blobs (default 1; bumps on migration)
-	VaultAddr     string       // vault provider: NIRVET_VAULT_ADDR (operator infra)
-	VaultMount    string       // vault provider: transit mount path (default "transit")
-	VaultToken    tokenSource  // vault provider: injected token source (tests); nil → read NIRVET_VAULT_TOKEN from env
-	HSMModulePath string       // pkcs11 provider: module path; empty → NIRVET_HSM_MODULE_PATH
-	HSMSlotID     string       // pkcs11 provider: decimal slot ID; empty → NIRVET_HSM_SLOT_ID
-	HSMTokenLabel string       // pkcs11 provider: token label; empty → NIRVET_HSM_TOKEN_LABEL
-	HSMPIN        string       // pkcs11 provider: injected PIN for tests only; empty → NIRVET_HSM_PIN secret
-	Log           *slog.Logger // nil → discard
+	Provider        string       // "" (→ local, or gcp when KeyName is set) | "gcp" | "vault" | "pkcs11"
+	KeyName         string       // key template; contains {tenant} for per-tenant/per-agency separation, else single-key
+	MasterKeyB64    string       // dev/transition v1 master key (enables dual-read of legacy v1 blobs)
+	RequireKMS      bool         // production/sovereign: refuse to boot on localCipher (gate 2b)
+	KeyGen          byte         // current provider key generation stamped into new blobs (default 1; bumps on migration)
+	VaultAddr       string       // vault provider: NIRVET_VAULT_ADDR (operator infra)
+	VaultMount      string       // vault provider: transit mount path (default "transit")
+	VaultToken      tokenSource  // vault provider: injected token source (tests); nil → read NIRVET_VAULT_TOKEN from env
+	HSMModulePath   string       // pkcs11 provider: module path; empty → NIRVET_HSM_MODULE_PATH
+	HSMSlotID       string       // pkcs11 provider: decimal slot ID; empty → NIRVET_HSM_SLOT_ID
+	HSMTokenLabel   string       // pkcs11 provider: token label; empty → NIRVET_HSM_TOKEN_LABEL
+	HSMProbeKeyName string       // pkcs11 provider: pre-provisioned boot-probe KEK label; empty → NIRVET_HSM_PROBE_KEY_LABEL
+	HSMPIN          string       // pkcs11 provider: injected PIN for tests only; empty → NIRVET_HSM_PIN secret
+	Log             *slog.Logger // nil → discard
 }
 
 // errRequireKMSNoProvider is the fail-closed boot error for require-KMS mode with no provider (gate 2b / test #7).
@@ -180,15 +181,16 @@ func NewFromConfig(cfg Config) (SecretCipher, error) {
 
 	// Boot probe: single-key mode proves key name, creds/IAM, and BOTH verbs before serving (an encrypt-without-
 	// decrypt misconfig would otherwise write unreadable vault entries). Per-tenant mode has one key per agency and
-	// cannot probe them all at boot — skipped with a log line; verified at onboarding.
-	if !strings.Contains(cfg.KeyName, tenantPlaceholder) {
+	// cannot probe them all at boot — skipped with a log line; verified at onboarding. PKCS#11 performs its own real
+	// token wrap/unwrap probe during wrapper construction using a separately provisioned probe KEK.
+	if tag != tagPKCS11 && !strings.Contains(cfg.KeyName, tenantPlaceholder) {
 		pctx, pcancel := context.WithTimeout(context.Background(), kmsOpTimeout)
 		defer pcancel()
 		if err := env.bootProbe(pctx); err != nil {
 			return nil, err
 		}
 		cfg.Log.Info("crypto: KMS single-key boot probe OK (wrap+unwrap verified)", "provider", tag.String())
-	} else {
+	} else if tag != tagPKCS11 {
 		cfg.Log.Info("crypto: KMS per-tenant key template — boot probe skipped (per-agency; verified at onboarding)", "provider", tag.String())
 	}
 
