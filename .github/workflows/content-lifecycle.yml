@@ -13,9 +13,29 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      - name: Guard — content lifecycle formatting
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l internal/platform/contentlifecycle)
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
       - name: Guard — content import remains data-only
         working-directory: backend
         run: bash scripts/check-content-import-boundary.sh
-      - name: Signed package falsification suite
+      - name: Mutation proof — execution dependency turns fence RED
+        working-directory: backend
+        run: |
+          trap 'rm -f internal/platform/contentlifecycle/fence_mutation.go' EXIT
+          cat > internal/platform/contentlifecycle/fence_mutation.go <<'EOF'
+          package contentlifecycle
+          import "os/exec"
+          var _ = exec.Command
+          EOF
+          if bash scripts/check-content-import-boundary.sh; then
+            echo "boundary fence failed open under mutation"
+            exit 1
+          fi
+          rm -f internal/platform/contentlifecycle/fence_mutation.go
+          bash scripts/check-content-import-boundary.sh
+      - name: Signed package and lifecycle falsification suite
         working-directory: backend
         run: go test -v -count=1 ./internal/platform/contentlifecycle
