@@ -1,0 +1,21 @@
+name: Gosec debug
+
+on:
+  pull_request:
+
+jobs:
+  gosec-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Concise gosec findings
+        working-directory: backend
+        shell: bash
+        run: |
+          set -o pipefail
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1 >/dev/null 2>&1
+          gosec -quiet -exclude-generated -exclude=G115 -severity high -confidence medium ./... 2>&1 | tail -n 80

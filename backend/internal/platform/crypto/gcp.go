@@ -76,12 +76,14 @@ func (g *gcpKMS) call(ctx context.Context, pathAndVerb string, body any, out any
 		return err
 	}
 	b, _ := json.Marshal(body)
+	// #nosec G704 -- operator-config URL, not user input; SSRF-safe (netsafe waiver).
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint+"/"+pathAndVerb, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
+	// #nosec G704 -- operator-config URL, not user input; SSRF-safe (netsafe waiver).
 	resp, err := g.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("crypto: KMS request: %w", err)

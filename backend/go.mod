@@ -16,6 +16,7 @@ require (
 	github.com/google/cel-go v0.29.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/miekg/pkcs11 v1.1.1
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/nats-io/nats.go v1.52.0
 	github.com/prometheus/client_golang v1.23.2

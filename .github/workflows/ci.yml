@@ -102,12 +102,105 @@ jobs:
       - name: Test (unit + integration, race detector)
         working-directory: backend
         env:
-          # App connects as the non-owner RLS role created by the migration.
           NIRVET_TEST_DATABASE_URL: postgres://nirvet_app:nirvet_app@localhost:5432/nirvet?sslmode=disable
-          # Owner/superuser DSN — only the AssertRLSConstrainedRole refuse-path test uses it (proves an
-          # RLS-bypassing role is rejected). The runtime app never connects with this.
           NIRVET_OWNER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nirvet?sslmode=disable
         run: go test -race -count=1 ./...
+
+  hsm:
+    name: HSM (SoftHSM2, cgo, blocking falsification suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Install SoftHSM2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y softhsm2 libsofthsm2
+      - name: Initialise real PKCS#11 token
+        shell: bash
+        run: |
+          set -euo pipefail
+          token_dir="$RUNNER_TEMP/softhsm-tokens"
+          mkdir -p "$token_dir"
+          cat > "$RUNNER_TEMP/softhsm2.conf" <<EOF
+          directories.tokendir = $token_dir
+          objectstore.backend = file
+          log.level = ERROR
+          slots.removable = false
+          EOF
+          module_path="$(dpkg -L libsofthsm2 | grep '/libsofthsm2\.so$' | head -n1)"
+          test -n "$module_path"
+          user_pin="$(openssl rand -hex 12)"
+          so_pin="$(openssl rand -hex 16)"
+          echo "::add-mask::$user_pin"
+          echo "::add-mask::$so_pin"
+          SOFTHSM2_CONF="$RUNNER_TEMP/softhsm2.conf" softhsm2-util \
+            --init-token --free --label nirvet-ci --so-pin "$so_pin" --pin "$user_pin"
+          {
+            echo "SOFTHSM2_CONF=$RUNNER_TEMP/softhsm2.conf"
+            echo "NIRVET_HSM_MODULE_PATH=$module_path"
+            echo "NIRVET_HSM_TOKEN_LABEL=nirvet-ci"
+            echo "NIRVET_HSM_PIN=$user_pin"
+            echo "NIRVET_HSM_PROBE_KEY_LABEL=nirvet-hsm-probe"
+          } >> "$GITHUB_ENV"
+      - name: Guard — default build remains cgo-free
+        working-directory: backend
+        env: {CGO_ENABLED: "0"}
+        run: go build ./...
+      - name: Guard — non-HSM PKCS#11 selection fails clearly
+        working-directory: backend
+        env: {CGO_ENABLED: "0"}
+        run: go test -count=1 ./internal/platform/crypto -run '^TestPKCS11NotCompiledFailsClearly$'
+      - name: Guard — provider boundary includes tagged PKCS#11 source
+        working-directory: backend
+        run: bash scripts/check-kms-provider-boundary.sh
+      - name: Download pinned PKCS#11 module
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go mod download github.com/miekg/pkcs11@v1.1.1
+      - name: Build HSM variant
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go build -tags hsm ./...
+      - name: Vet HSM variant
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go vet -tags hsm ./...
+      - name: Test HSM 1+5 — round-trip and tenant isolation
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_RoundTripAndPerTenantIsolation$'
+      - name: Test HSM 2 — KEK cannot be exported
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_KEKCannotBeExported$'
+      - name: Test HSM 3 — wrong PIN fails closed
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_WrongPINFailsClosedAtBoot$'
+      - name: Test HSM 4 — provider confusion refused
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_ProviderConfusionRefused$'
+      - name: Test HSM 6 — dual-read migration
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_DualReadMigrationDoesNotOrphanVault$'
+      - name: Test HSM 7 — require-KMS selects HSM
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestPKCS11_RequireKMSSelectsHSM$'
+      - name: Test HSM 8 — DEK zeroize preserved
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto -run '^TestEnvelope_DEKZeroized$'
+      - name: Run complete tagged crypto suite
+        working-directory: backend
+        env: {CGO_ENABLED: "1"}
+        run: go test -v -tags hsm -count=1 ./internal/platform/crypto
 
   frontend:
     name: Frontend (build + typecheck)
@@ -135,6 +228,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   security-scan:
     name: Security scan (gosec + govulncheck)
@@ -145,23 +240,13 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      # Known-vulnerable dependencies / stdlib (R2 low). Versions are PINNED (not @latest)
-      # so a scanner release cannot silently change results or break a build between runs;
-      # bump these tags deliberately (R3 CI-pin). Both pinned to Go-1.25-compatible releases
-      # (older govulncheck/gosec pulled x/tools@v0.23, which fails to compile on Go 1.25 with
-      # "invalid array length" — Jul 2026 bump).
       - name: govulncheck
         working-directory: backend
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
-      # Static security analysis; high-severity findings fail the build (lower-severity
-      # style nits are reported but don't gate, to avoid drowning the signal).
       - name: gosec
         working-directory: backend
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
-          # G115 (integer-overflow conversions) is excluded: gosec flags every int→intN cast, but ours are
-          # bounded (TOTP counters, array/param lengths, protocol fields) — it is the canonically-noisy rule
-          # and produces only false positives here. All other high-severity rules still gate the build.
           gosec -exclude-generated -exclude=G115 -severity high -confidence medium ./...
