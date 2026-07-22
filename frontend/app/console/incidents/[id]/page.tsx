@@ -6,9 +6,9 @@
 // CASE-009 closure form (POST /close, senior-gated). The stage buttons mirror the backend transition map
 // (transitions.go) exactly, so we only offer legal next stages; closing is its own criteria-gated flow.
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { apiGet, apiPost, apiPut, errorText } from "@/lib/api";
+import { apiGet, apiPost, apiPut, apiUpload, errorText } from "@/lib/api";
 import { PageHeader, Panel, SevBadge, StatusTag, stageTone, EmptyState, Button } from "@/components/ui";
 import AiProposals from "./AiProposals";
 
@@ -34,6 +34,7 @@ type Incident = {
 type TimelineEntry = { id: string; at: string; author: string; kind: string; visibility: string; note: string };
 type Task = { id: string; title: string; status: string; created_at: string };
 type Attachment = { id: string; filename: string; content_type: string; size_bytes: number; sha256: string; uploaded_at: string };
+type KBArticle = { id: string; title: string; category?: string; url?: string; tags: string[] };
 // SOAR response (§6.11): playbook library + runs launched against this case. Mirrors the shapes on the
 // Playbooks screen so the two views agree; the run/approve/reject contracts live in soar/handler.go.
 type Playbook = { id: string; name: string; description: string; trigger_category: string; steps: unknown[] | null; enabled: boolean };
@@ -83,6 +84,10 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [kbLinked, setKbLinked] = useState<KBArticle[]>([]);
+  const [kbAll, setKbAll] = useState<KBArticle[]>([]);
+  const [kbPick, setKbPick] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
   const [linked, setLinked] = useState<{ id: string; title: string; severity: string; status: string }[]>([]);
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -108,6 +113,10 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       setTasks(t.tasks ?? []);
       const at = await apiGet<{ attachments: Attachment[] | null }>(`/incidents/${id}/attachments`).catch(() => ({ attachments: [] }));
       setAttachments(at.attachments ?? []);
+      const kl = await apiGet<{ articles: KBArticle[] | null }>(`/incidents/${id}/kb-links`).catch(() => ({ articles: [] }));
+      setKbLinked(kl.articles ?? []);
+      const ka = await apiGet<{ articles: KBArticle[] | null }>(`/knowledge-base`).catch(() => ({ articles: [] }));
+      setKbAll(ka.articles ?? []);
       const la = await apiGet<{ alerts: { id: string; title: string; severity: string; status: string }[] | null }>(`/incidents/${id}/alerts`).catch(() => ({ alerts: [] }));
       setLinked(la.alerts ?? []);
       // SOAR response context (§6.11): the enabled playbook library + any runs already launched against this case.
@@ -194,6 +203,31 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  // Attachment upload — the endpoint takes the raw file BYTES as the body, filename in the query string, and the
+  // file's MIME type as Content-Type (handler reads io.LimitReader(r.Body) + ?filename=). apiUpload does exactly that
+  // (carrying the session cookie + CSRF like any write). The server computes size + sha256 and returns the record.
+  async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setMsg(null);
+    setBusy(true);
+    try {
+      await apiUpload(`/incidents/${id}/attachments?filename=${encodeURIComponent(file.name)}`, file, file.type || "application/octet-stream");
+      setMsg({ tone: "ok", text: `Attached ${file.name}.` });
+      await load();
+    } catch (err) {
+      setMsg({ tone: "danger", text: errorText(err, "Attaching evidence requires an analyst role.", "Upload failed — the file may exceed the size limit.") });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function linkArticle() {
+    if (!kbPick) return;
+    await act(() => apiPost(`/incidents/${id}/kb-links`, { article_id: kbPick }).then(() => setKbPick("")), "Knowledge-base article linked.");
+  }
+
   function fmtBytes(n: number) {
     return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   }
@@ -232,7 +266,11 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
       <div className="grid gap-6" style={{ gridTemplateColumns: "1.6fr 1fr" }}>
         {/* Left: timeline + notes */}
         <div className="space-y-6">
-          <Panel title="Investigation timeline" sub="Notes, status changes and actions on this case">
+          <Panel
+            title="Investigation timeline"
+            sub="Notes, status changes and actions on this case"
+            actions={<Link href={`/console/case-timeline?incident=${id}`} className="text-[12px]" style={{ color: "var(--c-primary)" }}>Multi-lane case timeline →</Link>}
+          >
             {timeline.length === 0 ? (
               <EmptyState title="No activity yet" hint="Notes and stage changes will appear here." />
             ) : (
@@ -524,10 +562,16 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
           <Panel
             title="Evidence"
             sub="Chain-of-custody artifacts (CASE-008)"
-            actions={<Button size="sm" variant="ghost" disabled={busy} onClick={downloadPack}>Export pack</Button>}
+            actions={
+              <div className="flex items-center gap-2">
+                <input ref={fileRef} type="file" className="hidden" onChange={onUpload} />
+                {!closed && <Button size="sm" variant="ghost" disabled={busy} onClick={() => fileRef.current?.click()}>Attach file</Button>}
+                <Button size="sm" variant="ghost" disabled={busy} onClick={downloadPack}>Export pack</Button>
+              </div>
+            }
           >
             {attachments.length === 0 ? (
-              <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>No evidence files attached. The signed evidence pack bundles the case record, timeline and custody chain.</p>
+              <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>No evidence files attached. Use <strong>Attach file</strong> to add an artifact — its size and SHA-256 are recorded for custody. The signed pack bundles the case record, timeline and custody chain.</p>
             ) : (
               <ul className="space-y-2">
                 {attachments.map((a) => (
@@ -541,6 +585,46 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
                 ))}
               </ul>
             )}
+          </Panel>
+
+          {/* Knowledge (CASE-010) — link runbooks/reference articles from the KB library to this case, so the next
+              analyst finds the playbook that solved it. List linked + link another via a picker of unlinked articles. */}
+          <Panel title="Knowledge base" sub="Runbooks and references linked to this case">
+            {kbLinked.length === 0 ? (
+              <p className="text-[12px]" style={{ color: "var(--c-ink-3)" }}>No linked articles yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {kbLinked.map((a) => (
+                  <li key={a.id} className="rounded-lg p-2.5" style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm" style={{ color: "var(--c-ink)" }}>{a.title}</span>
+                      {a.category && <span className="shrink-0 text-[10px] uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>{a.category}</span>}
+                    </div>
+                    {a.url && <a href={a.url} target="_blank" rel="noopener noreferrer" className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--c-primary)" }}>{a.url}</a>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {!closed && (
+              <div className="mt-3 flex gap-2">
+                <select
+                  value={kbPick}
+                  onChange={(e) => setKbPick(e.target.value)}
+                  disabled={busy}
+                  className="flex-1 rounded-lg px-3 py-1.5 text-sm"
+                  style={{ background: "var(--c-surface-2)", border: "1px solid var(--c-border)", color: "var(--c-ink)" }}
+                >
+                  <option value="">Link an article…</option>
+                  {kbAll.filter((a) => !kbLinked.some((l) => l.id === a.id)).map((a) => (
+                    <option key={a.id} value={a.id}>{a.title}</option>
+                  ))}
+                </select>
+                <Button size="sm" variant="ghost" disabled={busy || !kbPick} onClick={linkArticle}>Link</Button>
+              </div>
+            )}
+            <div className="mt-2 text-[11px]">
+              <Link href="/console/knowledge-base" style={{ color: "var(--c-primary)" }}>Browse the knowledge base →</Link>
+            </div>
           </Panel>
         </div>
       </div>
