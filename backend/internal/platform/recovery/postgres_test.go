@@ -20,6 +20,19 @@ func TestTenantNullabilityComesFromRestoredSchema(t *testing.T) {
 	}
 }
 
+func TestPreTenantRLSExceptionsAreExplicit(t *testing.T) {
+	for _, table := range []string{"ingest_jobs", "syslog_sources", "tenant_offboarding"} {
+		if !isPreTenantRLSException(table) {
+			t.Fatalf("expected %s to be an intentional pre-tenant exception", table)
+		}
+	}
+	for _, table := range []string{"events", "incidents", "content_packages", "new_unknown_table"} {
+		if isPreTenantRLSException(table) {
+			t.Fatalf("unexpected pre-tenant exception for %s", table)
+		}
+	}
+}
+
 func TestTenantTableSecurityFailuresAreLoadBearing(t *testing.T) {
 	cases := []struct {
 		name  string
