@@ -3,6 +3,7 @@ package recovery
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -62,8 +63,12 @@ func LoadCertification(path string) (Certification, error) {
 	if err := decoder.Decode(&certification); err != nil {
 		return Certification{}, fmt.Errorf("%w: decode certification: %v", ErrUncertifiedRestore, err)
 	}
-	if decoder.More() {
-		return Certification{}, fmt.Errorf("%w: multiple certification documents", ErrUncertifiedRestore)
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Certification{}, fmt.Errorf("%w: multiple certification documents", ErrUncertifiedRestore)
+		}
+		return Certification{}, fmt.Errorf("%w: trailing certification data: %v", ErrUncertifiedRestore, err)
 	}
 	return certification, nil
 }
