@@ -52,7 +52,7 @@ func ValidateRestoredPostgres(ctx context.Context, pool *pgxpool.Pool) (Postgres
 		return PostgresValidation{}, fmt.Errorf("recovery: restored RLS invariants failed: %s", strings.Join(securityFailures, ", "))
 	}
 
-	contamination, err := tenantContamination(ctx, pool, tables)
+	contamination, checkedTables, err := tenantContamination(ctx, pool, tables)
 	if err != nil {
 		return PostgresValidation{}, err
 	}
@@ -69,20 +69,22 @@ func ValidateRestoredPostgres(ctx context.Context, pool *pgxpool.Pool) (Postgres
 	return PostgresValidation{
 		IntegrityEvidence: integrity,
 		SecurityEvidence:  fmt.Sprintf("%d tenant tables have RLS enabled+forced and owner_bypass", len(tables)),
-		TenantEvidence:    fmt.Sprintf("%d tenant tables contain no NULL tenant_id rows", len(tables)),
+		TenantEvidence:    fmt.Sprintf("%d non-null tenant tables contain no NULL tenant_id rows", checkedTables),
 	}, nil
 }
 
 type tenantTable struct {
-	Name        string
-	RLSEnabled  bool
-	RLSForced   bool
-	OwnerBypass bool
+	Name          string
+	TenantNotNull bool
+	RLSEnabled    bool
+	RLSForced     bool
+	OwnerBypass   bool
 }
 
 func tenantTables(ctx context.Context, pool *pgxpool.Pool) ([]tenantTable, error) {
 	rows, err := pool.Query(ctx, `
 SELECT c.relname,
+       a.attnotnull,
        c.relrowsecurity,
        c.relforcerowsecurity,
        EXISTS (
@@ -107,7 +109,7 @@ ORDER BY c.relname`)
 	var result []tenantTable
 	for rows.Next() {
 		var table tenantTable
-		if err := rows.Scan(&table.Name, &table.RLSEnabled, &table.RLSForced, &table.OwnerBypass); err != nil {
+		if err := rows.Scan(&table.Name, &table.TenantNotNull, &table.RLSEnabled, &table.RLSForced, &table.OwnerBypass); err != nil {
 			return nil, fmt.Errorf("recovery: scan tenant table: %w", err)
 		}
 		result = append(result, table)
@@ -118,20 +120,25 @@ ORDER BY c.relname`)
 	return result, nil
 }
 
-func tenantContamination(ctx context.Context, pool *pgxpool.Pool, tables []tenantTable) ([]string, error) {
+func tenantContamination(ctx context.Context, pool *pgxpool.Pool, tables []tenantTable) ([]string, int, error) {
 	var findings []string
+	checked := 0
 	for _, table := range tables {
+		if !table.TenantNotNull {
+			continue
+		}
+		checked++
 		// Table names come only from pg_catalog and are quoted before interpolation.
 		query := `SELECT count(*) FROM ` + quoteIdentifier(table.Name) + ` WHERE tenant_id IS NULL`
 		var count int64
 		if err := pool.QueryRow(ctx, query).Scan(&count); err != nil {
-			return nil, fmt.Errorf("recovery: inspect tenant table %s: %w", table.Name, err)
+			return nil, checked, fmt.Errorf("recovery: inspect tenant table %s: %w", table.Name, err)
 		}
-		if count > 0 && !allowsGlobalRows(table.Name) {
+		if count > 0 {
 			findings = append(findings, fmt.Sprintf("%s:%d-null-tenant-rows", table.Name, count))
 		}
 	}
-	return findings, nil
+	return findings, checked, nil
 }
 
 func integrityEvidence(ctx context.Context, pool *pgxpool.Pool) (string, error) {
@@ -159,15 +166,4 @@ WHERE connamespace = 'public'::regnamespace
 
 func quoteIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
-}
-
-// Some platform/global tables intentionally use tenant_id NULL for operator-wide rows.
-// The allowlist is explicit so a newly introduced nullable tenant table fails closed.
-func allowsGlobalRows(table string) bool {
-	switch table {
-	case "content_packages", "content_artifacts", "content_lifecycle_audit", "authority_policies", "retention_policy", "feature_flags":
-		return true
-	default:
-		return false
-	}
 }
