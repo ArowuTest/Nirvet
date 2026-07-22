@@ -1,0 +1,6 @@
+{
+  "publisher_id": "test-publisher",
+  "manifest_b64": "eyJjb250ZW50X3NoYTI1NiI6IjlmMjFiNzVlZmE4NTk3NmNhMzdkMmYwMTI4Y2JiZjc4NmZlMzAyN2ExZmY2MDYyMGFmZTE3YmU3NWM1NjNkOWMiLCJjb250ZW50X3R5cGUiOiJkZXRlY3Rpb25fcnVsZXMiLCJleHBpcmVzX2F0IjoiMjAzMC0wMS0wMVQwMDowMDowMFoiLCJpc3N1ZWRfYXQiOiIyMDI2LTA3LTIxVDAwOjAwOjAwWiIsInB1Ymxpc2hlcl9pZCI6InRlc3QtcHVibGlzaGVyIiwic2NvcGUiOiJnbG9iYWwiLCJ2ZXJzaW9uIjoxfQ==",
+  "content_b64": "eyJhcnRpZmFjdHMiOlt7ImRhdGEiOnsiZXhwcmVzc2lvbiI6IngifSwiaWQiOiIiLCJraW5kIjoiZGV0ZWN0aW9uX3J1bGUifV19",
+  "signature_b64": "Yr/GW2BCp8RdCuX1kF0jDdjfdsqSMolZfkIYm/uqJnYAxOcD7LE7O77EvItdyYOstTP359PN1QYBY6Ot5qBbCA=="
+}
