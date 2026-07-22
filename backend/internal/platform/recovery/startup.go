@@ -53,7 +53,9 @@ func LoadCertification(path string) (Certification, error) {
 		return Certification{}, fmt.Errorf("%w: certification file size is invalid", ErrUncertifiedRestore)
 	}
 
-	data, err := os.ReadFile(path) // #nosec G304 -- explicit operator recovery input; regular-file and 1 MiB checks above.
+	// #nosec G304 -- path is an explicit operator recovery input and is constrained
+	// above to a regular file with a strict 1 MiB maximum size.
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Certification{}, fmt.Errorf("%w: read certification: %v", ErrUncertifiedRestore, err)
 	}
