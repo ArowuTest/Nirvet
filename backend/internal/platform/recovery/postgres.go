@@ -133,7 +133,7 @@ func tenantContamination(ctx context.Context, pool *pgxpool.Pool, tables []tenan
 			continue
 		}
 		checked++
-		// Table names come only from pg_catalog and are quoted before interpolation.
+		// #nosec G202 -- table names originate only from pg_catalog and are quoted as SQL identifiers below.
 		query := `SELECT count(*) FROM ` + quoteIdentifier(table.Name) + ` WHERE tenant_id IS NULL`
 		var count int64
 		if err := pool.QueryRow(ctx, query).Scan(&count); err != nil {
