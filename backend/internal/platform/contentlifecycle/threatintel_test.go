@@ -90,7 +90,7 @@ func TestApplyThreatIntel_ExpiredIndicatorRejectedAtomically(t *testing.T) {
 
 func TestApplyThreatIntel_StoreFailureFailsClosed(t *testing.T) {
 	pack := VerifiedPack{
-		Manifest: Manifest{ContentType: "threat_intel"},
+		Manifest:  Manifest{ContentType: "threat_intel"},
 		Artifacts: []Artifact{tiArtifact(t, "indicator--one", "2026-07-21T00:00:00Z", "")},
 	}
 	store := &recordingTIStore{err: errors.New("store unavailable")}
