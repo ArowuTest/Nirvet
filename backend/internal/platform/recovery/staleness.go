@@ -22,11 +22,11 @@ type StalenessSnapshot struct {
 // StalenessAuthority is the minimum state the restored deployment must honour
 // before serving. It represents decisions made at or after the backup boundary.
 type StalenessAuthority struct {
-	MinimumContentVersions map[string]int64
-	MinimumErasureWatermark int64
-	ConsumedIdempotency     map[string]struct{}
-	SentNotifications       map[string]struct{}
-	CompletedSOARRuns       map[string]struct{}
+	MinimumContentVersions   map[string]int64
+	MinimumErasureWatermark  int64
+	ConsumedIdempotency      map[string]struct{}
+	SentNotifications        map[string]struct{}
+	CompletedSOARRuns        map[string]struct{}
 	MinimumSessionGeneration int64
 }
 
