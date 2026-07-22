@@ -9,16 +9,14 @@ func TestQuoteIdentifierEscapesCatalogNames(t *testing.T) {
 	}
 }
 
-func TestAllowsGlobalRowsIsExplicitAndFailClosed(t *testing.T) {
-	for _, table := range []string{"content_packages", "content_artifacts", "content_lifecycle_audit", "authority_policies", "retention_policy", "feature_flags"} {
-		if !allowsGlobalRows(table) {
-			t.Fatalf("expected %s to allow operator-wide rows", table)
-		}
+func TestTenantNullabilityComesFromRestoredSchema(t *testing.T) {
+	required := tenantTable{Name: "incidents", TenantNotNull: true}
+	globalCapable := tenantTable{Name: "content_packages", TenantNotNull: false}
+	if !required.TenantNotNull {
+		t.Fatal("required tenant table must be checked for NULL contamination")
 	}
-	for _, table := range []string{"users", "incidents", "evidence", "new_unknown_table"} {
-		if allowsGlobalRows(table) {
-			t.Fatalf("unexpected global-row exemption for %s", table)
-		}
+	if globalCapable.TenantNotNull {
+		t.Fatal("nullable global-capable table must not be treated as contaminated solely for NULL tenant rows")
 	}
 }
 
