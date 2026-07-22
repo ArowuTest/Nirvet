@@ -36,7 +36,12 @@ func ValidateRestoredPostgres(ctx context.Context, pool *pgxpool.Pool) (Postgres
 	}
 
 	var securityFailures []string
+	protectedTables := 0
 	for _, table := range tables {
+		if isPreTenantRLSException(table.Name) {
+			continue
+		}
+		protectedTables++
 		if !table.RLSEnabled {
 			securityFailures = append(securityFailures, table.Name+":rls-disabled")
 		}
@@ -68,7 +73,7 @@ func ValidateRestoredPostgres(ctx context.Context, pool *pgxpool.Pool) (Postgres
 
 	return PostgresValidation{
 		IntegrityEvidence: integrity,
-		SecurityEvidence:  fmt.Sprintf("%d tenant tables have RLS enabled+forced and owner_bypass", len(tables)),
+		SecurityEvidence:  fmt.Sprintf("%d tenant tables have RLS enabled+forced and owner_bypass; %d intentional pre-tenant exceptions verified separately", protectedTables, len(tables)-protectedTables),
 		TenantEvidence:    fmt.Sprintf("%d non-null tenant tables contain no NULL tenant_id rows", checkedTables),
 	}, nil
 }
@@ -166,4 +171,16 @@ WHERE connamespace = 'public'::regnamespace
 
 func quoteIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+// These tables intentionally operate before a tenant transaction exists. They are
+// the same explicit exceptions used by the migration/schema guards; every other
+// tenant_id table must retain FORCE-RLS plus owner_bypass after restore.
+func isPreTenantRLSException(table string) bool {
+	switch table {
+	case "ingest_jobs", "syslog_sources", "tenant_offboarding":
+		return true
+	default:
+		return false
+	}
 }
