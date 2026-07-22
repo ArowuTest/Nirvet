@@ -77,7 +77,7 @@ func TestCopilot_PersistsAndIsolates(t *testing.T) {
 		t.Fatalf("start session: %v", err)
 	}
 
-	turn, err := svc.Ask(ctx, analyst, sess.ID, "what is happening on host-01?")
+	turn, err := svc.Ask(ctx, analyst, sess.ID, "what is happening on host-01?", false)
 	if err != nil {
 		t.Fatalf("ask: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestCopilot_PersistsAndIsolates(t *testing.T) {
 		t.Fatal("a peer must NOT be able to read another analyst's copilot session")
 	}
 	// And a peer cannot post into it.
-	if _, err := svc.Ask(ctx, peer, sess.ID, "let me in"); err == nil {
+	if _, err := svc.Ask(ctx, peer, sess.ID, "let me in", false); err == nil {
 		t.Fatal("a peer must NOT be able to post into another analyst's session")
 	}
 

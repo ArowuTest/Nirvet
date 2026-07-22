@@ -770,6 +770,11 @@ func main() {
 	mux.Handle("GET /ai/copilot/sessions/{id}", aiProvider(aiH.GetCopilotSession))
 	mux.Handle("POST /ai/copilot/sessions/{id}/messages", aiProvider(aiH.PostCopilotMessage))
 	mux.Handle("POST /ai/copilot/sessions/{id}/agentic-messages", aiProvider(aiH.PostCopilotAgenticMessage)) // incr2: copilot runs bounded hunts AS the analyst
+	// incr3 RAG: per-tenant case-history vector store. Index an incident-history chunk (embedded LOCALLY, no egress);
+	// purge for retention age-out. Retrieval is not a route — it is auto-invoked by the copilot message when {recall:true}
+	// (grounds the answer on similar past cases through the SAME completeExternal redaction chokepoint).
+	mux.Handle("POST /ai/incidents/{id}/index-case", aiProvider(aiH.IndexCase))
+	mux.Handle("DELETE /ai/incidents/{id}/case-embeddings", aiProvider(aiH.PurgeCaseEmbeddings))
 	// §6.12 S2b i3 AI response-proposals: the copilot PROPOSES a response (data); a HUMAN promotes it into the
 	// EXISTING soar run pipeline. Propose/list/reject are analyst-usable DATA ops (aiProvider). ACCEPT — which creates
 	// a run — is gated at the destructive-approval floor (soarApprover: platform_admin/soc_manager) and re-checked

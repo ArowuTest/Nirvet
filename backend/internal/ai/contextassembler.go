@@ -157,7 +157,7 @@ func looksLikeCitationID(id string) bool {
 	case id == "INC":
 		return true
 	default:
-		for _, pfx := range []string{"ALERT-", "EVT-", "ENT-", "SOAR-", "ASSET-", "MITRE-", "TI-", "NB-"} {
+		for _, pfx := range []string{"ALERT-", "EVT-", "ENT-", "SOAR-", "ASSET-", "MITRE-", "TI-", "NB-", "RAG-"} {
 			if strings.HasPrefix(id, pfx) {
 				return true
 			}
