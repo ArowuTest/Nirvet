@@ -75,6 +75,7 @@ jobs:
           tar -C "$RUNNER_TEMP/blob-restored" -xzf "$RUNNER_TEMP/blob-backup.tgz"
           actual=$(sha256sum "$RUNNER_TEMP/blob-restored/evidence/marker.bin" | awk '{print $1}')
           test "$actual" = "$expected"
+          echo "NIRVET_RECOVERY_BLOB_EVIDENCE=blob marker restored with sha256=$actual" >> "$GITHUB_ENV"
       - name: PostgreSQL backup → wipe target → restore
         run: |
           container=$(docker ps --filter ancestor=pgvector/pgvector:pg17 --format '{{.ID}}' | head -n1)
