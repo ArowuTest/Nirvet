@@ -13,16 +13,16 @@ import (
 type StatefulComponent string
 
 const (
-	ComponentPostgres   StatefulComponent = "postgres"
-	ComponentCrypto     StatefulComponent = "crypto_material"
-	ComponentBlob       StatefulComponent = "object_blob_storage"
-	ComponentQueue      StatefulComponent = "queue_outbox_idempotency"
-	ComponentConfig     StatefulComponent = "secrets_config"
-	ComponentContent    StatefulComponent = "content_packages"
-	ComponentAudit      StatefulComponent = "audit_records"
-	ComponentSessions   StatefulComponent = "session_revocation"
-	ComponentRetention  StatefulComponent = "retention_erasure"
-	ComponentAnalytics  StatefulComponent = "analytics_clickhouse"
+	ComponentPostgres  StatefulComponent = "postgres"
+	ComponentCrypto    StatefulComponent = "crypto_material"
+	ComponentBlob      StatefulComponent = "object_blob_storage"
+	ComponentQueue     StatefulComponent = "queue_outbox_idempotency"
+	ComponentConfig    StatefulComponent = "secrets_config"
+	ComponentContent   StatefulComponent = "content_packages"
+	ComponentAudit     StatefulComponent = "audit_records"
+	ComponentSessions  StatefulComponent = "session_revocation"
+	ComponentRetention StatefulComponent = "retention_erasure"
+	ComponentAnalytics StatefulComponent = "analytics_clickhouse"
 )
 
 var requiredComponents = []StatefulComponent{
