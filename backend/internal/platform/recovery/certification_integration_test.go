@@ -70,18 +70,18 @@ func TestRecoveryRoundTrip_ProducesAuthenticatedBinaryCertification(t *testing.T
 	}
 
 	plan := ValidationPlan{
-		Integrity:       staticValidator(postgresEvidence.IntegrityEvidence),
-		Crypto:          staticValidator(cryptoEvidence),
-		Security:        staticValidator(postgresEvidence.SecurityEvidence),
+		Integrity: staticValidator(postgresEvidence.IntegrityEvidence),
+		Crypto:    staticValidator(cryptoEvidence),
+		Security:  staticValidator(postgresEvidence.SecurityEvidence),
 		TenantIsolation: ValidatorFunc(func(context.Context) (string, error) {
 			if err := proveTenantIsolation(ctx, app); err != nil {
 				return "", err
 			}
 			return postgresEvidence.TenantEvidence + "; real tenant A/B reads isolated", nil
 		}),
-		Audit:      staticValidator(auditEvidence),
-		Staleness:  staticValidator(stalenessEvidence),
-		Config:     staticValidator(configEvidence),
+		Audit:     staticValidator(auditEvidence),
+		Staleness: staticValidator(stalenessEvidence),
+		Config:    staticValidator(configEvidence),
 		Functional: ValidatorFunc(func(context.Context) (string, error) {
 			if err := validateRoundTripMarkers(ctx, owner); err != nil {
 				return "", err
@@ -174,16 +174,22 @@ func proveTenantIsolation(ctx context.Context, app *pgxpool.Pool) error {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `SELECT set_config('app.current_tenant',$1,true)`, proof.tenant.String()); err != nil {
-			tx.Rollback(ctx)
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				return fmt.Errorf("recovery: set tenant: %v; rollback: %w", err, rollbackErr)
+			}
 			return err
 		}
 		var own, other int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE id=$1`, proof.own).Scan(&own); err != nil {
-			tx.Rollback(ctx)
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				return fmt.Errorf("recovery: read own incident: %v; rollback: %w", err, rollbackErr)
+			}
 			return err
 		}
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE id=$1`, proof.other).Scan(&other); err != nil {
-			tx.Rollback(ctx)
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				return fmt.Errorf("recovery: read other incident: %v; rollback: %w", err, rollbackErr)
+			}
 			return err
 		}
 		if err := tx.Rollback(ctx); err != nil {
