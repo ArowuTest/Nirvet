@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, errorText } from "@/lib/api";
+import { safeHref } from "@/lib/url";
 import { PageHeader, Panel, EmptyState, Button, StatusTag } from "@/components/ui";
 
 type KBArticle = {
@@ -154,7 +155,11 @@ export default function KnowledgeBasePage() {
               {a.category && <div className="mt-1 text-[11px] uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>{a.category}</div>}
               {a.body && <p className="mt-2 line-clamp-4 text-[13px]" style={{ color: "var(--c-ink-2)" }}>{a.body}</p>}
               {a.url && (
-                <a href={a.url} target="_blank" rel="noopener noreferrer" className="mt-2 block truncate text-[12px]" style={{ color: "var(--c-primary)" }}>{a.url}</a>
+                safeHref(a.url) ? (
+                  <a href={safeHref(a.url)} target="_blank" rel="noopener noreferrer" className="mt-2 block truncate text-[12px]" style={{ color: "var(--c-primary)" }}>{a.url}</a>
+                ) : (
+                  <span className="mt-2 block truncate text-[12px]" style={{ color: "var(--c-ink-3)" }} title="Non-web URL — not linked">{a.url}</span>
+                )
               )}
               {a.tags.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1">

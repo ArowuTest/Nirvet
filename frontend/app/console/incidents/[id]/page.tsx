@@ -9,6 +9,7 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { apiGet, apiPost, apiPut, apiUpload, errorText } from "@/lib/api";
+import { safeHref } from "@/lib/url";
 import { PageHeader, Panel, SevBadge, StatusTag, stageTone, EmptyState, Button } from "@/components/ui";
 import AiProposals from "./AiProposals";
 
@@ -600,7 +601,9 @@ export default function IncidentDetailPage({ params }: { params: Promise<{ id: s
                       <span className="truncate text-sm" style={{ color: "var(--c-ink)" }}>{a.title}</span>
                       {a.category && <span className="shrink-0 text-[10px] uppercase tracking-wide" style={{ color: "var(--c-ink-3)" }}>{a.category}</span>}
                     </div>
-                    {a.url && <a href={a.url} target="_blank" rel="noopener noreferrer" className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--c-primary)" }}>{a.url}</a>}
+                    {a.url && (safeHref(a.url)
+                      ? <a href={safeHref(a.url)} target="_blank" rel="noopener noreferrer" className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--c-primary)" }}>{a.url}</a>
+                      : <span className="mt-0.5 block truncate text-[11px]" style={{ color: "var(--c-ink-3)" }} title="Non-web URL — not linked">{a.url}</span>)}
                   </li>
                 ))}
               </ul>
