@@ -46,17 +46,29 @@ func ValidateAuditContinuity(ctx context.Context, owner *pgxpool.Pool, seam Audi
 		}
 	}
 
-	var updateAllowed, deleteAllowed bool
+	// The application role deliberately retains UPDATE/DELETE table privileges so
+	// PostgreSQL can reach the immutable-row trigger and reject the mutation with an
+	// auditable error. Recovery therefore validates the restored trigger itself,
+	// rather than incorrectly treating those grants as evidence of mutability.
+	var immutableTriggers int
 	if err := owner.QueryRow(ctx, `
-SELECT has_table_privilege('nirvet_app','public.audit_log','UPDATE'),
-       has_table_privilege('nirvet_app','public.audit_log','DELETE')`).Scan(&updateAllowed, &deleteAllowed); err != nil {
-		return "", fmt.Errorf("recovery: inspect audit privileges: %w", err)
+SELECT count(*)
+FROM pg_trigger t
+JOIN pg_class c ON c.oid=t.tgrelid
+JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname='public'
+  AND c.relname='audit_log'
+  AND NOT t.tgisinternal
+  AND t.tgenabled IN ('O','A')
+  AND (t.tgtype & 16) = 16
+  AND ((t.tgtype & 4) = 4 OR (t.tgtype & 8) = 8)`).Scan(&immutableTriggers); err != nil {
+		return "", fmt.Errorf("recovery: inspect audit immutability trigger: %w", err)
 	}
-	if updateAllowed || deleteAllowed {
-		return "", fmt.Errorf("recovery: restored audit log is mutable by nirvet_app")
+	if immutableTriggers == 0 {
+		return "", fmt.Errorf("recovery: restored audit log has no enabled UPDATE/DELETE immutability trigger")
 	}
 
-	return fmt.Sprintf("%d pre-backup audit markers continuous; append-only privileges intact; backup=%s restore=%s", len(seam.RequestIDs), seam.BackupID, seam.RestoreID), nil
+	return fmt.Sprintf("%d pre-backup audit markers continuous; %d append-only trigger(s) intact; backup=%s restore=%s", len(seam.RequestIDs), immutableTriggers, seam.BackupID, seam.RestoreID), nil
 }
 
 // RecordRecoveryEvent appends the recovery decision to the normal immutable audit
