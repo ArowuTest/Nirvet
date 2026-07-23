@@ -4,8 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -23,22 +21,18 @@ func setCertificationKey(t *testing.T, key []byte) {
 	t.Setenv(EnvCertificationKeyBase64, base64.StdEncoding.EncodeToString(key))
 }
 
-func writeCertification(t *testing.T, certification Certification) string {
+func encodeCertification(t *testing.T, certification Certification) string {
 	t.Helper()
 	data, err := json.Marshal(certification)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "certification.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 func TestRequireServingFromEnvBlocksRestoredModeWithoutCertification(t *testing.T) {
 	t.Setenv(EnvRestoredMode, "true")
-	t.Setenv(EnvCertificationFile, "")
+	t.Setenv(EnvCertificationDocumentB64, "")
 	setCertificationKey(t, testCertificationKey())
 	if err := RequireServingFromEnv(); !errors.Is(err, ErrUncertifiedRestore) {
 		t.Fatalf("restored startup without certification must fail closed, got %v", err)
@@ -48,7 +42,7 @@ func TestRequireServingFromEnvBlocksRestoredModeWithoutCertification(t *testing.
 func TestRequireServingFromEnvRefusesForgedBooleanOnlyDocument(t *testing.T) {
 	forged := Certification{RestoreID: "restore-1", BackupID: "backup-1", ValidatedAt: time.Now(), Certified: true}
 	t.Setenv(EnvRestoredMode, "true")
-	t.Setenv(EnvCertificationFile, writeCertification(t, forged))
+	t.Setenv(EnvCertificationDocumentB64, encodeCertification(t, forged))
 	setCertificationKey(t, testCertificationKey())
 	if err := RequireServingFromEnv(); !errors.Is(err, ErrUncertifiedRestore) {
 		t.Fatalf("forged certification bypassed startup gate: %v", err)
@@ -67,7 +61,7 @@ func TestRequireServingFromEnvRefusesTamperedCompleteDocument(t *testing.T) {
 	}
 	certification.Assertions[0].Evidence = "forged passing evidence"
 	t.Setenv(EnvRestoredMode, "true")
-	t.Setenv(EnvCertificationFile, writeCertification(t, certification))
+	t.Setenv(EnvCertificationDocumentB64, encodeCertification(t, certification))
 	setCertificationKey(t, key)
 	if err := RequireServingFromEnv(); !errors.Is(err, ErrUncertifiedRestore) {
 		t.Fatalf("tampered complete certification bypassed startup gate: %v", err)
@@ -85,7 +79,7 @@ func TestRequireServingFromEnvAllowsCompleteSignedCertification(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvRestoredMode, "true")
-	t.Setenv(EnvCertificationFile, writeCertification(t, certification))
+	t.Setenv(EnvCertificationDocumentB64, encodeCertification(t, certification))
 	setCertificationKey(t, key)
 	if err := RequireServingFromEnv(); err != nil {
 		t.Fatalf("complete signed recovery certification should permit startup: %v", err)
@@ -98,7 +92,7 @@ func TestRequireServingFromEnvMissingSigningKeyFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(EnvRestoredMode, "true")
-	t.Setenv(EnvCertificationFile, writeCertification(t, certification))
+	t.Setenv(EnvCertificationDocumentB64, encodeCertification(t, certification))
 	t.Setenv(EnvCertificationKeyBase64, "")
 	if err := RequireServingFromEnv(); !errors.Is(err, ErrUncertifiedRestore) {
 		t.Fatalf("missing certification key did not fail closed: %v", err)
@@ -107,7 +101,7 @@ func TestRequireServingFromEnvMissingSigningKeyFailsClosed(t *testing.T) {
 
 func TestRequireServingFromEnvNormalStartupUnaffected(t *testing.T) {
 	t.Setenv(EnvRestoredMode, "false")
-	t.Setenv(EnvCertificationFile, filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv(EnvCertificationDocumentB64, "not-base64")
 	t.Setenv(EnvCertificationKeyBase64, "")
 	if err := RequireServingFromEnv(); err != nil {
 		t.Fatalf("ordinary startup should not require recovery certification: %v", err)
