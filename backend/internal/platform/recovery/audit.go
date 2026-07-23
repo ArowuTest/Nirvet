@@ -89,7 +89,9 @@ func RecordRecoveryEvent(ctx context.Context, app *pgxpool.Pool, tenantID uuid.U
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO audit_log (actor_id,actor_email,action,target,metadata,request_id)
-VALUES ($1,$2,'recovery.certification',$3,jsonb_build_object('backup_id',$4,'restore_id',$5,'result',$6),$7)`,
+VALUES ($1,$2,'recovery.certification',$3,
+        jsonb_build_object('backup_id',$4::text,'restore_id',$5::text,'result',$6::text),
+        $7)`,
 		actorID, actorEmail, "restore:"+restoreID, backupID, restoreID, result, "recovery:"+restoreID); err != nil {
 		return fmt.Errorf("recovery: append audit event: %w", err)
 	}
