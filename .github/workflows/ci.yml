@@ -11,7 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        # pgvector-enabled Postgres 17 (superset of postgres:17) — the RAG vector store (mig 0143) needs the `vector`
+        # extension; the two-tenant isolation test runs against it. Behaves identically for every other suite.
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/url"
 	"strings"
 
 	"github.com/ArowuTest/nirvet/internal/platform/auth"
@@ -11,6 +12,28 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// safeArticleURL validates a KB article's reference URL. Empty is allowed (no reference). A non-empty value must
+// parse and carry an http/https scheme — anything else (javascript:, data:, file:, …) is rejected. This is the
+// AUTHORITATIVE guard: the article's URL is later rendered as a clickable <a href> in the console, and a
+// javascript:/data: URL there is a stored-XSS vector. Rejecting at write time means a malicious scheme can never
+// be persisted, so no rendering surface has to trust the stored value.
+func safeArticleURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", httpx.ErrBadRequest("reference url is not a valid URL")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return raw, nil
+	default:
+		return "", httpx.ErrBadRequest("reference url must be an http(s) URL")
+	}
+}
 
 // hasControlChar reports whether s contains an ASCII control character (used to reject unsafe filenames).
 func hasControlChar(s string) bool {
@@ -211,8 +234,12 @@ func (s *Service) CreateArticle(ctx context.Context, p auth.Principal, in Articl
 	if in.Tags == nil {
 		in.Tags = []string{}
 	}
+	safeURL, err := safeArticleURL(in.URL)
+	if err != nil {
+		return nil, err
+	}
 	tid := p.TenantID
-	a := &KBArticle{ID: uuid.New(), TenantID: &tid, Title: in.Title, Body: in.Body, URL: in.URL, Category: in.Category, Tags: in.Tags}
+	a := &KBArticle{ID: uuid.New(), TenantID: &tid, Title: in.Title, Body: in.Body, URL: safeURL, Category: in.Category, Tags: in.Tags}
 	if err := s.repo.insertArticle(ctx, p.TenantID, a, p.UserID); err != nil {
 		return nil, httpx.ErrInternal("could not create article")
 	}

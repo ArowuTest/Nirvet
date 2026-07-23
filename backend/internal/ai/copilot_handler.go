@@ -77,12 +77,13 @@ func (h *Handler) PostCopilotMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Message string `json:"message"`
+		Recall  bool   `json:"recall"` // incr3 RAG: ground the answer on the most similar PAST cases (per-tenant, redacted)
 	}
 	if err := httpx.Decode(r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	turn, err := h.svc.Ask(r.Context(), p, id, in.Message)
+	turn, err := h.svc.Ask(r.Context(), p, id, in.Message, in.Recall)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -113,4 +114,48 @@ func (h *Handler) PostCopilotAgenticMessage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, turn)
+}
+
+// IndexCase handles POST /ai/incidents/{id}/index-case — analyst-triggered indexing of an incident-history chunk into
+// the per-tenant RAG store (copilot completion incr3). The chunk is embedded LOCALLY (no egress) and stored WithTenant
+// (RLS-confined). min_role sets the field-visibility floor for later recall. Analyst-initiated, not an autonomous
+// indexer (gate 2f).
+func (h *Handler) IndexCase(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	var in struct {
+		Chunk   string `json:"chunk"`
+		MinRole string `json:"min_role"`
+	}
+	if err := httpx.Decode(r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.IndexCase(r.Context(), p, id, in.Chunk, in.MinRole); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"indexed": true})
+}
+
+// PurgeCaseEmbeddings handles DELETE /ai/incidents/{id}/case-embeddings — retention age-out / re-index of an incident's
+// recall memory (copilot completion incr3). WithTenant → RLS confines the purge. Incident HARD-deletion already cascades
+// (mig 0143 FK ON DELETE CASCADE); this covers the age-out case where the incident row remains.
+func (h *Handler) PurgeCaseEmbeddings(w http.ResponseWriter, r *http.Request) {
+	p, _ := auth.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.Error(w, httpx.ErrBadRequest("invalid incident id"))
+		return
+	}
+	n, err := h.svc.PurgeCaseEmbeddings(r.Context(), p, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"purged": n})
 }

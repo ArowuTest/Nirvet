@@ -6,7 +6,8 @@
 #   NIRVET_CLICKHOUSE_DSN=clickhouse://nirvet:nirvet@localhost:9000/nirvet
 services:
   postgres:
-    image: postgres:17
+    # pgvector-enabled Postgres 17 (superset of postgres:17) — RAG vector store (mig 0143) needs the `vector` extension.
+    image: pgvector/pgvector:pg17
     container_name: nirvet-postgres
     environment:
       POSTGRES_USER: postgres

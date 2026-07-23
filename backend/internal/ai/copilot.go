@@ -191,8 +191,9 @@ func copilotHistory(history []CopilotTurn) []string {
 
 // Ask appends the analyst's message to a session, generates an assistive reply through the redaction chokepoint,
 // persists both turns, and audits the call. When no provider is configured it stores a truthful "not configured"
-// reply rather than fabricating an answer (and nothing egresses).
-func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID, message string) (*CopilotTurn, error) {
+// reply rather than fabricating an answer (and nothing egresses). When recall is set (incr3 RAG), the copilot also
+// consults the per-tenant case-history vector store and grounds on the most similar PAST cases (see recallFacts).
+func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID, message string, recall bool) (*CopilotTurn, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return nil, httpx.ErrBadRequest("message is required")
@@ -229,14 +230,24 @@ func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID
 	// redactable customer telemetry → it rides the `evidence` bag through completeExternal (never raw). The
 	// citation ids let the model reference specific evidence; invented ids are hard-dropped from the reply below.
 	// Fail-open to no context if assembly errors (the copilot then answers "insufficient evidence").
-	var evidence []string
-	var citationIDs map[string]bool
+	var facts []CitedFact
 	if sess.IncidentRef != nil {
-		if facts, aerr := s.AssembleContext(ctx, p, *sess.IncidentRef); aerr == nil {
-			evidence = evidenceBag(facts)
-			citationIDs = validCitationIDs(facts)
+		if f, aerr := s.AssembleContext(ctx, p, *sess.IncidentRef); aerr == nil {
+			facts = f
 		}
 	}
+	// RAG recall (incr3): when the analyst asks to consult case history, pull the top past-case chunks most similar to
+	// their question and MERGE them into the SAME evidence bag (RAG-n ids). They ride completeExternal REDACTED as the
+	// untrusted `evidence` — never the trusted `task` — so a prompt-injection string inside a recalled chunk is inert
+	// (gate #2). RetrieveSimilar already enforced tenant isolation + field-visibility.
+	var recalled int
+	if recall {
+		rf := s.recallFacts(ctx, p, message)
+		recalled = len(rf)
+		facts = append(facts, rf...)
+	}
+	evidence := evidenceBag(facts)
+	citationIDs := validCitationIDs(facts)
 
 	// Three content classes to the chokepoint: trusted task (framing, no customer data) + evidence (tenant policy) +
 	// history (strict wholesale) + the latest question (redacted but answerable). The analyst's message is NEVER
@@ -279,10 +290,12 @@ func (s *Service) Ask(ctx context.Context, p auth.Principal, sessionID uuid.UUID
 		if _, err := tx.Exec(ctx, `UPDATE ai_copilot_sessions SET updated_at = now() WHERE id = $1`, sessionID); err != nil {
 			return err
 		}
+		meta := withRedactionMeta(withProviderMeta(auditMeta(model, reply), res), rr)
+		meta["rag_recalled"] = recalled // how many past-case chunks grounded this answer (0 when recall off/empty)
 		return audit.Record(ctx, tx, audit.Entry{
 			ActorID: p.UserID, ActorEmail: p.Email, Action: "ai.copilot_message",
 			Target:   "copilot_session:" + sessionID.String(),
-			Metadata: withRedactionMeta(withProviderMeta(auditMeta(model, reply), res), rr),
+			Metadata: meta,
 		})
 	})
 	if err != nil {

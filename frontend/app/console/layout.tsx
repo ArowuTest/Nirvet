@@ -46,6 +46,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { label: "Forensic timeline", href: "/console/timeline", icon: "activity", ready: true, roles: PROVIDER },
       { label: "Data gaps", href: "/console/data-gaps", icon: "search", ready: true, roles: PROVIDER },
       { label: "Notebooks", href: "/console/notebooks", icon: "file-text", ready: true, roles: PROVIDER },
+      { label: "Knowledge base", href: "/console/knowledge-base", icon: "file-text", ready: true, roles: PROVIDER },
       { label: "Detections", href: "/console/detections", icon: "target", ready: true, roles: PROVIDER },
       { label: "Assets", href: "/console/assets", icon: "box", ready: true, roles: PROVIDER },
       { label: "Entity graph", href: "/console/entities", icon: "share-2", ready: true, roles: PROVIDER },

@@ -291,6 +291,31 @@ export function apiPut<T = unknown>(path: string, body?: unknown): Promise<T> {
   return request<T>(path, { method: "PUT", body });
 }
 
+/**
+ * apiUpload POSTs a raw binary body (not JSON, not multipart) — the shape the incident-attachment endpoint expects:
+ * the file bytes ARE the request body, the filename/note ride the query string, and the file's MIME type is the
+ * Content-Type header. It carries the session cookie + double-submit CSRF token like any write, and does the same
+ * silent-refresh-once-on-401 dance as request(). The Blob is re-readable, so the retry re-sends it cleanly.
+ */
+export async function apiUpload<T = unknown>(path: string, file: Blob, contentType: string, _retried = false): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": contentType || "application/octet-stream" };
+  const csrf = await ensureCsrf();
+  if (csrf) headers[CSRF_HEADER] = csrf;
+
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", credentials: "include", headers, body: file });
+
+  if (res.status === 401 && !_retried && !isAuthEndpoint(path)) {
+    if (await doRefresh()) return apiUpload<T>(path, file, contentType, true);
+  }
+  if (res.status === 403 && !_retried && !isAuthEndpoint(path)) {
+    resetCsrf();
+    if (await ensureCsrf()) return apiUpload<T>(path, file, contentType, true);
+  }
+  if (!res.ok) throw await parseError(res);
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
 export function apiDelete<T = unknown>(path: string): Promise<T> {
   return request<T>(path, { method: "DELETE" });
 }
