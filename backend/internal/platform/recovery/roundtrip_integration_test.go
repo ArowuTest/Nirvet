@@ -45,11 +45,19 @@ func TestRecoveryRoundTrip_RestoredDataIsolationAuditAndFunctionalJourney(t *tes
 	if err := validateRoundTripMarkers(ctx, owner); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := ValidateAuditContinuity(ctx, owner, AuditSeam{
+		RequestIDs: []string{"recovery-seed-a", "recovery-seed-b"},
+		BackupID:   "ci-backup",
+		RestoreID:  "ci-restore",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	assertTenantIncidentView(t, ctx, app, recoveryTenantA, recoveryIncidentA, recoveryIncidentB)
 	assertTenantIncidentView(t, ctx, app, recoveryTenantB, recoveryIncidentB, recoveryIncidentA)
 	assertAuditContinuityAndImmutability(t, ctx, owner, app)
 	assertFunctionalRestoredJourney(t, ctx, app)
+	assertRecoveryEventIsAudited(t, ctx, owner, app)
 }
 
 func TestRecoveryRoundTrip_PartialRestoreCorruptionIsRefused(t *testing.T) {
@@ -108,6 +116,9 @@ func TestRecoveryRoundTrip_CrossTenantRewriteAndAuditGapAreRefused(t *testing.T)
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `ALTER TABLE audit_log DISABLE TRIGGER USER`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM audit_log WHERE request_id='recovery-seed-b'`); err != nil {
 			t.Fatal(err)
 		}
@@ -225,5 +236,19 @@ func assertFunctionalRestoredJourney(t *testing.T, ctx context.Context, app *pgx
 	}
 	if incidentCount != 1 || auditCount != 1 {
 		t.Fatalf("restored functional journey incomplete: incident=%d audit=%d", incidentCount, auditCount)
+	}
+}
+
+func assertRecoveryEventIsAudited(t *testing.T, ctx context.Context, owner, app *pgxpool.Pool) {
+	t.Helper()
+	if err := RecordRecoveryEvent(ctx, app, recoveryTenantA, nil, "ci-recovery", "ci-backup", "ci-restore", "certified"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := owner.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE request_id='recovery:ci-restore' AND action='recovery.certification'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovery event audit count=%d want 1", count)
 	}
 }
