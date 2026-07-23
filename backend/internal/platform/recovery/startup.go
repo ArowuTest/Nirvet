@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	EnvRestoredMode           = "NIRVET_RESTORED_MODE"
-	EnvCertificationFile      = "NIRVET_RECOVERY_CERTIFICATION_FILE"
-	EnvCertificationKeyBase64 = "NIRVET_RECOVERY_CERTIFICATION_KEY_B64"
+	EnvRestoredMode              = "NIRVET_RESTORED_MODE"
+	EnvCertificationDocumentB64  = "NIRVET_RECOVERY_CERTIFICATION_B64"
+	EnvCertificationKeyBase64    = "NIRVET_RECOVERY_CERTIFICATION_KEY_B64"
+	maxCertificationBytes        = 1 << 20
 )
 
 // RequireServingFromEnv is the production startup boundary for restored
@@ -28,15 +29,11 @@ func RequireServingFromEnv() error {
 		return nil
 	}
 
-	path := strings.TrimSpace(os.Getenv(EnvCertificationFile))
-	if path == "" {
-		return fmt.Errorf("%w: %s is required in restored mode", ErrUncertifiedRestore, EnvCertificationFile)
-	}
-	key, err := decodeCertificationKey(os.Getenv(EnvCertificationKeyBase64))
+	certification, err := decodeCertificationDocument(os.Getenv(EnvCertificationDocumentB64))
 	if err != nil {
 		return err
 	}
-	certification, err := LoadCertification(path)
+	key, err := decodeCertificationKey(os.Getenv(EnvCertificationKeyBase64))
 	if err != nil {
 		return err
 	}
@@ -46,26 +43,22 @@ func RequireServingFromEnv() error {
 	return RequireServingCertification(true, &certification)
 }
 
-// LoadCertification reads a bounded JSON certification document. It does not
-// trust the serialized Certified boolean or signature until the caller verifies
-// both independently.
-func LoadCertification(path string) (Certification, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return Certification{}, fmt.Errorf("%w: certification file: %v", ErrUncertifiedRestore, err)
+func decodeCertificationDocument(raw string) (Certification, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return Certification{}, fmt.Errorf("%w: %s is required in restored mode", ErrUncertifiedRestore, EnvCertificationDocumentB64)
 	}
-	if !info.Mode().IsRegular() {
-		return Certification{}, fmt.Errorf("%w: certification path is not a regular file", ErrUncertifiedRestore)
+	if len(raw) > base64.StdEncoding.EncodedLen(maxCertificationBytes) {
+		return Certification{}, fmt.Errorf("%w: certification document is too large", ErrUncertifiedRestore)
 	}
-	const maxCertificationBytes = 1 << 20
-	if info.Size() <= 0 || info.Size() > maxCertificationBytes {
-		return Certification{}, fmt.Errorf("%w: certification file size is invalid", ErrUncertifiedRestore)
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil || len(data) == 0 || len(data) > maxCertificationBytes {
+		return Certification{}, fmt.Errorf("%w: certification document is invalid", ErrUncertifiedRestore)
 	}
+	return decodeCertification(data)
+}
 
-	data, err := os.ReadFile(path) // #nosec G304 -- explicit operator recovery input; regular-file and 1 MiB checks above.
-	if err != nil {
-		return Certification{}, fmt.Errorf("%w: read certification: %v", ErrUncertifiedRestore, err)
-	}
+func decodeCertification(data []byte) (Certification, error) {
 	var certification Certification
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
