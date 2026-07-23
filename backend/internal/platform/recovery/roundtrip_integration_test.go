@@ -12,12 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var (
-	recoveryTenantA = uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-	recoveryTenantB = uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-	recoveryIncidentA = uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")
-	recoveryIncidentB = uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000001")
-)
+var recoveryTenantA = uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+var recoveryTenantB = uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+var recoveryIncidentA = uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")
+var recoveryIncidentB = uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000001")
 
 func TestRecoveryRoundTrip_RestoredDataIsolationAuditAndFunctionalJourney(t *testing.T) {
 	ownerDSN := os.Getenv("NIRVET_RESTORED_OWNER_DATABASE_URL")
@@ -78,6 +76,47 @@ func TestRecoveryRoundTrip_PartialRestoreCorruptionIsRefused(t *testing.T) {
 	}
 }
 
+func TestRecoveryRoundTrip_CrossTenantRewriteAndAuditGapAreRefused(t *testing.T) {
+	ownerDSN := os.Getenv("NIRVET_RESTORED_OWNER_DATABASE_URL")
+	if ownerDSN == "" {
+		t.Skip("restored owner database DSN not set")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, ownerDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+
+	t.Run("cross tenant rewrite", func(t *testing.T) {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `UPDATE incidents SET tenant_id=$1 WHERE id=$2`, recoveryTenantA, recoveryIncidentB); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateRoundTripMarkersQuerier(ctx, tx); err == nil || !strings.Contains(err.Error(), "tenant ownership") {
+			t.Fatalf("cross-tenant rewrite was not refused: %v", err)
+		}
+	})
+
+	t.Run("audit seam gap", func(t *testing.T) {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `DELETE FROM audit_log WHERE request_id='recovery-seed-b'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateRoundTripMarkersQuerier(ctx, tx); err == nil || !strings.Contains(err.Error(), "audit markers") {
+			t.Fatalf("audit seam gap was not refused: %v", err)
+		}
+	})
+}
+
 type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
@@ -87,12 +126,15 @@ func validateRoundTripMarkers(ctx context.Context, pool *pgxpool.Pool) error {
 }
 
 func validateRoundTripMarkersQuerier(ctx context.Context, q rowQuerier) error {
-	var tenants, incidents, audits int
+	var tenants, incidents, audits, ownership int
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM tenants WHERE id IN ($1,$2)`, recoveryTenantA, recoveryTenantB).Scan(&tenants); err != nil {
 		return fmt.Errorf("recovery: tenant markers: %w", err)
 	}
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE id IN ($1,$2)`, recoveryIncidentA, recoveryIncidentB).Scan(&incidents); err != nil {
 		return fmt.Errorf("recovery: incident markers: %w", err)
+	}
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM incidents WHERE (id=$1 AND tenant_id=$2) OR (id=$3 AND tenant_id=$4)`, recoveryIncidentA, recoveryTenantA, recoveryIncidentB, recoveryTenantB).Scan(&ownership); err != nil {
+		return fmt.Errorf("recovery: tenant ownership markers: %w", err)
 	}
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE request_id IN ('recovery-seed-a','recovery-seed-b')`).Scan(&audits); err != nil {
 		return fmt.Errorf("recovery: audit markers: %w", err)
@@ -102,6 +144,9 @@ func validateRoundTripMarkersQuerier(ctx context.Context, q rowQuerier) error {
 	}
 	if incidents != 2 {
 		return fmt.Errorf("recovery: incident markers incomplete: got %d want 2", incidents)
+	}
+	if ownership != 2 {
+		return fmt.Errorf("recovery: tenant ownership markers incomplete: got %d want 2", ownership)
 	}
 	if audits != 2 {
 		return fmt.Errorf("recovery: audit markers incomplete: got %d want 2", audits)
