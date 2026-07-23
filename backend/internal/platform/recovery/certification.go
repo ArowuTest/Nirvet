@@ -47,13 +47,15 @@ type Assertion struct {
 }
 
 // Certification is binary: Certified is true only when every required
-// dimension appears exactly once and passed. There is no partial-success mode.
+// dimension appears exactly once and passed. Signature authenticates the
+// serialized certification at the restored-serving boundary.
 type Certification struct {
 	RestoreID   string      `json:"restore_id"`
 	BackupID    string      `json:"backup_id"`
 	ValidatedAt time.Time   `json:"validated_at"`
 	Assertions  []Assertion `json:"assertions"`
 	Certified   bool        `json:"certified"`
+	Signature   string      `json:"signature,omitempty"`
 }
 
 // Certify evaluates a complete set of assertions. Missing, duplicate, unknown,
@@ -121,6 +123,9 @@ func RequireServingCertification(restoredMode bool, certification *Certification
 	seen := make(map[Dimension]struct{}, len(certification.Assertions))
 	for _, assertion := range certification.Assertions {
 		if !assertion.Passed || strings.TrimSpace(assertion.Evidence) == "" {
+			return ErrUncertifiedRestore
+		}
+		if _, duplicate := seen[assertion.Dimension]; duplicate {
 			return ErrUncertifiedRestore
 		}
 		seen[assertion.Dimension] = struct{}{}
