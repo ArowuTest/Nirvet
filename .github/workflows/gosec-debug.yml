@@ -13,9 +13,22 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - name: Concise gosec findings
+        id: gosec
+        continue-on-error: true
         working-directory: backend
         shell: bash
         run: |
           set -o pipefail
           go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1 >/dev/null 2>&1
-          gosec -quiet -exclude-generated -exclude=G115 -severity high -confidence medium ./... 2>&1 | tail -n 80
+          gosec -quiet -exclude-generated -exclude=G115 -severity high -confidence medium ./... > "$RUNNER_TEMP/gosec.txt" 2>&1
+      - name: Upload gosec findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-findings
+          path: ${{ runner.temp }}/gosec.txt
+      - name: Enforce gosec result
+        if: steps.gosec.outcome == 'failure'
+        run: |
+          tail -n 80 "$RUNNER_TEMP/gosec.txt"
+          exit 1
