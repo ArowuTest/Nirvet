@@ -24,8 +24,6 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Guard — recovery source formatting
         working-directory: backend
         run: |
@@ -66,14 +64,25 @@ jobs:
             ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','recovery.seed','incident:a','recovery-seed-a'),
             ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','recovery.seed','incident:b','recovery-seed-b');
           SQL
-      - name: Backup → wipe target → restore
-        env:
-          PGPASSWORD: postgres
+      - name: Local blob backup → wipe → restore
         run: |
-          pg_dump -h localhost -U postgres -d nirvet -Fc -f "$RUNNER_TEMP/nirvet.dump"
-          dropdb -h localhost -U postgres --if-exists nirvet_restored
-          createdb -h localhost -U postgres nirvet_restored
-          pg_restore -h localhost -U postgres -d nirvet_restored --no-owner --exit-on-error "$RUNNER_TEMP/nirvet.dump"
+          mkdir -p "$RUNNER_TEMP/blob-source/evidence"
+          printf '%s' 'nirvet-recovery-blob-marker' > "$RUNNER_TEMP/blob-source/evidence/marker.bin"
+          expected=$(sha256sum "$RUNNER_TEMP/blob-source/evidence/marker.bin" | awk '{print $1}')
+          tar -C "$RUNNER_TEMP/blob-source" -czf "$RUNNER_TEMP/blob-backup.tgz" .
+          rm -rf "$RUNNER_TEMP/blob-source"
+          mkdir -p "$RUNNER_TEMP/blob-restored"
+          tar -C "$RUNNER_TEMP/blob-restored" -xzf "$RUNNER_TEMP/blob-backup.tgz"
+          actual=$(sha256sum "$RUNNER_TEMP/blob-restored/evidence/marker.bin" | awk '{print $1}')
+          test "$actual" = "$expected"
+      - name: PostgreSQL backup → wipe target → restore
+        run: |
+          container=$(docker ps --filter ancestor=pgvector/pgvector:pg17 --format '{{.ID}}' | head -n1)
+          test -n "$container"
+          docker exec "$container" pg_dump -U postgres -d nirvet -Fc > "$RUNNER_TEMP/nirvet.dump"
+          docker exec "$container" dropdb -U postgres --if-exists nirvet_restored
+          docker exec "$container" createdb -U postgres nirvet_restored
+          docker exec -i "$container" pg_restore -U postgres -d nirvet_restored --no-owner --exit-on-error < "$RUNNER_TEMP/nirvet.dump"
       - name: Recovery certification and corruption controls
         working-directory: backend
         env:
