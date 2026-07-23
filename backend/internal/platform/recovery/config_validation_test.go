@@ -11,11 +11,10 @@ func TestValidateConfigCompletenessPassesWithoutLeakingValues(t *testing.T) {
 		{Name: "NIRVET_JWT_SECRET", Sensitive: true},
 		{Name: "NIRVET_CRYPTO_PROVIDER"},
 	}
-	values := map[string]string{
-		"NIRVET_DATABASE_URL":     "postgres://secret-value",
-		"NIRVET_JWT_SECRET":       "top-secret-marker",
-		"NIRVET_CRYPTO_PROVIDER":  "vault",
-	}
+	values := make(map[string]string)
+	values["NIRVET_DATABASE_URL"] = "postgres://secret-value"
+	values["NIRVET_JWT_SECRET"] = "top-secret-marker"
+	values["NIRVET_CRYPTO_PROVIDER"] = "vault"
 	evidence, err := ValidateConfigCompleteness(requirements, values)
 	if err != nil {
 		t.Fatal(err)
