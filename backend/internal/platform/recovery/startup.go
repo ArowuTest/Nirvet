@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	EnvRestoredMode             = "NIRVET_RESTORED_MODE"
-	EnvCertificationFile        = "NIRVET_RECOVERY_CERTIFICATION_FILE"
-	EnvCertificationKeyBase64   = "NIRVET_RECOVERY_CERTIFICATION_KEY_B64"
+	EnvRestoredMode           = "NIRVET_RESTORED_MODE"
+	EnvCertificationFile      = "NIRVET_RECOVERY_CERTIFICATION_FILE"
+	EnvCertificationKeyBase64 = "NIRVET_RECOVERY_CERTIFICATION_KEY_B64"
 )
 
 // RequireServingFromEnv is the production startup boundary for restored
