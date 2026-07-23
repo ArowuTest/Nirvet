@@ -5,7 +5,7 @@ on:
 
 jobs:
   recovery-validation:
-    name: Recovery certification + restored-serving fence
+    name: Recovery certification + real restore drill
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -24,6 +24,8 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Guard — recovery source formatting
         working-directory: backend
         run: |
@@ -44,13 +46,38 @@ jobs:
           fi
           cp "$RUNNER_TEMP/recovery_gate.go" cmd/api/recovery_gate.go
           bash scripts/check-recovery-serving-gate.sh
-      - name: Apply production migrations
+      - name: Apply production migrations to source
         working-directory: backend
         env:
           NIRVET_MIGRATE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nirvet?sslmode=disable
         run: go run ./cmd/migrate
-      - name: Recovery certification and PostgreSQL corruption controls
+      - name: Seed two-tenant recovery markers
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d nirvet -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO tenants (id,name,status) VALUES
+            ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','Recovery Tenant A','active'),
+            ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','Recovery Tenant B','active');
+          INSERT INTO incidents (id,tenant_id,title,severity,category,stage) VALUES
+            ('aaaaaaaa-0000-0000-0000-000000000001','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','Recovery marker A','low','recovery','new'),
+            ('bbbbbbbb-0000-0000-0000-000000000001','bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','Recovery marker B','low','recovery','new');
+          INSERT INTO audit_log (tenant_id,action,target,request_id) VALUES
+            ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','recovery.seed','incident:a','recovery-seed-a'),
+            ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb','recovery.seed','incident:b','recovery-seed-b');
+          SQL
+      - name: Backup → wipe target → restore
+        env:
+          PGPASSWORD: postgres
+        run: |
+          pg_dump -h localhost -U postgres -d nirvet -Fc -f "$RUNNER_TEMP/nirvet.dump"
+          dropdb -h localhost -U postgres --if-exists nirvet_restored
+          createdb -h localhost -U postgres nirvet_restored
+          pg_restore -h localhost -U postgres -d nirvet_restored --no-owner --exit-on-error "$RUNNER_TEMP/nirvet.dump"
+      - name: Recovery certification and corruption controls
         working-directory: backend
         env:
-          NIRVET_OWNER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nirvet?sslmode=disable
+          NIRVET_OWNER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nirvet_restored?sslmode=disable
+          NIRVET_RESTORED_OWNER_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nirvet_restored?sslmode=disable
+          NIRVET_RESTORED_APP_DATABASE_URL: postgres://nirvet_app:nirvet_app@localhost:5432/nirvet_restored?sslmode=disable
         run: go test -race -count=1 ./internal/platform/recovery ./cmd/api
