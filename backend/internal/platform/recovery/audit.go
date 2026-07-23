@@ -60,8 +60,7 @@ WHERE n.nspname='public'
   AND c.relname='audit_log'
   AND NOT t.tgisinternal
   AND t.tgenabled IN ('O','A')
-  AND (t.tgtype & 16) = 16
-  AND ((t.tgtype & 4) = 4 OR (t.tgtype & 8) = 8)`).Scan(&immutableTriggers); err != nil {
+  AND ((t.tgtype & 16) = 16 OR (t.tgtype & 8) = 8)`).Scan(&immutableTriggers); err != nil {
 		return "", fmt.Errorf("recovery: inspect audit immutability trigger: %w", err)
 	}
 	if immutableTriggers == 0 {
