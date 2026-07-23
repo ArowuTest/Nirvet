@@ -108,7 +108,8 @@ func SignDigest(privateKey ed25519.PrivateKey, objectType, digest string) string
 
 func VerifyDigest(publicKey ed25519.PublicKey, objectType, digest, signature string) error {
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(signature))
-	if err != nil || !ed25519.Verify(publicKey, []byte("nirvet-artifact-v1\n"+objectType+"\n"+digest+"\n"), sig) {
+	payload := []byte("nirvet-artifact-v1\n" + objectType + "\n" + digest + "\n")
+	if err != nil || !ed25519.Verify(publicKey, payload, sig) {
 		return fmt.Errorf("%w: invalid %s signature", ErrVerification, objectType)
 	}
 	return nil
@@ -122,15 +123,16 @@ func VerifyRelease(root string, manifest Manifest, anchor TrustAnchor, opts Veri
 		return fmt.Errorf("%w: untrusted or revoked signing key", ErrVerification)
 	}
 	now := opts.Now.UTC()
-	if now.IsZero() { now = time.Now().UTC() }
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	if now.Before(anchor.NotBefore) || !now.Before(anchor.NotAfter) {
 		return fmt.Errorf("%w: trust anchor outside validity period", ErrVerification)
 	}
-	pubBytes, err := base64.StdEncoding.DecodeString(anchor.PublicKeyB64)
-	if err != nil || len(pubBytes) != ed25519.PublicKeySize {
+	publicBytes, err := base64.StdEncoding.DecodeString(anchor.PublicKeyB64)
+	if err != nil || len(publicBytes) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: malformed trust anchor", ErrVerification)
 	}
-	pub := ed25519.PublicKey(pubBytes)
 	if manifest.ReleaseSequence < opts.MinimumSequence || manifest.ReleaseSequence < opts.InstalledSequence {
 		return fmt.Errorf("%w: downgrade release sequence %d", ErrVerification, manifest.ReleaseSequence)
 	}
@@ -140,116 +142,241 @@ func VerifyRelease(root string, manifest Manifest, anchor TrustAnchor, opts Veri
 	if opts.ExpectedSourceCommit != "" && manifest.SourceCommit != opts.ExpectedSourceCommit {
 		return fmt.Errorf("%w: source commit mismatch", ErrVerification)
 	}
-	if err := verifyKinds(manifest.Artifacts); err != nil { return err }
-	listed := map[string]bool{"release.manifest.json": true, "release.manifest.sig": true, "trust-anchor.json": true}
-	for _, a := range manifest.Artifacts {
-		paths := []string{a.Path, a.SignaturePath, a.SBOMPath, a.SBOMSignaturePath, a.ProvenancePath, a.ProvenanceSigPath, a.DependencyListPath}
-		for _, p := range paths {
-			if err := safeRelative(p); err != nil { return err }
-			if listed[p] { return fmt.Errorf("%w: duplicate manifest path %q", ErrVerification, p) }
-			listed[p] = true
-		}
-		if err := verifyOne(root, a, manifest, pub); err != nil { return err }
+	if err := verifyKinds(manifest.Artifacts); err != nil {
+		return err
 	}
-	for p := range opts.AllowExtra { listed[p] = true }
+
+	listed := map[string]bool{
+		"release.manifest.json": true,
+		"release.manifest.sig":  true,
+		"trust-anchor.json":     true,
+	}
+	publicKey := ed25519.PublicKey(publicBytes)
+	for _, artifact := range manifest.Artifacts {
+		paths := []string{
+			artifact.Path,
+			artifact.SignaturePath,
+			artifact.SBOMPath,
+			artifact.SBOMSignaturePath,
+			artifact.ProvenancePath,
+			artifact.ProvenanceSigPath,
+			artifact.DependencyListPath,
+		}
+		for _, path := range paths {
+			if err := safeRelative(path); err != nil {
+				return err
+			}
+			if listed[path] {
+				return fmt.Errorf("%w: duplicate manifest path %q", ErrVerification, path)
+			}
+			listed[path] = true
+		}
+		if err := verifyOne(root, artifact, manifest, publicKey); err != nil {
+			return err
+		}
+	}
+	for path := range opts.AllowExtra {
+		listed[path] = true
+	}
 	return verifyClosedTree(root, listed)
 }
 
-func verifyOne(root string, a Artifact, m Manifest, pub ed25519.PublicKey) error {
-	artifactDigest, err := FileDigest(filepath.Join(root, a.Path)); if err != nil { return err }
-	if artifactDigest != a.Digest { return fmt.Errorf("%w: artifact digest mismatch for %s", ErrVerification, a.Path) }
-	if err := verifySignatureFile(root, a.SignaturePath, pub, "artifact", a.Digest); err != nil { return err }
+func verifyOne(root string, artifact Artifact, manifest Manifest, publicKey ed25519.PublicKey) error {
+	artifactDigest, err := FileDigest(filepath.Join(root, artifact.Path))
+	if err != nil {
+		return err
+	}
+	if artifactDigest != artifact.Digest {
+		return fmt.Errorf("%w: artifact digest mismatch for %s", ErrVerification, artifact.Path)
+	}
+	if err := verifySignatureFile(root, artifact.SignaturePath, publicKey, "artifact", artifact.Digest); err != nil {
+		return err
+	}
 
-	sbomDigest, err := FileDigest(filepath.Join(root, a.SBOMPath)); if err != nil { return err }
-	if sbomDigest != a.SBOMDigest { return fmt.Errorf("%w: SBOM digest mismatch for %s", ErrVerification, a.Path) }
-	if err := verifySignatureFile(root, a.SBOMSignaturePath, pub, "sbom", a.SBOMDigest); err != nil { return err }
+	sbomDigest, err := FileDigest(filepath.Join(root, artifact.SBOMPath))
+	if err != nil {
+		return err
+	}
+	if sbomDigest != artifact.SBOMDigest {
+		return fmt.Errorf("%w: SBOM digest mismatch for %s", ErrVerification, artifact.Path)
+	}
+	if err := verifySignatureFile(root, artifact.SBOMSignaturePath, publicKey, "sbom", artifact.SBOMDigest); err != nil {
+		return err
+	}
 	var sbom SBOM
-	if err := readJSON(filepath.Join(root, a.SBOMPath), &sbom); err != nil { return fmt.Errorf("%w: invalid SBOM: %v", ErrVerification, err) }
-	if sbom.BOMFormat != "CycloneDX" || sbom.Metadata.Component.Name == "" || sbom.Metadata.Component.Version != a.Digest {
+	if err := readJSON(filepath.Join(root, artifact.SBOMPath), &sbom); err != nil {
+		return fmt.Errorf("%w: invalid SBOM: %v", ErrVerification, err)
+	}
+	if sbom.BOMFormat != "CycloneDX" || sbom.Metadata.Component.Name == "" || sbom.Metadata.Component.Version != artifact.Digest {
 		return fmt.Errorf("%w: SBOM not bound to artifact digest", ErrVerification)
 	}
-	if err := verifyDependencyCompleteness(filepath.Join(root, a.DependencyListPath), a.DependencyListHash, sbom); err != nil { return err }
+	if err := verifyDependencyCompleteness(filepath.Join(root, artifact.DependencyListPath), artifact.DependencyListHash, sbom); err != nil {
+		return err
+	}
 
-	provDigest, err := FileDigest(filepath.Join(root, a.ProvenancePath)); if err != nil { return err }
-	if provDigest != a.ProvenanceDigest { return fmt.Errorf("%w: provenance digest mismatch for %s", ErrVerification, a.Path) }
-	if err := verifySignatureFile(root, a.ProvenanceSigPath, pub, "provenance", a.ProvenanceDigest); err != nil { return err }
-	var p Provenance
-	if err := readJSON(filepath.Join(root, a.ProvenancePath), &p); err != nil { return fmt.Errorf("%w: invalid provenance: %v", ErrVerification, err) }
-	if p.Version != 1 || p.SubjectDigest != a.Digest || p.ArtifactKind != a.Kind || p.SourceRepo != m.SourceRepo || p.SourceCommit != m.SourceCommit || p.ReleaseSequence != m.ReleaseSequence || p.BuilderIdentity == "" || p.BuildRecipe == "" {
-		return fmt.Errorf("%w: forged or mismatched provenance for %s", ErrVerification, a.Path)
+	provenanceDigest, err := FileDigest(filepath.Join(root, artifact.ProvenancePath))
+	if err != nil {
+		return err
+	}
+	if provenanceDigest != artifact.ProvenanceDigest {
+		return fmt.Errorf("%w: provenance digest mismatch for %s", ErrVerification, artifact.Path)
+	}
+	if err := verifySignatureFile(root, artifact.ProvenanceSigPath, publicKey, "provenance", artifact.ProvenanceDigest); err != nil {
+		return err
+	}
+	var provenance Provenance
+	if err := readJSON(filepath.Join(root, artifact.ProvenancePath), &provenance); err != nil {
+		return fmt.Errorf("%w: invalid provenance: %v", ErrVerification, err)
+	}
+	if provenance.Version != 1 ||
+		provenance.SubjectDigest != artifact.Digest ||
+		provenance.ArtifactKind != artifact.Kind ||
+		provenance.SourceRepo != manifest.SourceRepo ||
+		provenance.SourceCommit != manifest.SourceCommit ||
+		provenance.ReleaseSequence != manifest.ReleaseSequence ||
+		provenance.BuilderIdentity == "" ||
+		provenance.BuildRecipe == "" {
+		return fmt.Errorf("%w: forged or mismatched provenance for %s", ErrVerification, artifact.Path)
 	}
 	return nil
 }
 
 func verifyKinds(artifacts []Artifact) error {
 	seen := map[string]int{}
-	for _, a := range artifacts { seen[a.Kind]++ }
-	for _, kind := range RequiredArtifactKinds {
-		if seen[kind] != 1 { return fmt.Errorf("%w: artifact kind %s count=%d want 1", ErrVerification, kind, seen[kind]) }
+	for _, artifact := range artifacts {
+		seen[artifact.Kind]++
 	}
-	if len(artifacts) != len(RequiredArtifactKinds) { return fmt.Errorf("%w: unexpected artifact kind", ErrVerification) }
+	for _, kind := range RequiredArtifactKinds {
+		if seen[kind] != 1 {
+			return fmt.Errorf("%w: artifact kind %s count=%d want 1", ErrVerification, kind, seen[kind])
+		}
+	}
+	if len(artifacts) != len(RequiredArtifactKinds) {
+		return fmt.Errorf("%w: unexpected artifact kind", ErrVerification)
+	}
 	return nil
 }
 
 func verifyDependencyCompleteness(path, expectedHash string, sbom SBOM) error {
-	digest, err := FileDigest(path); if err != nil { return err }
-	if digest != expectedHash { return fmt.Errorf("%w: dependency inventory digest mismatch", ErrVerification) }
-	data, err := os.ReadFile(path); if err != nil { return fmt.Errorf("%w: dependency inventory: %v", ErrVerification, err) }
+	digest, err := FileDigest(path)
+	if err != nil {
+		return err
+	}
+	if digest != expectedHash {
+		return fmt.Errorf("%w: dependency inventory digest mismatch", ErrVerification)
+	}
+	// #nosec G304,G703 -- path is a manifest-relative path already validated by safeRelative.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("%w: dependency inventory: %v", ErrVerification, err)
+	}
 	components := map[string]bool{}
-	for _, c := range sbom.Components { components[c.Name+"@"+c.Version] = true }
+	for _, component := range sbom.Components {
+		components[component.Name+"@"+component.Version] = true
+	}
 	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line); if line == "" || strings.HasPrefix(line, "#") { continue }
-		if !components[line] { return fmt.Errorf("%w: SBOM missing real dependency %s", ErrVerification, line) }
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !components[line] {
+			return fmt.Errorf("%w: SBOM missing real dependency %s", ErrVerification, line)
+		}
 	}
 	return nil
 }
 
-func verifySignatureFile(root, path string, pub ed25519.PublicKey, typ, digest string) error {
-	data, err := os.ReadFile(filepath.Join(root, path)); if err != nil { return fmt.Errorf("%w: missing %s signature", ErrVerification, typ) }
-	return VerifyDigest(pub, typ, digest, string(data))
+func verifySignatureFile(root, path string, publicKey ed25519.PublicKey, objectType, digest string) error {
+	fullPath := filepath.Join(root, path)
+	// #nosec G304,G703 -- path is a manifest-relative path already validated by safeRelative.
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return fmt.Errorf("%w: missing %s signature", ErrVerification, objectType)
+	}
+	return VerifyDigest(publicKey, objectType, digest, string(data))
 }
 
 func verifyClosedTree(root string, listed map[string]bool) error {
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil { return err }
-		if d.IsDir() { return nil }
-		rel, err := filepath.Rel(root, path); if err != nil { return err }
-		rel = filepath.ToSlash(rel)
-		if !listed[rel] { return fmt.Errorf("%w: unlisted file %s", ErrVerification, rel) }
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if !listed[relative] {
+			return fmt.Errorf("%w: unlisted file %s", ErrVerification, relative)
+		}
 		return nil
 	})
 }
 
-func safeRelative(p string) error {
-	if p == "" || filepath.IsAbs(p) || strings.Contains(filepath.ToSlash(p), "../") || filepath.Clean(p) == "." {
-		return fmt.Errorf("%w: unsafe manifest path %q", ErrVerification, p)
+func safeRelative(path string) error {
+	clean := filepath.Clean(path)
+	if path == "" || filepath.IsAbs(path) || clean == "." || strings.HasPrefix(filepath.ToSlash(clean), "../") {
+		return fmt.Errorf("%w: unsafe manifest path %q", ErrVerification, path)
 	}
 	return nil
 }
 
 func FileDigest(path string) (string, error) {
-	f, err := os.Open(path); if err != nil { return "", fmt.Errorf("%w: open %s: %v", ErrVerification, path, err) }
-	defer f.Close()
-	h := sha256.New(); if _, err := io.Copy(h, f); err != nil { return "", fmt.Errorf("%w: hash %s: %v", ErrVerification, path, err) }
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+	// #nosec G304,G703 -- callers supply either operator-selected release roots or safe manifest-relative paths.
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: open %s: %v", ErrVerification, path, err)
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("%w: hash %s: %v", ErrVerification, path, err)
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func readJSON(path string, out any) error {
-	f, err := os.Open(path); if err != nil { return err }
-	defer f.Close()
-	dec := json.NewDecoder(io.LimitReader(f, 16<<20)); dec.DisallowUnknownFields()
-	if err := dec.Decode(out); err != nil { return err }
-	var trailing any; if err := dec.Decode(&trailing); err != io.EOF { return errors.New("trailing JSON") }
+	// #nosec G304,G703 -- callers pass operator-selected or safe manifest-relative paths.
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(io.LimitReader(file, 16<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("trailing JSON")
+	}
 	return nil
 }
 
-func WriteCanonicalJSON(path string, v any) error {
-	data, err := json.Marshal(v); if err != nil { return err }
+func WriteCanonicalJSON(path string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 func SortedDependencies(values []string) []string {
 	set := map[string]bool{}
-	for _, v := range values { v = strings.TrimSpace(v); if v != "" { set[v] = true } }
-	out := make([]string, 0, len(set)); for v := range set { out = append(out, v) }; sort.Strings(out); return out
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			set[value] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
