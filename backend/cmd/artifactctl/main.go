@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -86,12 +85,11 @@ func sign(args []string) error {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	objectType := fs.String("type", "", "artifact, sbom, provenance, or manifest")
 	filePath := fs.String("file", "", "file to sign")
-	output := fs.String("output", "", "signature output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *objectType == "" || *filePath == "" || *output == "" {
-		return errors.New("--type, --file, and --output are required")
+	if *objectType == "" || *filePath == "" {
+		return errors.New("--type and --file are required")
 	}
 	keyRaw := strings.TrimSpace(os.Getenv("NIRVET_ARTIFACT_SIGNING_KEY_B64"))
 	if keyRaw == "" {
@@ -106,7 +104,8 @@ func sign(args []string) error {
 		return err
 	}
 	signature := supplychain.SignDigest(ed25519.PrivateKey(privateBytes), *objectType, digest)
-	return os.WriteFile(*output, []byte(signature+"\n"), 0o600)
+	_, err = fmt.Fprintln(os.Stdout, signature)
+	return err
 }
 
 func readJSON(path string, out any) error {
@@ -126,5 +125,3 @@ func fatalf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, "artifactctl: "+format+"\n", args...)
 	os.Exit(1)
 }
-
-var _ = strconv.IntSize
