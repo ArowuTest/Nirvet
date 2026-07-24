@@ -1,0 +1,62 @@
+name: Supply-chain signing, SBOM and provenance
+
+on:
+  pull_request:
+
+jobs:
+  supply-chain:
+    name: Signed artifacts + offline verify-before-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Formatting
+        working-directory: backend
+        run: |
+          unformatted=$(gofmt -l internal/platform/supplychain cmd/artifactctl)
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
+
+      - name: Structural verify-before-install fence
+        working-directory: backend
+        run: bash scripts/check-artifact-verification-gate.sh
+
+      - name: Supply-chain falsification suite
+        working-directory: backend
+        run: go test -race -count=1 ./internal/platform/supplychain ./cmd/artifactctl
+
+      - name: Mutation — strip signature must fail
+        working-directory: backend
+        run: go test -count=1 -run TestVerifyReleaseRefusesUnsignedArtifact ./internal/platform/supplychain
+
+      - name: Mutation — unlisted dependency must fail
+        working-directory: backend
+        run: go test -count=1 -run 'TestVerifyReleaseRefusesLyingSBOM|TestVerifyReleaseRefusesUnlistedFile' ./internal/platform/supplychain
+
+      - name: Mutation — remove install verifier must fail
+        working-directory: backend
+        run: |
+          cp ../deploy/airgap/verify-and-install.sh "$RUNNER_TEMP/verify-and-install.sh"
+          trap 'cp "$RUNNER_TEMP/verify-and-install.sh" ../deploy/airgap/verify-and-install.sh' EXIT
+          sed -i 's/go run \.\/backend\/cmd\/artifactctl verify/go run .\/backend\/cmd\/artifactctl disabled/' ../deploy/airgap/verify-and-install.sh
+          if bash scripts/check-artifact-verification-gate.sh; then
+            echo "structural gate failed open after verifier removal"
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/verify-and-install.sh" ../deploy/airgap/verify-and-install.sh
+          bash scripts/check-artifact-verification-gate.sh
+
+      - name: Build offline verification test binary
+        working-directory: backend
+        run: CGO_ENABLED=0 go test -c ./internal/platform/supplychain -o "$RUNNER_TEMP/supplychain.test"
+
+      - name: Offline-verify drill — no network
+        run: |
+          docker pull alpine:3.22
+          docker run --rm --network none \
+            -v "$RUNNER_TEMP/supplychain.test:/supplychain.test:ro" \
+            alpine:3.22 /supplychain.test -test.run TestVerifyReleaseAcceptsCompleteOfflineFixture -test.v
+          # network_mode: none is the sovereign execution profile; no Rekor/Fulcio/registry/OIDC lookup exists.
